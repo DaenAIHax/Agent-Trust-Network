@@ -1,4 +1,4 @@
-````md
+
 # Architecture
 
 Technical architecture of **Agent Trust Network** — a working prototype of a trust and governance layer for inter-organizational AI agents.
@@ -49,7 +49,7 @@ At a high level:
 
 ```text
 Org A agent  →  Broker  →  Org B agent
-````
+```
 
 The broker is responsible for:
 
@@ -117,6 +117,8 @@ The prototype uses a three-level PKI model:
 The broker CA is the root of trust for the network.
 
 Organizations generate their own CA and agent certificates, but those become valid in the network only after the broker operator approves the organization and stores its CA certificate.
+
+The current certificate validity periods are prototype-oriented defaults chosen for development stability and operational simplicity. In a production-grade deployment, certificate lifetime and rotation policy would need to be tightened and automated according to the risk model of the network.
 
 ### 5.2 Agent identity
 
