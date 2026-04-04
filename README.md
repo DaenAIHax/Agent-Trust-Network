@@ -1,321 +1,231 @@
-# Agent Trust Network
+# Agent Trust Network (ATN)
 
-> Federated trust broker for inter-organizational AI agents.
-
-Agent Trust Network is an authentication and policy broker that enables AI agents from different organizations to communicate securely — with verified identities, explicit authorization, controlled scopes, and a full audit trail.
-
-Think of it as ADFS, but for AI agents across organizational boundaries.
+> Federated Trust Router and Credential Broker for inter-organizational AI agents.
+> Aligned with IETF WIMSE (Workload Identity in Multi-System Environments) and the emerging CB4A (Credential Broker for Agents) pattern.
 
 ---
 
-## Why
+## The Problem
 
-There is no standard for authenticated, auditable, policy-controlled communication between AI agents of different organizations. Every integration today is ad hoc, unverifiable, and brittle.
+As AI agents begin operating across organizational boundaries, a critical security gap emerges. Today's agents rely on long-lived API keys and static OAuth tokens — creating **standing privileges** that aggregate access across services and turn AI gateways into high-value compromise targets.
 
-Agent Trust Network provides:
-
-- **Verified identity** — every agent authenticates with an x509 certificate signed by its organization's CA
-- **Explicit authorization** — org admins approve which agents can operate and with what scope (binding)
-- **Policy enforcement** — session-level rules define who can talk to whom (default-deny)
-- **Non-repudiation** — append-only audit log on every event
-- **Replay protection** — JWT jti blacklist on every client assertion + per-message nonce enforcement
-- **Persistent sessions** — sessions survive broker restart; agents resume without user intervention
-- **Rate limiting** — per-agent and per-IP sliding window limits on auth, sessions, and messages
-- **End-to-end message encryption** — payload encrypted with recipient's public key (AES-256-GCM + RSA-OAEP); the broker is a blind forwarder and cannot read message content
-- **Message signing (two layers)** — inner signature on plaintext (non-repudiation, verified by recipient); outer signature on ciphertext (transport integrity, verified by broker)
-- **Agent discovery** — agents can search for counterparties by capability across organizations
-- **External onboarding** — organizations join the network via a self-service wizard (`join.py`), pending TrustLink admin approval
-- **Multi-LLM backend** — agents can run on any OpenAI-compatible LLM (Ollama, vLLM, OpenAI, Azure) or Anthropic Claude; configured per-agent in `.env`
+Organizations cannot blindly trust external agents. They need real-time, fine-grained control over what an agent is authorized to do — without surrendering that control to a centralized operator.
 
 ---
 
-## Architecture
+## The Solution: Federated Trust Router
+
+ATN acts as a **Credential Broker** that physically separates two concerns:
+
+- **The Broker (Credential Delivery Point)** — verifies cryptographic identity, enforces transport integrity, delivers short-lived credentials. It never stores business policies.
+- **Each Organization (Policy Decision Point)** — exposes a webhook that the broker calls in real time. The organization's own IT systems decide allow or deny. The broker only enforces the outcome.
+
+This means the network operator has **zero visibility** into organizational business logic, and organizations have **zero dependency** on a centralized policy engine.
 
 ```
-Org A (buyer)                    Broker                   Org B (manufacturer)
-─────────────                ─────────────────            ────────────────────
-procurement-agent  ──────→   /auth/token (x509)  ←──────  sales-agent
-                             /broker/sessions
-                             /broker/ws (push)
-                             /policy/rules
-                             /registry/bindings
-                             /db/audit
+                              Task Request Envelope
+Org A Agent  ──────────>  [ Credential Broker (CDP) ]  ──────────>  Org B Agent
+                                (Trust Router)
+                                     |   |
+                   [ Org A PDP Webhook ] [ Org B PDP Webhook ]
+                     (Org A IT system)    (Org B IT system)
 ```
 
-### PKI
-
-```
-Broker CA (RSA 4096)
-├── Org CA manufacturer (RSA 2048)
-│   └── sales-agent cert (RSA 2048)
-└── Org CA buyer (RSA 2048)
-    └── procurement-agent cert (RSA 2048)
-```
-
-Each agent holds a certificate signed by its organization's CA. The broker verifies the full chain before issuing any session token.
+**Session Flow:**
+1. Agent A submits a session request with a signed Task Request Envelope.
+2. The Broker verifies the cryptographic workload identity (x509 + SPIFFE).
+3. The Broker calls **both** organizations' PDP webhooks with the request context.
+4. Only if both return `allow`, the Broker issues short-lived, DPoP-bound credentials.
+5. All decisions are recorded in an immutable audit ledger.
 
 ---
 
-## Modules
+## Security Architecture
 
-| Module | Path | Responsibility |
-|---|---|---|
-| Auth | `app/auth/` | x509 client assertion verify, JWT RS256 issue, JTI blacklist |
-| Registry | `app/registry/` | Organizations, agents, bindings, org CA storage, capability discovery, public-key endpoint |
-| Broker | `app/broker/` | Sessions, messages, WebSocket push, persistence, restore |
-| Policy | `app/policy/` | Session default-deny + message policy evaluation |
-| Onboarding | `app/onboarding/` | External org join requests, admin approval/reject |
-| Rate Limit | `app/rate_limit/` | Sliding window limiter — auth, session, message buckets |
-| Injection | `app/injection/` | Prompt injection detection — regex fast path + Haiku LLM judge (client-side, not broker) |
-| Signing | `app/auth/message_signer.py` | RSA-PKCS1v15-SHA256 sign + verify — outer (broker) and inner (recipient) |
-| E2E Crypto | `app/e2e_crypto.py` | AES-256-GCM + RSA-OAEP hybrid encryption/decryption for inter-agent messages |
-| Audit | `app/db/audit.py` | Append-only event log — includes ciphertext hash + outer signature per message |
+### Workload Identity — WIMSE Aligned
+
+Agents authenticate via a **3-tier PKI model**: Broker CA > Org CA > Agent Certificate. Each agent carries a SPIFFE-style identity (`spiffe://trust-domain/org/agent`) embedded in the x509 SAN.
+
+No passwords. No API keys. No shared secrets between organizations.
+
+### DPoP Token Binding — RFC 9449
+
+Every access token is **bound to an ephemeral key** held by the agent (Demonstrating Proof of Possession). Even if a token is intercepted, it cannot be used without the agent's private key.
+
+- Ephemeral EC P-256 key pair per session
+- Per-request DPoP proof (method + URL + token hash)
+- **Server Nonce (RFC 9449 §8)** — server-issued nonce rotated every 5 min, eliminates clock skew
+- JTI replay protection with strict time window
+- Mandatory on every endpoint — plain Bearer tokens are rejected
+
+### End-to-End Encrypted Messaging
+
+The broker **never reads message plaintext**. Every message uses hybrid encryption:
+
+- **AES-256-GCM** for payload encryption (session-bound AAD prevents cross-session replay)
+- **RSA-OAEP-SHA256** for key encapsulation
+- **Two-layer RSA-PSS signing**: inner signature for non-repudiation (recipient verifies sender), outer signature for transport integrity (broker verifies sender before forwarding)
+
+### Federated Policy (PDP Webhooks)
+
+Each organization registers a webhook at onboarding. For every session request, the broker calls both organizations' webhooks and proceeds **only if both return allow**. If an organization has no webhook configured, the PDP check is skipped for that org (the session policy engine still applies).
+
+Organizations retain full sovereignty over authorization decisions. The broker is a neutral enforcer.
+
+### Immutable Audit Trail
+
+Every authentication, session, message, and policy decision is recorded in an **append-only cryptographic ledger**. No UPDATE or DELETE operations on audit records. Acts as a neutral notary for inter-organizational disputes.
+
+### Enterprise KMS Integration
+
+The broker's root signing key never lives on disk in production. ATN implements a **KMS Adapter pattern**:
+
+```
+KMS_BACKEND=local   -> filesystem (dev/test)
+KMS_BACKEND=vault   -> HashiCorp Vault KV v2 (production default)
+KMS_BACKEND=azure   -> Azure Key Vault       (add provider, swap env var)
+KMS_BACKEND=aws     -> AWS KMS               (add provider, swap env var)
+```
+
+Changing the backend requires zero code changes — only a different environment variable.
+
+### Prompt Injection Defense
+
+Every inter-agent message passes through a two-stage detection pipeline:
+
+- **Regex fast path** — blocks known injection patterns with zero latency
+- **LLM judge** (optional) — semantic analysis for novel attacks via Anthropic API
+
+### Additional Security Controls
+
+- **Certificate revocation** — block compromised agent certificates immediately
+- **Token revocation** — self-service and admin-initiated token invalidation
+- **Rate limiting** — sliding window per-endpoint, per-agent
+- **Capability-scoped sessions** — requested capabilities must be authorized in both parties' bindings
 
 ---
 
-## Quick Start
+## Operational Features
 
-### Prerequisites
+### Real-Time WebSocket Messaging
+Agents receive session invitations and messages via WebSocket push with automatic REST polling fallback. The broker pushes events; agents do not poll.
 
-```bash
-nix-shell   # loads Python 3.11 + pip + virtualenv
-```
+### Capability Discovery
+Agents can discover other agents by capability across the network. The broker returns only agents from other organizations with matching approved capabilities.
 
-Or manually:
+### Self-Service Onboarding
+Organizations join the network via a structured onboarding flow (request > admin review > approve/reject). Each organization uploads its own CA certificate and registers its PDP webhook.
 
-```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-```
+### Multi-Role Admin Dashboard
+A built-in web dashboard at `/dashboard` with role-based access control:
 
-### Internal demo (bootstrap)
+- **Network Admin** — full visibility: all organizations, agents, sessions, audit log. Can onboard new organizations (upload CA cert + webhook URL), approve/reject pending orgs, register and delete agents.
+- **Organization** — scoped view: sees only own agents, own sessions, own audit events. Can register agents for own org only. Cannot access admin-only pages.
 
-```bash
-# 1. Generate broker CA
-python generate_certs.py
+Agent registration from the dashboard automatically constructs the agent ID (`org::name`), creates and approves the binding. Login via signed cookie (HMAC-SHA256) with CSRF protection. Security headers (CSP, X-Frame-Options, HSTS). Live notification badges (HTMX auto-refresh). Dark theme, Tailwind CSS, zero build step.
 
-# 2. Start broker
-./run.sh &
+### Enterprise Integration Kit
+A self-contained kit for onboarding customer organizations:
 
-# 3. Bootstrap: register orgs, approve bindings, create policies
-sleep 2 && python bootstrap.py
+- **Bring Your Own CA guide** — step-by-step for the customer's security team
+- **Docker Compose template** — deploy agent + PDP webhook in customer infrastructure
+- **PDP webhook template** — configurable rules (allowed orgs, capabilities, blocked agents)
+- **Quickstart script** — generates CA, agent cert, registers org in one command
 
-# 4. Start agents (two separate terminals)
-./agent.sh --config agents/manufacturer.env   # responder (h24)
-./agent.sh --config agents/buyer.env          # initiator
-```
-
-### External organization onboarding (join.py)
-
-For organizations joining the network from outside:
-
-```bash
-# On the external machine — interactive wizard
-python join.py
-# Prompts for: broker URL, org ID, display name, secret, contact email, agent IDs
-# Generates x509 certs, sends join request, waits for admin approval
-
-# TrustLink admin approves (separate terminal)
-curl -s -X POST http://<broker>/admin/orgs/<org_id>/approve \
-     -H 'x-admin-secret: <ADMIN_SECRET>'
-
-# join.py detects approval, creates bindings, prints agent start command
-python agents/client.py --config certs/<org_id>/<agent_id>.env
-```
-
-### LLM backend configuration
-
-By default agents use Anthropic Claude. To use any OpenAI-compatible backend, set in the agent's `.env`:
-
-```bash
-# Ollama (local)
-LLM_BASE_URL=http://localhost:11434/v1
-LLM_MODEL=llama3.2
-LLM_API_KEY=not-needed
-
-# OpenAI
-LLM_BASE_URL=https://api.openai.com/v1
-LLM_MODEL=gpt-4o
-LLM_API_KEY=sk-...
-
-# Anthropic (default — leave LLM_BASE_URL empty)
-LLM_MODEL=claude-sonnet-4-6
-ANTHROPIC_API_KEY=sk-ant-...
-```
-
-### Reset (clean demo)
-
-```bash
-./reset.sh                # drops Postgres tables + removes certs/
-python generate_certs.py  # regenerate broker CA
-```
+### Agent SDK
+A Python SDK (`agents/sdk.py`) handles the full lifecycle: x509 authentication, DPoP key management, session negotiation, E2E encryption, message signing, and WebSocket streaming.
 
 ---
 
-## Authentication Flow
+## Numbers
 
-```
-Agent                          Broker
-  │                               │
-  │  1. Build client_assertion    │
-  │     JWT RS256, signed with    │
-  │     agent private key         │
-  │     header: x5c=[agent cert]  │
-  │                               │
-  │──── POST /auth/token ────────→│
-  │     { client_assertion }      │
-  │                               │
-  │                 2. Rate limit check (10 req/min per IP)
-  │                 3. Extract cert from x5c
-  │                 4. Load org CA from DB
-  │                 5. Verify cert chain (org CA → agent cert)
-  │                 6. Verify cert validity period
-  │                 7. Verify JWT signature with cert pubkey
-  │                 8. Verify sub == CN in cert
-  │                 9. Check approved binding for (org, agent)
-  │                10. Verify jti not in blacklist, consume it
-  │                               │
-  │←── { access_token } ─────────│
-  │    JWT RS256, signed by       │
-  │    broker CA                  │
-```
-
----
-
-## Session Flow
-
-```
-buyer                          Broker                     manufacturer
-  │                               │                               │
-  │── POST /broker/sessions ─────→│                               │
-  │   { target: manufacturer }    │── WS push: session_pending ──→│
-  │                               │                               │
-  │                               │←── POST /sessions/{id}/accept─│
-  │                               │                               │
-  │── POST /sessions/{id}/messages→│── WS push: new_message ─────→│
-  │                               │                               │
-  │←─────────── WS push: new_message ────────────────────────────│
-  │                               │                               │
-  │── POST /sessions/{id}/close ──→│                              │
-  │                               │── WS push: session_closed ───→│
-```
-
----
-
-## End-to-End Encryption and Message Signing
-
-Messages are end-to-end encrypted: the broker is a blind forwarder and cannot read the content of any inter-agent message.
-
-**Cryptographic scheme:** hybrid AES-256-GCM (payload) + RSA-OAEP-SHA256 (AES key wrapping).
-
-**Two-layer signing:**
-- **Inner signature** — sender signs the plaintext payload; only the recipient can verify it after decrypting (non-repudiation)
-- **Outer signature** — sender signs the ciphertext blob; the broker verifies it before forwarding (transport integrity)
-
-```
-Agent A                              Broker                          Agent B
-  │                                     │                               │
-  │  1. inner_sig = sign(plaintext)     │                               │
-  │  2. cipher = encrypt(plaintext      │                               │
-  │             + inner_sig,            │                               │
-  │             B.pubkey)               │                               │
-  │  3. outer_sig = sign(cipher)        │                               │
-  │──── POST .../messages ────────────→ │                               │
-  │     { cipher, nonce, outer_sig }    │                               │
-  │                                     │  4. verify(outer_sig, A.cert) │
-  │                                     │  5. store cipher + outer_sig  │
-  │                                     │  6. audit_log(hash, outer_sig)│
-  │←── 202 Accepted ────────────────── │                               │
-  │                                     │── WS push: new_message ──────→│
-  │                                     │                               │  7. decrypt(cipher, B.privkey)
-  │                                     │                               │  8. verify(inner_sig, A.cert)
-```
-
-**What this guarantees:**
-- The broker cannot read any message payload — it only sees an opaque encrypted blob
-- The outer signature prevents the broker from forwarding tampered ciphertext
-- The inner signature gives the recipient proof of origin, independent of the broker
-- The audit log entry contains `ciphertext_hash` + `outer_signature` — sufficient for transport-level forensics
-
-**Recipient public key** is fetched via:
-```
-GET /registry/agents/{agent_id}/public-key
-```
-The public key is extracted from the certificate stored in DB at login time.
-
----
-
-## Security — Threat Model
-
-| Threat | Mitigation |
-|---|---|
-| Agent impersonation | x509 cert + chain verification against org CA |
-| Replay on authentication | JTI blacklist: each client assertion consumed once, stored until expiry |
-| Replay on message | Nonce UUID consumed once per session (in-memory + DB UNIQUE constraint) |
-| Unauthorized agent | Binding must be explicitly approved by org admin |
-| Cross-org impersonation | org_id extracted from cert O field, checked against registry |
-| Out-of-scope capability | Scope enforced on every session open |
-| Unauthorized session | Policy engine: session default-deny, explicit allow required |
-| Fake CA | Org CA uploaded by org admin separately, stored in broker DB |
-| Runaway agent / DoS | Rate limiting: 10 auth/min per IP, 20 sessions/min and 60 msg/min per agent |
-| Broker restart data loss | Session persistence: write-through SQLite, automatic restore on startup |
-| Broker reading message content | E2E encryption: AES-256-GCM + RSA-OAEP; broker sees only ciphertext |
-| Ciphertext tampering in transit | Outer RSA signature on ciphertext blob — broker verifies before storing |
-| Message repudiation | Inner RSA signature on plaintext — verified by recipient after decryption |
-| Prompt injection via payload | Detection moved client-side (sdk.py); broker blind to plaintext by design |
-| Audit log tampering | Ciphertext SHA256 hash + outer signature stored in audit log |
-
----
-
-## Tests
-
-```bash
-pytest tests/ -v
-```
-
-**136/136 passing** — coverage: auth, registry, broker, policy engine, x509 chain verification, session persistence, rate limiting, injection detection (unit), E2E encryption, message signing (inner + outer), discovery, onboarding, role-based policy, certificate revocation.
-
-PKI in tests is ephemeral and in-memory (injected via `conftest.py`) — no filesystem dependency.
-
----
-
-## Stack
-
-| Component | Technology |
-|---|---|
-| API | Python 3.11, FastAPI, Uvicorn |
-| Auth | JWT RS256 (python-jose), x509 (cryptography) |
-| Database | SQLAlchemy async + PostgreSQL (asyncpg) / SQLite for tests |
-| Messaging | REST + WebSocket (websockets) |
-| AI Agents | Anthropic Claude (default) or any OpenAI-compatible LLM |
-| Tests | pytest-asyncio |
+| Metric | Value |
+|--------|-------|
+| Broker codebase | ~55 Python modules + templates, ~9,200 lines |
+| Test suite | 18 test files, 198 tests, ~5,400 lines |
+| Test coverage | Auth, DPoP, broker, crypto, policy, revocation, rate limiting, WebSocket, E2E, dashboard, CSRF, security headers |
+| Standards referenced | WIMSE, SPIFFE, RFC 9449 (DPoP), RFC 7638 (JWK Thumbprint) |
 
 ---
 
 ## Roadmap
 
-- [x] Broker base — JWT RS256, registry, audit log
-- [x] Organizations + mandatory binding + scope enforcement
-- [x] Policy engine — session default-deny, message default-allow
-- [x] WebSocket push notifications
-- [x] Claude agents — initiator/responder roles, B2B negotiation demo
-- [x] x509 authentication — PKI, client assertion, chain verification
-- [x] JTI blacklist — full replay protection server-side
-- [x] Persistent sessions — survive broker restart, automatic restore + agent resume
-- [x] Rate limiting — sliding window per agent and per IP
-- [x] Prompt injection detection — regex fast path + Haiku LLM judge (unit-tested; client-side enforcement)
-- [x] Message signing — RSA-PKCS1v15-SHA256, broker verifies outer sig on ciphertext, inner sig verified by recipient
-- [x] E2E message encryption — AES-256-GCM + RSA-OAEP hybrid; broker is a blind forwarder
-- [x] PostgreSQL — production database with asyncpg, Docker container
-- [x] Agent discovery — capability-based cross-org search
-- [x] Responder h24 — infinite loop, handles multiple sessions without restarting
-- [x] External onboarding — `join.py` wizard, pending/approved/rejected states, admin approval API
-- [x] Multi-LLM backend — OpenAI-compatible API support (Ollama, vLLM, OpenAI, Azure, ...)
-- [x] Role-based policy — auto-binding on agent registration, role-to-role session policy
-- [x] Certificate revocation — `revoked_certs` table, check in x509 verifier, `revoke.py` CLI
+| Feature | Status |
+|---------|--------|
+| x509 PKI + SPIFFE identity | Done |
+| JWT RS256 access tokens | Done |
+| DPoP token binding (RFC 9449) | Done |
+| E2E AES-256-GCM + RSA-OAEP | Done |
+| Two-layer RSA-PSS message signing | Done |
+| Immutable audit log | Done |
+| Federated PDP Webhooks | Done |
+| KMS Adapter (Vault KV v2) | Done |
+| WebSocket real-time push | Done |
+| Prompt injection detection | Done |
+| Rate limiting | Done |
+| Certificate + token revocation | Done |
+| Capability discovery | Done |
+| Docker Compose + one-command setup | Done |
+| Redis Pub/Sub (horizontal scaling) | Done |
+| Multi-role admin dashboard | Done |
+| Dashboard security (CSRF, headers, input validation) | Done |
+| Enterprise integration kit (BYOCA, templates, PDP) | Done |
+| Capability-only auth (roles removed) | Done |
+| ERP-triggered demo scenario | Done |
+| Session policy management from dashboard | Done |
+| OpenTelemetry observability | Planned |
+| DPoP Server Nonce (RFC 9449 Section 8) | Done |
+| JWKS key rotation endpoint | Planned |
 
 ---
 
-## Demo
+## Deployment
 
-See [`showcase/`](showcase/) for the full demo log (PKI generation, bootstrap, broker, agents) — files `07-demo-*.md`.
+ATN is designed for **private hub** or **managed network** deployments:
+
+```bash
+# One-command setup (PKI + Docker + Vault + bootstrap)
+./setup.sh
+
+# Services started:
+#   Broker    http://localhost:8000
+#   Vault     http://localhost:8200
+#   Postgres  localhost:5432
+#   Redis     localhost:6379
+#   Mock PDPs localhost:9000, localhost:9001
+
+# Start demo agents (see demo/ for full scenario):
+python demo/supplier_agent.py --config certs/chipfactory/chipfactory__supplier-agent.env
+python demo/inventory_watcher.py   # triggers buyer automatically
+
+# Tear down:
+docker compose down -v
+```
+
+**Cloud-agnostic by design.** No dependency on AWS, Azure, or GCP APIs. Runs on any server, on-premise or cloud — including the private datacenter of a bank.
+
+---
+
+## Positioning
+
+ATN is not an Identity Provider (Okta) nor an API Gateway (Kong). It is purpose-built infrastructure for the AI agent era:
+
+| | Traditional IAM | AI Proxy/Gateway | **ATN** |
+|---|---|---|---|
+| Identity model | Human users, static roles | API keys, OAuth tokens | **Workload x509 + SPIFFE** |
+| Token security | Bearer (transferable) | Bearer (transferable) | **DPoP-bound (non-transferable)** |
+| Policy location | Centralized | Centralized | **Federated (each org decides)** |
+| Credential lifetime | Long-lived | Long-lived | **Short-lived, scoped** |
+| Message security | None | TLS termination | **E2E encrypted + dual-signed** |
+| Audit | Application logs | Access logs | **Cryptographic append-only ledger** |
+| On-premise | Sometimes | Rarely | **Always** |
+
+---
+
+## Tech Stack
+
+Python 3.11, FastAPI, SQLAlchemy async, PostgreSQL 16, cryptography (RSA 4096, x509, EC P-256), PyJWT RS256, HashiCorp Vault, WebSocket (FastAPI native), Anthropic SDK.
+
+---
+
+*If agents are to operate securely across organizations, we need a way to trust them, control them, and audit them — without centralizing power in a single operator. ATN provides the infrastructure to make this possible.*
