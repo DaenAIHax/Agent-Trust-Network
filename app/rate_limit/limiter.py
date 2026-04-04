@@ -6,11 +6,11 @@ Redis: multi-worker safe, sorted sets with automatic TTL cleanup.
 
 The active backend is selected at first use based on Redis availability.
 """
+import asyncio
 import logging
 import time
 import uuid
 from collections import defaultdict, deque
-from threading import Lock
 
 from fastapi import HTTPException, status
 
@@ -34,7 +34,7 @@ class SlidingWindowLimiter:
         self._configs: dict[str, tuple[int, int]] = {}
         # In-memory backend
         self._windows: dict[tuple[str, str], deque] = defaultdict(deque)
-        self._lock = Lock()
+        self._lock = asyncio.Lock()
         # Backend selection
         self._use_redis: bool | None = None  # None = not yet decided
         self._redis = None
@@ -67,17 +67,17 @@ class SlidingWindowLimiter:
         if self._use_redis:
             await self._check_redis(subject, bucket, config)
         else:
-            self._check_memory(subject, bucket, config)
+            await self._check_memory(subject, bucket, config)
 
-    def _check_memory(self, subject: str, bucket: str,
-                      config: tuple[int, int]) -> None:
+    async def _check_memory(self, subject: str, bucket: str,
+                            config: tuple[int, int]) -> None:
         """In-memory sliding window check (single-worker only)."""
         window_seconds, max_requests = config
         now = time.monotonic()
         cutoff = now - window_seconds
         key = (subject, bucket)
 
-        with self._lock:
+        async with self._lock:
             # LRU eviction: if too many unique subjects, drop oldest entries
             if key not in self._windows and len(self._windows) >= _MAX_SUBJECTS:
                 oldest_key = next(iter(self._windows))
@@ -157,3 +157,4 @@ rate_limiter.register("auth.token",       window_seconds=60,  max_requests=10)
 rate_limiter.register("broker.session",   window_seconds=60,  max_requests=20)
 rate_limiter.register("broker.message",   window_seconds=60,  max_requests=60)
 rate_limiter.register("dashboard.login",  window_seconds=300, max_requests=5)
+rate_limiter.register("onboarding.join",  window_seconds=300, max_requests=5)

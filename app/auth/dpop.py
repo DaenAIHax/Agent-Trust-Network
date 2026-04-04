@@ -23,7 +23,6 @@ import json
 import logging
 import os
 import time
-import threading
 from urllib.parse import urlparse, urlunparse
 
 from fastapi import HTTPException, Request, Response, status
@@ -44,39 +43,34 @@ _CLOCK_SKEW  = 5   # seconds — tolerance for clock differences between client/
 # ─────────────────────────────────────────────────────────────────────────────
 
 _NONCE_ROTATION_INTERVAL = 300  # seconds — rotate nonce every 5 minutes
-_nonce_lock = threading.Lock()
 _current_nonce: str = ""
 _previous_nonce: str = ""
 _nonce_generated_at: float = 0
 
 
 def generate_dpop_nonce() -> str:
-    """Generate a fresh server nonce. Called at startup and periodically."""
+    """Generate a fresh server nonce. Called at startup and periodically.
+
+    No lock needed: asyncio event loop is single-threaded, so module-level
+    globals cannot be torn by concurrent access within a single worker.
+    """
     global _current_nonce, _previous_nonce, _nonce_generated_at
-    with _nonce_lock:
-        _previous_nonce = _current_nonce
-        _current_nonce = os.urandom(16).hex()
-        _nonce_generated_at = time.time()
-        return _current_nonce
+    _previous_nonce = _current_nonce
+    _current_nonce = os.urandom(16).hex()
+    _nonce_generated_at = time.time()
+    return _current_nonce
 
 
 def get_current_dpop_nonce() -> str:
-    """Return the current server nonce, rotating if expired.
-
-    Reads are protected by the lock to prevent tearing when another
-    thread is in the middle of a rotation.
-    """
-    with _nonce_lock:
-        if _current_nonce and (time.time() - _nonce_generated_at) <= _NONCE_ROTATION_INTERVAL:
-            return _current_nonce
-    # Need rotation — generate_dpop_nonce acquires the lock internally
+    """Return the current server nonce, rotating if expired."""
+    if _current_nonce and (time.time() - _nonce_generated_at) <= _NONCE_ROTATION_INTERVAL:
+        return _current_nonce
     return generate_dpop_nonce()
 
 
 def _is_valid_nonce(nonce: str) -> bool:
     """Check if the nonce matches the current or previous nonce."""
-    with _nonce_lock:
-        return _hmac.compare_digest(nonce, _current_nonce or "") or _hmac.compare_digest(nonce, _previous_nonce or "")
+    return _hmac.compare_digest(nonce, _current_nonce or "") or _hmac.compare_digest(nonce, _previous_nonce or "")
 
 
 def set_dpop_nonce_header(response: Response) -> None:

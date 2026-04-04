@@ -235,7 +235,8 @@ async def oidc_callback(
             return _login_error("Organization SSO configuration not found.")
         issuer_url = org.oidc_issuer_url
         client_id = org.oidc_client_id
-        client_secret = org.oidc_client_secret
+        from app.registry.org_store import get_org_oidc_secret
+        client_secret = await get_org_oidc_secret(org)
     elif flow_state.role == "admin":
         issuer_url = settings.admin_oidc_issuer_url
         client_id = settings.admin_oidc_client_id

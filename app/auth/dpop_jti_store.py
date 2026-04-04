@@ -12,8 +12,8 @@ operation that checks and registers the JTI in one step (no race window).
 TTL defaults to 300s (5 min): covers the proof iat acceptance window (60s)
 plus generous clock-skew slack.
 """
+import asyncio
 import logging
-import threading
 import time
 from typing import Protocol
 
@@ -36,19 +36,19 @@ class DpopJtiStore(Protocol):
 
 class InMemoryDpopJtiStore:
     """
-    Thread-safe in-memory JTI store with TTL and lazy cleanup.
+    Async-safe in-memory JTI store with TTL and lazy cleanup.
     Not suitable for multi-worker deployments.
     """
 
     def __init__(self) -> None:
         self._store: dict[str, float] = {}  # jti → expires_at (monotonic)
-        self._lock = threading.Lock()
+        self._lock = asyncio.Lock()
 
     async def consume_jti(self, jti: str, ttl_seconds: int = _DEFAULT_TTL) -> bool:
         now = time.monotonic()
         expires_at = now + ttl_seconds
 
-        with self._lock:
+        async with self._lock:
             # Lazy cleanup
             expired = [k for k, v in self._store.items() if v < now]
             for k in expired:

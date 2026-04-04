@@ -17,3 +17,11 @@ class KMSProvider(Protocol):
     async def get_broker_public_key_pem(self) -> str:
         """Return the broker CA public key in PEM format."""
         ...
+
+    async def encrypt_secret(self, plaintext: str) -> str:
+        """Encrypt a secret string for storage at rest."""
+        ...
+
+    async def decrypt_secret(self, stored: str) -> str:
+        """Decrypt a stored secret. Legacy plaintext returned as-is."""
+        ...

@@ -40,3 +40,13 @@ class LocalKMSProvider:
             ).decode()
             _log.info("KMS[local] broker public key loaded from %s", self._cert_path)
         return self._public_key_pem
+
+    async def encrypt_secret(self, plaintext: str) -> str:
+        from app.kms.secret_encrypt import encrypt_secret
+        pem = await self.get_broker_private_key_pem()
+        return encrypt_secret(pem, plaintext)
+
+    async def decrypt_secret(self, stored: str) -> str:
+        from app.kms.secret_encrypt import decrypt_secret
+        pem = await self.get_broker_private_key_pem()
+        return decrypt_secret(pem, stored)

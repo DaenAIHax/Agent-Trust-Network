@@ -13,7 +13,7 @@ from datetime import datetime, timezone, timedelta
 
 from cryptography import x509 as crypto_x509
 from cryptography.hazmat.primitives.asymmetric import rsa as rsa_types
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -29,6 +29,7 @@ from app.registry.org_store import (
     list_pending_orgs,
     set_org_status,
 )
+from app.rate_limit.limiter import rate_limiter
 
 onboarding_router = APIRouter(prefix="/onboarding", tags=["onboarding"])
 admin_router      = APIRouter(prefix="/admin",      tags=["admin"])
@@ -104,12 +105,17 @@ class OrgAdminView(BaseModel):
                         status_code=status.HTTP_202_ACCEPTED)
 async def join_network(
     body: JoinRequest,
+    request: Request = None,
     db: AsyncSession = Depends(get_db),
 ):
     """
     Access request to the network from an external organization.
     The org is created in 'pending' state until admin approval.
     """
+    # Rate limit by client IP to prevent registration flood
+    client_ip = request.client.host if request and request.client else "unknown"
+    await rate_limiter.check(client_ip, "onboarding.join")
+
     existing = await get_org_by_id(db, body.org_id)
     if existing:
         raise HTTPException(status.HTTP_409_CONFLICT,
@@ -149,8 +155,10 @@ async def join_network(
     except HTTPException:
         raise
     except Exception as exc:
+        import logging
+        logging.getLogger("agent_trust").warning("Invalid CA certificate from org '%s': %s", body.org_id, exc)
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
-                            detail=f"Invalid CA certificate: {exc}")
+                            detail="Invalid CA certificate: could not parse or validate the submitted PEM")
 
     # Set pending status and load the CA immediately
     await set_org_status(db, body.org_id, "pending")
@@ -280,3 +288,72 @@ async def get_revoked_certs(
     """List revoked certificates, optionally filtered by org."""
     records = await list_revoked_certs(db, org_id=org_id)
     return [RevokedCertView.model_validate(r) for r in records]
+
+
+# ── Audit Log Export ─────────────────────────────────────────────────────────
+
+@admin_router.get("/audit/export",
+                  dependencies=[Depends(_require_admin)])
+async def export_audit_logs(
+    db: AsyncSession = Depends(get_db),
+    start: datetime | None = None,
+    end: datetime | None = None,
+    org_id: str | None = None,
+    event_type: str | None = None,
+    format: str = "json",
+    limit: int = 10000,
+):
+    """Export audit logs as JSON (NDJSON) or CSV. Admin-only."""
+    import csv
+    import io
+    import json as json_mod
+    from fastapi.responses import StreamingResponse
+    from app.db.audit import query_audit_logs
+
+    entries = await query_audit_logs(
+        db, start=start, end=end, org_id=org_id,
+        event_type=event_type, limit=limit,
+    )
+
+    if format == "csv":
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow([
+            "id", "timestamp", "event_type", "agent_id", "session_id",
+            "org_id", "result", "details", "entry_hash", "previous_hash",
+        ])
+        for e in entries:
+            writer.writerow([
+                e.id,
+                e.timestamp.isoformat() if e.timestamp else "",
+                e.event_type, e.agent_id or "", e.session_id or "",
+                e.org_id or "", e.result, e.details or "",
+                e.entry_hash or "", e.previous_hash or "",
+            ])
+        return StreamingResponse(
+            iter([output.getvalue()]),
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=audit_export.csv"},
+        )
+
+    # Default: NDJSON (newline-delimited JSON)
+    def _generate():
+        for e in entries:
+            yield json_mod.dumps({
+                "id": e.id,
+                "timestamp": e.timestamp.isoformat() if e.timestamp else None,
+                "event_type": e.event_type,
+                "agent_id": e.agent_id,
+                "session_id": e.session_id,
+                "org_id": e.org_id,
+                "result": e.result,
+                "details": e.details,
+                "entry_hash": e.entry_hash,
+                "previous_hash": e.previous_hash,
+            }) + "\n"
+
+    return StreamingResponse(
+        _generate(),
+        media_type="application/x-ndjson",
+        headers={"Content-Disposition": "attachment; filename=audit_export.ndjson"},
+    )

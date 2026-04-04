@@ -110,7 +110,7 @@ async def security_headers(request: Request, call_next):
     else:
         response.headers["Cache-Control"] = "no-store"
     # DPoP-Nonce on API responses only (RFC 9449 §8)
-    _no_dpop_nonce = ("/dashboard", "/health", "/.well-known/")
+    _no_dpop_nonce = ("/dashboard", "/health", "/.well-known/", "/readyz")
     if not any(request.url.path.startswith(p) for p in _no_dpop_nonce):
         from app.auth.dpop import get_current_dpop_nonce
         response.headers["DPoP-Nonce"] = get_current_dpop_nonce()
@@ -144,6 +144,56 @@ app.include_router(dashboard_router)
 @app.get("/health", tags=["infra"])
 async def health():
     return {"status": "ok", "version": settings.app_version}
+
+
+@app.get("/healthz", tags=["infra"])
+async def healthz():
+    """Liveness probe — process is alive."""
+    return {"status": "ok"}
+
+
+@app.get("/readyz", tags=["infra"])
+async def readyz():
+    """Readiness probe — all critical dependencies reachable."""
+    from fastapi.responses import JSONResponse
+    from sqlalchemy import text
+    from app.db.database import AsyncSessionLocal
+
+    checks: dict[str, str] = {}
+
+    # Database
+    try:
+        async with AsyncSessionLocal() as session:
+            await session.execute(text("SELECT 1"))
+        checks["database"] = "ok"
+    except Exception as exc:
+        checks["database"] = f"error: {exc}"
+        return JSONResponse({"status": "not_ready", "checks": checks}, status_code=503)
+
+    # Redis (optional — skip if not configured)
+    try:
+        from app.redis.pool import get_redis
+        redis = get_redis()
+        if redis is not None:
+            await redis.ping()
+            checks["redis"] = "ok"
+        else:
+            checks["redis"] = "not_configured"
+    except Exception as exc:
+        checks["redis"] = f"error: {exc}"
+        return JSONResponse({"status": "not_ready", "checks": checks}, status_code=503)
+
+    # KMS
+    try:
+        from app.kms.factory import get_kms_provider
+        kms = get_kms_provider()
+        await kms.get_broker_public_key_pem()
+        checks["kms"] = "ok"
+    except Exception as exc:
+        checks["kms"] = f"error: {exc}"
+        return JSONResponse({"status": "not_ready", "checks": checks}, status_code=503)
+
+    return {"status": "ready", "checks": checks}
 
 
 @app.get("/.well-known/jwks.json", tags=["infra"])

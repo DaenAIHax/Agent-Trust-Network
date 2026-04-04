@@ -97,6 +97,29 @@ async def log_event(
     return entry
 
 
+async def query_audit_logs(
+    db: AsyncSession,
+    start: datetime | None = None,
+    end: datetime | None = None,
+    org_id: str | None = None,
+    event_type: str | None = None,
+    limit: int = 10000,
+) -> list[AuditLog]:
+    """Query audit log entries with optional filters."""
+    query = select(AuditLog)
+    if start:
+        query = query.where(AuditLog.timestamp >= start)
+    if end:
+        query = query.where(AuditLog.timestamp <= end)
+    if org_id:
+        query = query.where(AuditLog.org_id == org_id)
+    if event_type:
+        query = query.where(AuditLog.event_type == event_type)
+    query = query.order_by(AuditLog.id.asc()).limit(min(limit, 50000))
+    result = await db.execute(query)
+    return list(result.scalars().all())
+
+
 async def verify_chain(db: AsyncSession) -> tuple[bool, int, int]:
     """Walk the audit log and verify every hash in the chain.
 

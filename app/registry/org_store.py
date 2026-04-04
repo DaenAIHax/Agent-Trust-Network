@@ -105,10 +105,24 @@ async def update_org_oidc(
         return None
     record.oidc_issuer_url = issuer_url
     record.oidc_client_id = client_id
-    record.oidc_client_secret = client_secret
+    if client_secret:
+        from app.kms.factory import get_kms_provider
+        kms = get_kms_provider()
+        record.oidc_client_secret = await kms.encrypt_secret(client_secret)
+    else:
+        record.oidc_client_secret = client_secret
     await db.commit()
     await db.refresh(record)
     return record
+
+
+async def get_org_oidc_secret(org: OrganizationRecord) -> str | None:
+    """Decrypt the OIDC client secret. Returns None if not set."""
+    if not org.oidc_client_secret:
+        return None
+    from app.kms.factory import get_kms_provider
+    kms = get_kms_provider()
+    return await kms.decrypt_secret(org.oidc_client_secret)
 
 
 async def list_orgs(db: AsyncSession) -> list[OrganizationRecord]:
