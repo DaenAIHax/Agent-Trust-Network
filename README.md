@@ -72,11 +72,35 @@ sequenceDiagram
 
 Agents authenticate via a **3-tier PKI model**: Broker CA > Org CA > Agent Certificate. Each agent carries a SPIFFE-style identity (`spiffe://trust-domain/org/agent`) embedded in the x509 SAN.
 
+```mermaid
+flowchart TD
+    ROOT["🔐 Broker Root CA\n(RSA 4096, KMS-backed)"]
+    ROOT --> ORGA["🏢 Org A CA\n(uploaded at onboarding)"]
+    ROOT --> ORGB["🏭 Org B CA\n(uploaded at onboarding)"]
+    ORGA --> A1["Agent A1\nspiffe://atn/orgA/agent1"]
+    ORGA --> A2["Agent A2\nspiffe://atn/orgA/agent2"]
+    ORGB --> B1["Agent B1\nspiffe://atn/orgB/agent1"]
+```
+
 No passwords. No API keys. No shared secrets between organizations.
 
 ### DPoP Token Binding — RFC 9449
 
 Every access token is **bound to an ephemeral key** held by the agent (Demonstrating Proof of Possession). Even if a token is intercepted, it cannot be used without the agent's private key.
+
+```mermaid
+sequenceDiagram
+    participant Agent
+    participant Broker
+
+    Agent->>Agent: Generate ephemeral EC P-256 key pair
+    Agent->>Broker: Token request + DPoP proof (signed with ephemeral key)
+    Broker->>Broker: Verify DPoP proof signature
+    Broker-->>Agent: Access token (bound to JWK thumbprint) + server nonce
+    Agent->>Broker: API request + token + new DPoP proof (nonce, method, URL, token hash)
+    Broker->>Broker: Verify token binding + proof + nonce + JTI uniqueness
+    Broker-->>Agent: Response
+```
 
 - Ephemeral EC P-256 key pair per session
 - Per-request DPoP proof (method + URL + token hash)
@@ -87,6 +111,17 @@ Every access token is **bound to an ephemeral key** held by the agent (Demonstra
 ### End-to-End Encrypted Messaging
 
 The broker **never reads message plaintext**. Every message uses hybrid encryption:
+
+```mermaid
+flowchart LR
+    subgraph Sender
+        P["Plaintext"] --> AES["AES-256-GCM\n(session AAD)"]
+        AES --> IS["Inner RSA-PSS\nSignature\n(non-repudiation)"]
+        IS --> OS["Outer RSA-PSS\nSignature\n(transport integrity)"]
+    end
+    OS --> BR["Broker\nverifies outer sig\ncannot read plaintext"]
+    BR --> R["Recipient\nverifies inner sig\ndecrypts payload"]
+```
 
 - **AES-256-GCM** for payload encryption (session-bound AAD prevents cross-session replay)
 - **RSA-OAEP-SHA256** for key encapsulation
