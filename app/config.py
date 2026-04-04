@@ -57,6 +57,10 @@ class Settings(BaseSettings):
     admin_oidc_client_id: str = ""
     admin_oidc_client_secret: str = ""
 
+    # Policy backend — "webhook" (per-org PDP webhooks) or "opa" (Open Policy Agent)
+    policy_backend: str = "webhook"
+    opa_url: str = ""  # e.g. "http://opa:8181"
+
     # KMS backend — "local" (filesystem) or "vault" (HashiCorp Vault KV v2)
     kms_backend: str = "local"
     vault_addr: str = ""
@@ -68,6 +72,17 @@ class Settings(BaseSettings):
         extra = "ignore"
 
 
+_INSECURE_DEFAULT_SECRET = "change-me-in-production"
+
+
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    s = Settings()
+    if s.admin_secret == _INSECURE_DEFAULT_SECRET:
+        import logging
+        logging.getLogger("agent_trust").critical(
+            "SECURITY: admin_secret is set to the default value '%s'. "
+            "Set ADMIN_SECRET to a strong random value before deploying to production.",
+            _INSECURE_DEFAULT_SECRET,
+        )
+    return s

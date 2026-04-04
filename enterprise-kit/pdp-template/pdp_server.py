@@ -13,6 +13,7 @@ Customize the rules in `evaluate()` to match your business logic:
 Usage:
   python pdp_server.py --port 9000
   python pdp_server.py --port 9000 --config rules.json
+  python pdp_server.py --port 9000 --opa-url http://opa:8181
 
 Endpoint:
   POST /policy
@@ -107,23 +108,50 @@ def evaluate(body: dict, rules: dict) -> tuple[str, str]:
     return "allow", ""
 
 
-def build_app(rules: dict) -> FastAPI:
+async def _forward_to_opa(opa_url: str, body: dict) -> tuple[str, str]:
+    """Forward the decision to OPA and translate the response."""
+    import httpx
+    url = f"{opa_url.rstrip('/')}/v1/data/atn/session/allow"
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.post(url, json={"input": body})
+        if resp.status_code != 200:
+            return "deny", f"OPA returned HTTP {resp.status_code}"
+        result = resp.json().get("result", {})
+        if isinstance(result, bool):
+            return ("allow" if result else "deny"), ""
+        if isinstance(result, dict):
+            allowed = result.get("allow", False)
+            reason = result.get("reason", "")
+            return ("allow" if allowed else "deny"), reason
+        return "deny", "OPA returned unexpected result"
+    except Exception as exc:
+        return "deny", f"OPA error: {exc}"
+
+
+def build_app(rules: dict, opa_url: str | None = None) -> FastAPI:
     app = FastAPI(title="PDP Webhook")
 
     @app.get("/health")
     async def health():
-        return {"status": "ok"}
+        return {"status": "ok", "opa": opa_url or "disabled"}
 
     @app.post("/policy")
     async def policy_decision(request: Request):
         body = await request.json()
-        decision, reason = evaluate(body, rules)
+
+        # Forward to OPA if configured, otherwise use local rules
+        if opa_url:
+            decision, reason = await _forward_to_opa(opa_url, body)
+        else:
+            decision, reason = evaluate(body, rules)
 
         initiator = body.get("initiator_agent_id", "?")
         target    = body.get("target_agent_id", "?")
         context   = body.get("session_context", "?")
-        _log.info("[%s] %s  %s -> %s  ctx=%s  %s",
-                  decision.upper(), initiator, body.get("initiator_org_id", "?"),
+        backend   = "OPA" if opa_url else "local"
+        _log.info("[%s/%s] %s  %s -> %s  ctx=%s  %s",
+                  decision.upper(), backend, initiator, body.get("initiator_org_id", "?"),
                   target, context, reason or "")
 
         resp: dict = {"decision": decision}
@@ -139,13 +167,17 @@ def main() -> None:
     parser.add_argument("--port",   type=int, default=9000)
     parser.add_argument("--host",   default="0.0.0.0")
     parser.add_argument("--config", default=None, help="Path to rules.json")
+    parser.add_argument("--opa-url", default=None, help="OPA URL (e.g. http://opa:8181) — forward decisions to OPA")
     args = parser.parse_args()
 
     rules = load_rules(args.config)
     _log.info("PDP starting on http://%s:%d/policy", args.host, args.port)
-    _log.info("Rules: %s", json.dumps(rules, indent=2))
+    if args.opa_url:
+        _log.info("OPA forwarding enabled: %s", args.opa_url)
+    else:
+        _log.info("Rules: %s", json.dumps(rules, indent=2))
 
-    app = build_app(rules)
+    app = build_app(rules, opa_url=args.opa_url)
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
 
 

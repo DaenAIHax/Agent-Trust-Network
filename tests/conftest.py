@@ -98,13 +98,13 @@ def mock_pdp_webhook():
     Tests never reach out to real org webhook URLs — the broker calls the
     webhook caller which is patched to always return ALLOW.
     Individual tests that need DENY behavior can override this with their
-    own patch on 'app.policy.webhook.evaluate_session_via_webhooks'.
+    own patch on 'app.broker.router.evaluate_session_policy'.
     """
     from app.policy.webhook import WebhookDecision
 
     allow = WebhookDecision(allowed=True, reason="mocked allow", org_id="broker")
     with patch(
-        "app.broker.router.evaluate_session_via_webhooks",
+        "app.broker.router.evaluate_session_policy",
         new=AsyncMock(return_value=allow),
     ):
         yield

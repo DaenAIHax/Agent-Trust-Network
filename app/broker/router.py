@@ -27,7 +27,7 @@ from app.broker.models import SessionRequest, SessionResponse, SessionStatus, Me
 from app.broker.session import get_session_store, SessionStore
 from app.broker.persistence import save_session, save_message
 from app.broker.ws_manager import ws_manager
-from app.policy.webhook import evaluate_session_via_webhooks
+from app.policy.backend import evaluate_session_policy
 from app.policy.engine import PolicyEngine
 from app.rate_limit.limiter import rate_limiter
 from app.auth.message_signer import verify_message_signature
@@ -107,7 +107,7 @@ async def _create_session_inner(body, current_agent, store, db, span):
     initiator_org = await get_org_by_id(db, current_agent.org)
     target_org    = await get_org_by_id(db, body.target_org_id)
 
-    pdp_decision = await evaluate_session_via_webhooks(
+    pdp_decision = await evaluate_session_policy(
         initiator_org_id=current_agent.org,
         initiator_webhook_url=initiator_org.webhook_url if initiator_org else None,
         target_org_id=body.target_org_id,
@@ -427,6 +427,12 @@ async def send_message(
 
     _log.info("✔ message accepted  (%s → %s)", current_agent.org, session.target_org_id)
 
+    # Cache the nonce in-memory BEFORE storing the message to close the
+    # race window where two concurrent requests both pass is_nonce_cached().
+    # If the DB insert fails (duplicate), we leave the nonce in the cache
+    # (false-positive is safe — it just blocks a replayed nonce).
+    session.cache_nonce(envelope.nonce)
+
     seq = session.store_message(current_agent.agent_id, envelope.payload, envelope.nonce,
                                 envelope.signature, client_seq=envelope.client_seq)
 
@@ -441,8 +447,6 @@ async def send_message(
                         details={"reason": "replay attack detected (DB)", "nonce": envelope.nonce})
         raise HTTPException(status_code=status.HTTP_409_CONFLICT,
                             detail="Nonce already used — possible replay attack")
-
-    session.cache_nonce(envelope.nonce)
 
     import hashlib, json as _json
     payload_hash = hashlib.sha256(

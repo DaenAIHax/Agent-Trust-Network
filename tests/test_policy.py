@@ -143,7 +143,7 @@ async def test_session_denied_webhook_deny(client: AsyncClient, dpop):
     )
 
     deny = WebhookDecision(allowed=False, reason="not authorized by org policy", org_id="whdeny-buyer")
-    with patch("app.broker.router.evaluate_session_via_webhooks", new=AsyncMock(return_value=deny)):
+    with patch("app.broker.router.evaluate_session_policy", new=AsyncMock(return_value=deny)):
         resp = await client.post("/v1/broker/sessions", json={
             "target_agent_id": "whdeny-manufacturer::sales-agent",
             "target_org_id": "whdeny-manufacturer",
@@ -173,7 +173,7 @@ async def test_session_denied_target_org_denies(client: AsyncClient, dpop):
     deny = WebhookDecision(
         allowed=False, reason="target org does not allow this initiator", org_id="wrongtgt-manufacturer"
     )
-    with patch("app.broker.router.evaluate_session_via_webhooks", new=AsyncMock(return_value=deny)):
+    with patch("app.broker.router.evaluate_session_policy", new=AsyncMock(return_value=deny)):
         resp = await client.post("/v1/broker/sessions", json={
             "target_agent_id": "wrongtgt-manufacturer::sales-agent",
             "target_org_id": "wrongtgt-manufacturer",
@@ -203,7 +203,7 @@ async def test_session_denied_initiator_capability_denied(client: AsyncClient, d
     deny = WebhookDecision(
         allowed=False, reason="capability order.write not authorized by org policy", org_id="cap-buyer"
     )
-    with patch("app.broker.router.evaluate_session_via_webhooks", new=AsyncMock(return_value=deny)):
+    with patch("app.broker.router.evaluate_session_policy", new=AsyncMock(return_value=deny)):
         resp = await client.post("/v1/broker/sessions", json={
             "target_agent_id": "cap-manufacturer::sales-agent",
             "target_org_id": "cap-manufacturer",
@@ -232,7 +232,7 @@ async def test_session_denied_max_active_sessions(client: AsyncClient, dpop):
     allow = WebhookDecision(allowed=True, reason="ok", org_id="broker")
     deny  = WebhookDecision(allowed=False, reason="max active sessions reached", org_id="maxsess-buyer")
 
-    with patch("app.broker.router.evaluate_session_via_webhooks", new=AsyncMock(return_value=allow)):
+    with patch("app.broker.router.evaluate_session_policy", new=AsyncMock(return_value=allow)):
         resp = await client.post("/v1/broker/sessions", json={
             "target_agent_id": "maxsess-mfr-a::sales-agent",
             "target_org_id": "maxsess-mfr-a",
@@ -240,7 +240,7 @@ async def test_session_denied_max_active_sessions(client: AsyncClient, dpop):
         }, headers=dpop.headers("POST", "/v1/broker/sessions", token_buyer))
         assert resp.status_code == 201
 
-    with patch("app.broker.router.evaluate_session_via_webhooks", new=AsyncMock(return_value=deny)):
+    with patch("app.broker.router.evaluate_session_policy", new=AsyncMock(return_value=deny)):
         resp2 = await client.post("/v1/broker/sessions", json={
             "target_agent_id": "maxsess-mfr-b::sales-agent",
             "target_org_id": "maxsess-mfr-b",
