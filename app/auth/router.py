@@ -165,3 +165,81 @@ async def revoke_agent_tokens(
         agent_id=agent_id, org_id=org.org_id,
         details={"reason": "admin-revoke", "revoked_by_org": x_org_id},
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Transaction Token issuance (dashboard session auth — human-in-the-loop)
+# ─────────────────────────────────────────────────────────────────────────────
+
+from pydantic import BaseModel, Field
+
+
+class TransactionTokenRequest(BaseModel):
+    agent_id: str = Field(..., description="Which agent will use this token")
+    txn_type: str = Field(..., max_length=64, description="Operation type, e.g. CREATE_ORDER")
+    payload_hash: str = Field(..., max_length=64, description="SHA-256 of the approved payload")
+    target_agent_id: str | None = Field(None, description="Who to transact with")
+    resource_id: str | None = Field(None, description="Bound resource, e.g. rfq_id")
+    rfq_id: str | None = Field(None, description="Originating RFQ")
+    ttl_seconds: int = Field(default=60, ge=10, le=300)
+
+
+class TransactionTokenResponse(BaseModel):
+    transaction_token: str
+    expires_in: int
+    jti: str
+    txn_type: str
+
+
+@router.post("/token/transaction", response_model=TransactionTokenResponse)
+async def issue_transaction_token(
+    body: TransactionTokenRequest,
+    current_agent: TokenPayload = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Issue a single-use transaction token for a specific operation.
+
+    The requesting agent must be authenticated (DPoP). The token authorizes
+    exactly one operation matching the payload_hash, and expires in ttl_seconds.
+    """
+    from app.auth.transaction_token import create_transaction_token
+
+    # Verify the agent is requesting a token for itself
+    if body.agent_id != current_agent.agent_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Can only request transaction tokens for yourself",
+        )
+
+    token, record = await create_transaction_token(
+        db,
+        agent_id=body.agent_id,
+        org_id=current_agent.org,
+        txn_type=body.txn_type,
+        resource_id=body.resource_id,
+        payload_hash=body.payload_hash,
+        approved_by=current_agent.agent_id,  # self-approval for API; dashboard sets human identity
+        parent_jti=current_agent.jti,
+        target_agent_id=body.target_agent_id,
+        rfq_id=body.rfq_id,
+        ttl_seconds=body.ttl_seconds,
+    )
+
+    await log_event(
+        db, "auth.transaction_token_issued", "ok",
+        agent_id=current_agent.agent_id, org_id=current_agent.org,
+        details={
+            "txn_jti": record.jti,
+            "txn_type": body.txn_type,
+            "target": body.target_agent_id,
+            "rfq_id": body.rfq_id,
+        },
+    )
+
+    return TransactionTokenResponse(
+        transaction_token=token,
+        expires_in=body.ttl_seconds,
+        jti=record.jti,
+        txn_type=body.txn_type,
+    )

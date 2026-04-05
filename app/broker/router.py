@@ -111,6 +111,16 @@ async def _create_session_inner(body, current_agent, store, db, span):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
                                 detail=f"Capability '{cap}' not authorized in the target's scope")
 
+    # Verify target actually advertises the requested capabilities
+    target_caps = set(target.capabilities)
+    for cap in body.requested_capabilities:
+        if cap not in target_caps:
+            await log_event(db, "broker.session_request", "denied",
+                            agent_id=current_agent.agent_id, org_id=current_agent.org,
+                            details={"cap": cap, "reason": "target does not advertise capability"})
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail=f"Target does not advertise capability '{cap}'")
+
     # An agent cannot open a session with itself
     if current_agent.agent_id == body.target_agent_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
@@ -436,6 +446,32 @@ async def send_message(
     )
     _log.info("✔ signature verified  (%s)", current_agent.agent_id)
 
+    # ── Transaction token validation (if applicable) ─────────────────────
+    if current_agent.token_type == "transaction":
+        from app.auth.transaction_token import validate_and_consume_transaction_token, compute_payload_hash
+        actual_hash = compute_payload_hash(envelope.payload)
+        try:
+            txn_record = await validate_and_consume_transaction_token(
+                db, current_agent, actual_hash,
+            )
+        except ValueError as exc:
+            await log_event(db, "broker.transaction_rejected", "denied",
+                            agent_id=current_agent.agent_id, session_id=session_id,
+                            org_id=current_agent.org,
+                            details={"reason": str(exc), "txn_jti": current_agent.jti})
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                detail=f"Transaction token invalid: {exc}")
+        await log_event(db, "broker.transaction_executed", "ok",
+                        agent_id=current_agent.agent_id, session_id=session_id,
+                        org_id=current_agent.org,
+                        details={
+                            "txn_type": txn_record.txn_type,
+                            "resource_id": txn_record.resource_id,
+                            "approved_by": txn_record.approved_by,
+                            "rfq_id": txn_record.rfq_id,
+                            "parent_jti": txn_record.parent_jti,
+                        })
+
     # ── Message policy evaluation ────────────────────────────────────────
     _policy_engine = PolicyEngine()
     policy_decision = await _policy_engine.evaluate_message(
@@ -614,6 +650,59 @@ async def get_notifications(
         }
         for n in notifications
     ]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# RFQ (Request for Quote) endpoints
+# ─────────────────────────────────────────────────────────────────────────────
+
+from app.broker.models import RfqRequest, RfqRespondRequest, RfqResponse as RfqResponseModel
+from app.broker.rfq import broadcast_rfq, submit_rfq_response, get_rfq
+
+
+@router.post("/rfq", response_model=RfqResponseModel, status_code=status.HTTP_201_CREATED)
+async def create_rfq(
+    body: RfqRequest,
+    current_agent: TokenPayload = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """Broadcast an RFQ to all agents matching the capability filter."""
+    await rate_limiter.check(current_agent.agent_id, "broker.rfq")
+    result = await broadcast_rfq(db, current_agent, body)
+    return result
+
+
+@router.post("/rfq/{rfq_id}/respond", status_code=status.HTTP_202_ACCEPTED)
+async def respond_to_rfq(
+    rfq_id: str,
+    body: RfqRespondRequest,
+    current_agent: TokenPayload = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """Submit a quote response to an open RFQ."""
+    _validate_session_id(rfq_id)  # reuse UUID validation
+    await rate_limiter.check(current_agent.agent_id, "broker.rfq_respond")
+    accepted = await submit_rfq_response(db, rfq_id, current_agent, body.payload)
+    if not accepted:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="RFQ not found, already closed, not in matched set, or already responded",
+        )
+    return {"status": "accepted", "rfq_id": rfq_id}
+
+
+@router.get("/rfq/{rfq_id}", response_model=RfqResponseModel)
+async def get_rfq_status(
+    rfq_id: str,
+    current_agent: TokenPayload = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get the current status and collected quotes for an RFQ."""
+    _validate_session_id(rfq_id)
+    result = await get_rfq(db, rfq_id)
+    if not result:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="RFQ not found")
+    return result
 
 
 _WS_AUTH_TIMEOUT = 10  # seconds — max time to wait for initial auth message

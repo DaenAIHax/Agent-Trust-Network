@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import json
 import bcrypt
+from fnmatch import fnmatch
 from datetime import datetime, timezone
 from cryptography import x509
 from cryptography.hazmat.primitives.serialization import Encoding
@@ -12,6 +13,7 @@ from sqlalchemy import Column, String, Boolean, DateTime, Text, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.database import Base
+from app.spiffe import internal_id_to_spiffe, spiffe_to_internal_id
 
 
 def _hash_secret(secret: str) -> str:
@@ -173,3 +175,76 @@ async def search_agents_by_capabilities(
         a for a in agents
         if has_all(a) and (exclude_org_id is None or a.org_id != exclude_org_id)
     ]
+
+
+async def search_agents(
+    db: AsyncSession,
+    *,
+    capabilities: list[str] | None = None,
+    agent_id: str | None = None,
+    agent_uri: str | None = None,
+    org_id: str | None = None,
+    pattern: str | None = None,
+    exclude_org_id: str | None = None,
+    trust_domain: str = "atn.local",
+) -> list["AgentRecord"]:
+    """Unified agent search with multiple optional filters.
+
+    - agent_id / agent_uri: direct lookup (returns 0 or 1 agent)
+    - org_id: all active agents in that org
+    - pattern: glob on agent_id (e.g. "italmetal::*")
+    - capabilities: AND filter on agent capabilities
+    All filters are intersected. At least one must be provided.
+    """
+    # Direct lookup by SPIFFE URI → convert to internal id
+    if agent_uri and not agent_id:
+        try:
+            agent_id = spiffe_to_internal_id(agent_uri)
+        except ValueError:
+            return []
+
+    # Direct lookup by agent_id
+    if agent_id:
+        agent = await get_agent_by_id(db, agent_id)
+        if not agent or not agent.is_active:
+            return []
+        if capabilities:
+            caps = set(agent.capabilities)
+            if not all(c in caps for c in capabilities):
+                return []
+        return [agent]
+
+    # Broad search: fetch all active agents, then filter
+    result = await db.execute(
+        select(AgentRecord).where(AgentRecord.is_active.is_(True))
+    )
+    agents = list(result.scalars().all())
+
+    # Filter by org_id
+    if org_id:
+        agents = [a for a in agents if a.org_id == org_id]
+
+    # Filter by pattern (glob on agent_id or SPIFFE URI)
+    if pattern:
+        def _matches(a: AgentRecord) -> bool:
+            if fnmatch(a.agent_id, pattern):
+                return True
+            try:
+                spiffe = internal_id_to_spiffe(a.agent_id, trust_domain)
+                return fnmatch(spiffe, pattern)
+            except ValueError:
+                return False
+        agents = [a for a in agents if _matches(a)]
+
+    # Filter by capabilities (AND)
+    if capabilities:
+        def _has_all(a: AgentRecord) -> bool:
+            agent_caps = set(a.capabilities)
+            return all(c in agent_caps for c in capabilities)
+        agents = [a for a in agents if _has_all(a)]
+
+    # Exclude own org (unless direct lookup)
+    if exclude_org_id:
+        agents = [a for a in agents if a.org_id != exclude_org_id]
+
+    return agents

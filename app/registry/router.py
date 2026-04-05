@@ -20,7 +20,7 @@ from app.registry.models import (
 )
 from app.registry.store import (
     register_agent, get_agent_by_id, list_agents,
-    search_agents_by_capabilities, rotate_agent_cert,
+    search_agents_by_capabilities, search_agents, rotate_agent_cert,
 )
 from app.registry.org_store import get_org_by_id, verify_org_credentials
 from app.spiffe import internal_id_to_spiffe
@@ -117,23 +117,49 @@ async def list_registered_agents(
 
 
 @router.get("/agents/search", response_model=AgentListResponse)
-async def search_agents(
-    capability: list[str] = Query(..., description="One or more capabilities to search for"),
+async def search_agents_endpoint(
+    capability: list[str] | None = Query(None, description="Filter by capabilities (AND)"),
+    agent_id: str | None = Query(None, description="Direct lookup by agent_id"),
+    agent_uri: str | None = Query(None, description="Direct lookup by SPIFFE URI"),
+    org_id: str | None = Query(None, description="Filter by organization"),
+    pattern: str | None = Query(None, description="Glob pattern on agent_id (e.g. italmetal::*)"),
+    include_own_org: bool = Query(False, description="Include agents from your own org"),
     current_agent: TokenPayload = Depends(get_current_agent),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Discover agents from other organizations that have ALL the requested capabilities.
-    Results exclude the requesting agent's own org.
+    Discover agents with flexible filters. At least one filter is required.
 
-    Example: GET /registry/agents/search?capability=order.read&capability=order.write
+    - **capability**: agents with ALL these capabilities (AND)
+    - **agent_id**: direct lookup by internal ID
+    - **agent_uri**: direct lookup by SPIFFE URI
+    - **org_id**: all agents in a specific org
+    - **pattern**: glob match on agent_id (e.g. `italmetal::*`)
+    - **include_own_org**: include your own org in results (default: false)
+
+    Direct lookups (agent_id, agent_uri) always include own org regardless of flag.
     """
-    agents = await search_agents_by_capabilities(
+    if not any([capability, agent_id, agent_uri, org_id, pattern]):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="At least one search parameter is required",
+        )
+
+    settings = get_settings()
+    # Direct lookups bypass org exclusion
+    is_direct = bool(agent_id or agent_uri)
+    exclude = None if (is_direct or include_own_org) else current_agent.org
+
+    agents = await search_agents(
         db,
         capabilities=capability,
-        exclude_org_id=current_agent.org,
+        agent_id=agent_id,
+        agent_uri=agent_uri,
+        org_id=org_id,
+        pattern=pattern,
+        exclude_org_id=exclude,
+        trust_domain=settings.trust_domain,
     )
-    trust_domain = get_settings().trust_domain
     return AgentListResponse(
         agents=[
             AgentResponse(
@@ -144,7 +170,7 @@ async def search_agents(
                 is_active=a.is_active,
                 registered_at=a.registered_at,
                 metadata=a.extra,
-                agent_uri=internal_id_to_spiffe(a.agent_id, trust_domain),
+                agent_uri=internal_id_to_spiffe(a.agent_id, settings.trust_domain),
             )
             for a in agents
         ],

@@ -83,3 +83,54 @@ class MessageEnvelope(BaseModel):
         if len(serialized) > 1_048_576:  # 1 MB
             raise ValueError("payload exceeds 1 MB limit")
         return v
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# RFQ (Request for Quote) models
+# ─────────────────────────────────────────────────────────────────────────────
+
+class RfqRequest(BaseModel):
+    """Broadcast a request for quote to all matching agents."""
+    capability_filter: list[str] = Field(
+        ..., min_length=1, description="Target agents must have ALL these capabilities",
+    )
+    payload: dict = Field(..., description="The RFQ payload (e.g., item, quantity)")
+    timeout_seconds: int = Field(default=30, ge=5, le=120)
+    context: dict = Field(default_factory=dict)
+
+    @field_validator("payload")
+    @classmethod
+    def limit_rfq_payload(cls, v: dict) -> dict:
+        import json
+        if len(json.dumps(v, default=str)) > 65536:  # 64 KB
+            raise ValueError("RFQ payload exceeds 64 KB limit")
+        return v
+
+
+class RfqRespondRequest(BaseModel):
+    """A supplier's response to an RFQ."""
+    payload: dict = Field(..., description="The quote response (e.g., price, lead time)")
+
+    @field_validator("payload")
+    @classmethod
+    def limit_response_payload(cls, v: dict) -> dict:
+        import json
+        if len(json.dumps(v, default=str)) > 65536:
+            raise ValueError("RFQ response payload exceeds 64 KB limit")
+        return v
+
+
+class RfqQuote(BaseModel):
+    responder_agent_id: str
+    responder_org_id: str
+    payload: dict
+    received_at: datetime
+
+
+class RfqResponse(BaseModel):
+    rfq_id: str
+    status: str
+    matched_agents: list[str]
+    quotes: list[RfqQuote]
+    created_at: datetime
+    closed_at: datetime | None = None

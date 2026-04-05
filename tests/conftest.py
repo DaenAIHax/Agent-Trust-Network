@@ -19,6 +19,8 @@ from app.policy.store import PolicyRecord as _PR                  # noqa — reg
 from app.auth.jti_blacklist import JtiBlacklist as _JtiBlacklist  # noqa — registra in Base.metadata
 from app.auth.revocation import RevokedCert as _RevokedCert       # noqa — registra in Base.metadata
 from app.broker.db_models import SessionRecord as _SR, SessionMessageRecord as _SMR  # noqa — registra in Base.metadata
+from app.broker.db_models import RfqRecord as _RFQ, RfqResponseRecord as _RFQR  # noqa — registra in Base.metadata
+from app.auth.transaction_db import TransactionTokenRecord as _TT  # noqa — registra in Base.metadata
 from app.broker.notifications import Notification as _Notification  # noqa — registra in Base.metadata
 from app.rate_limit.limiter import rate_limiter
 

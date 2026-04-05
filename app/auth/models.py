@@ -23,3 +23,10 @@ class TokenPayload(BaseModel):
     jti: str                    # JWT ID — replay protection
     scope: list[str] = []       # capability scope from approved binding
     cnf: dict | None = None     # DPoP confirmation: {"jkt": "<jwk-thumbprint>"}
+    # Transaction token fields (optional — only present for token_type="transaction")
+    token_type: str = "access"          # "access" or "transaction"
+    act: dict | None = None             # RFC 8693 actor claim: {"sub": "human@org.com"}
+    txn_type: str | None = None         # e.g. "CREATE_ORDER"
+    resource_id: str | None = None      # bound resource (e.g. rfq_id)
+    payload_hash: str | None = None     # SHA-256 of authorized payload
+    parent_jti: str | None = None       # links to originating access token
