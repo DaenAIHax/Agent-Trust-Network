@@ -76,12 +76,7 @@ async def _org_ctx(client: AsyncClient, org_id: str, org_secret: str) -> tuple[d
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def test_login_page_renders(client: AsyncClient):
-    try:
-        resp = await client.get("/dashboard/login")
-    except TypeError:
-        # Jinja2 LRUCache unhashable dict on some Starlette versions
-        pytest.skip("Template rendering compat issue (Jinja2/Starlette version)")
-        return
+    resp = await client.get("/dashboard/login")
     assert resp.status_code == 200
     assert "Admin" in resp.text
     assert "SSO" in resp.text
@@ -98,13 +93,9 @@ async def test_admin_login_success(client: AsyncClient):
 
 
 async def test_admin_login_wrong_secret(client: AsyncClient):
-    try:
-        resp = await client.post("/dashboard/login", data={
-            "login_type": "admin", "admin_secret": "wrong",
-        })
-    except TypeError:
-        pytest.skip("Template rendering compat issue (Jinja2/Starlette version)")
-        return
+    resp = await client.post("/dashboard/login", data={
+        "login_type": "admin", "admin_secret": "wrong",
+    })
     assert resp.status_code == 200
     assert "Invalid" in resp.text
 

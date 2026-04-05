@@ -81,25 +81,15 @@ async def test_audit_verify_rejects_wrong_csrf(client: AsyncClient):
 
 
 async def test_audit_verify_accepts_valid_csrf(client: AsyncClient):
-    """#17: POST /dashboard/audit/verify with valid CSRF token succeeds (not 403).
-
-    Note: the template rendering may raise on some Starlette/Jinja2 versions
-    (unhashable dict in LRUCache). That's unrelated to CSRF, so we catch it.
-    """
+    """#17: POST /dashboard/audit/verify with valid CSRF token succeeds."""
     cookies, csrf = await _admin_login(client)
-    try:
-        resp = await client.post(
-            "/dashboard/audit/verify",
-            cookies=cookies,
-            data={"csrf_token": csrf},
-            follow_redirects=False,
-        )
-        # If we get a response, it must not be 403 (CSRF rejection)
-        assert resp.status_code != 403
-    except TypeError:
-        # Jinja2 template rendering error (unhashable dict) — not a CSRF issue.
-        # The request reached the handler (past CSRF check), so the test passes.
-        pass
+    resp = await client.post(
+        "/dashboard/audit/verify",
+        cookies=cookies,
+        data={"csrf_token": csrf},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 200
 
 
 # ── #23: Exception detail leak in message_signer ─���───────────────────────────
