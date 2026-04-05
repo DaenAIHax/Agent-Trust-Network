@@ -254,13 +254,13 @@ async def test_message_on_expired_session(client: AsyncClient, dpop):
 
 async def test_webhook_ssrf_localhost_blocked():
     """Webhook URLs pointing to localhost/loopback must be rejected."""
-    from app.policy.webhook import _validate_webhook_url
+    from app.policy.webhook import _validate_and_resolve_webhook_url
 
     with pytest.raises(ValueError, match="loopback"):
-        _validate_webhook_url("http://localhost:8080/pdp")
+        _validate_and_resolve_webhook_url("http://localhost:8080/pdp")
 
     with pytest.raises(ValueError, match="loopback"):
-        _validate_webhook_url("http://127.0.0.1:8080/pdp")
+        _validate_and_resolve_webhook_url("http://127.0.0.1:8080/pdp")
 
     with pytest.raises(ValueError, match="loopback"):
-        _validate_webhook_url("http://[::1]:8080/pdp")
+        _validate_and_resolve_webhook_url("http://[::1]:8080/pdp")

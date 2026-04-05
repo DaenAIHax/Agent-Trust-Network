@@ -32,6 +32,7 @@ class ConnectionManager:
         self._connections: Dict[str, WebSocket] = {}
         self._agent_org: Dict[str, str] = {}  # agent_id -> org_id
         self._org_connections: Dict[str, set[str]] = defaultdict(set)  # org_id -> {agent_ids}
+        self._lock = asyncio.Lock()  # protects connect/disconnect from TOCTOU races
         self._redis = None
         self._pubsub = None
         self._listener_task: asyncio.Task | None = None
@@ -58,21 +59,22 @@ class ConnectionManager:
         Also subscribes to the agent's Redis channel for cross-worker delivery.
         Raises ConnectionRefusedError if org connection limit is reached.
         """
-        if agent_id in self._connections:
-            logger.warning("Closing existing WebSocket for agent %s before reconnecting", agent_id)
-            await self.disconnect(agent_id, org_id=self._agent_org.get(agent_id))
+        async with self._lock:
+            if agent_id in self._connections:
+                logger.warning("Closing existing WebSocket for agent %s before reconnecting", agent_id)
+                await self._disconnect_unlocked(agent_id, org_id=self._agent_org.get(agent_id))
 
-        # Enforce per-org connection limit
-        if org_id and len(self._org_connections[org_id]) >= _MAX_CONNECTIONS_PER_ORG:
-            raise ConnectionRefusedError(
-                f"Org '{org_id}' reached max {_MAX_CONNECTIONS_PER_ORG} concurrent WS connections"
-            )
+            # Enforce per-org connection limit (atomic under lock — no TOCTOU)
+            if org_id and len(self._org_connections[org_id]) >= _MAX_CONNECTIONS_PER_ORG:
+                raise ConnectionRefusedError(
+                    f"Org '{org_id}' reached max {_MAX_CONNECTIONS_PER_ORG} concurrent WS connections"
+                )
 
-        self._connections[agent_id] = websocket
-        if org_id:
-            self._agent_org[agent_id] = org_id
-            self._org_connections[org_id].add(agent_id)
-        logger.info("Agent %s connected via WebSocket", agent_id)
+            self._connections[agent_id] = websocket
+            if org_id:
+                self._agent_org[agent_id] = org_id
+                self._org_connections[org_id].add(agent_id)
+            logger.info("Agent %s connected via WebSocket", agent_id)
 
         # Subscribe to Redis channel for this agent (cross-worker delivery)
         if self._pubsub is not None:
@@ -88,7 +90,16 @@ class ConnectionManager:
         """
         Remove the connection and unsubscribe from Redis channel.
         """
-        # Clean up org tracking
+        async with self._lock:
+            await self._disconnect_unlocked(agent_id, org_id=org_id)
+
+        # Unsubscribe from Redis channel (outside lock — I/O bound)
+        if self._pubsub is not None:
+            channel = f"{_REDIS_CHANNEL_PREFIX}{agent_id}"
+            await self._pubsub.unsubscribe(channel)
+
+    async def _disconnect_unlocked(self, agent_id: str, org_id: str | None = None) -> None:
+        """Inner disconnect — caller must hold self._lock."""
         stored_org = self._agent_org.pop(agent_id, None)
         effective_org = org_id or stored_org
         if effective_org:
@@ -101,11 +112,6 @@ class ConnectionManager:
             except Exception as exc:
                 logger.debug("Error closing WebSocket for agent %s: %s", agent_id, exc)
             logger.info("Agent %s disconnected from WebSocket", agent_id)
-
-        # Unsubscribe from Redis channel
-        if self._pubsub is not None:
-            channel = f"{_REDIS_CHANNEL_PREFIX}{agent_id}"
-            await self._pubsub.unsubscribe(channel)
 
     async def send_to_agent(self, agent_id: str, data: dict) -> None:
         """

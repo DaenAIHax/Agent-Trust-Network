@@ -94,9 +94,11 @@ async def _verify_client_assertion_inner(assertion, db, _span, _t0):
         if not bc.ca:
             raise ValueError("registered org CA certificate does not have BasicConstraints CA=true")
     except Exception as exc:
+        import logging
+        logging.getLogger("agent_trust").error("Invalid org CA for '%s': %s", org_id, exc)
         raise HTTPException(
             status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Broker configuration error: invalid org CA — {exc}",
+            detail="Broker configuration error: invalid org CA certificate",
         )
 
     # ── 5. Enforce algorithm whitelist, then verify chain ────────────────────
@@ -119,8 +121,8 @@ async def _verify_client_assertion_inner(assertion, db, _span, _t0):
                 status.HTTP_401_UNAUTHORIZED,
                 detail="Agent certificate not signed by the registered org CA",
             )
-        except Exception as exc:
-            raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail=f"Chain verification failed: {exc}")
+        except Exception:
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Certificate chain verification failed")
 
     # ── 5b. Enforce minimum RSA key size (2048 bits) ──────────────────────
     agent_pub_key = agent_cert.public_key()
@@ -174,8 +176,8 @@ async def _verify_client_assertion_inner(assertion, db, _span, _t0):
             audience=_AUDIENCE,
             options={"verify_aud": True, "verify_exp": True},
         )
-    except JWTError as exc:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail=f"Invalid client_assertion signature: {exc}")
+    except JWTError:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Invalid client_assertion signature")
 
     # ── 10. Verify sub and iss — bind JWT tightly to the authenticated agent ──
     settings = get_settings()

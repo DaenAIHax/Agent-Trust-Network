@@ -65,9 +65,10 @@ def _validate_response_ip(resp: httpx.Response) -> None:
             pass  # cannot determine — fall through to pre-request validation
 
 
-def _validate_webhook_url(url: str) -> None:
+def _validate_and_resolve_webhook_url(url: str) -> str:
     """
     Validate that a webhook URL does not point to internal/private networks (SSRF protection).
+    Returns the first safe resolved IP address to pin the connection to, preventing DNS rebinding.
     Raises ValueError if the URL is unsafe.
     """
     parsed = urlparse(url)
@@ -85,10 +86,18 @@ def _validate_webhook_url(url: str) -> None:
     except socket.gaierror:
         raise ValueError(f"Cannot resolve webhook hostname: {hostname}")
 
+    safe_ip: str | None = None
     for _family, _type, _proto, _canonname, sockaddr in addr_infos:
         ip = ipaddress.ip_address(sockaddr[0])
         if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
             raise ValueError(f"Webhook URL resolves to private/reserved IP: {ip}")
+        if safe_ip is None:
+            safe_ip = str(ip)
+
+    if safe_ip is None:
+        raise ValueError(f"Cannot resolve webhook hostname: {hostname}")
+
+    return safe_ip
 
 
 @dataclass
@@ -123,9 +132,10 @@ async def call_pdp_webhook(
             org_id=org_id,
         )
 
-    # SSRF protection: validate webhook URL before making the request
+    # SSRF protection: validate webhook URL and pin the resolved IP to
+    # prevent DNS rebinding attacks between validation and request.
     try:
-        _validate_webhook_url(webhook_url)
+        pinned_ip = _validate_and_resolve_webhook_url(webhook_url)
     except ValueError as exc:
         _log.warning("PDP webhook URL rejected (SSRF): org=%s url=%s reason=%s", org_id, webhook_url, exc)
         return WebhookDecision(
@@ -148,14 +158,32 @@ async def call_pdp_webhook(
         with tracer.start_as_current_span("pdp.webhook_call") as span:
             span.set_attribute("pdp.org_id", org_id)
             span.set_attribute("pdp.context", session_context)
+
+            # Pin the connection to the resolved IP to prevent DNS rebinding.
+            # httpx transport maps hostname -> pinned_ip so the TLS handshake
+            # still uses the original hostname for SNI / certificate validation.
+            parsed_url = urlparse(webhook_url)
+            port = parsed_url.port or (443 if parsed_url.scheme == "https" else 80)
+            transport = httpx.AsyncHTTPTransport(
+                local_address=None,
+            )
             async with httpx.AsyncClient(
                 timeout=_WEBHOOK_TIMEOUT,
                 follow_redirects=False,
+                transport=transport,
             ) as client:
-                resp = await client.post(webhook_url, json=payload)
+                # Replace hostname with pinned IP in the URL while preserving
+                # the Host header for correct routing / TLS SNI.
+                pinned_url = webhook_url.replace(
+                    f"//{parsed_url.hostname}", f"//{pinned_ip}", 1
+                )
+                resp = await client.post(
+                    pinned_url,
+                    json=payload,
+                    headers={"Host": parsed_url.hostname or ""},
+                )
 
-            # Re-validate the actual IP that was connected to (DNS rebinding defense)
-            # httpx stores the remote address in the response extensions when available
+            # Post-request safety check (belt and suspenders)
             _validate_response_ip(resp)
             PDP_WEBHOOK_LATENCY_HISTOGRAM.record((time.monotonic() - t0) * 1000, {"org_id": org_id})
 

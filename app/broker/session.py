@@ -136,6 +136,18 @@ class SessionStore:
         if session:
             session.status = SessionStatus.closed
 
+    def close_all_for_agent(self, agent_id: str) -> list[Session]:
+        """Close all active/pending sessions involving the given agent.
+        Returns the list of sessions that were closed."""
+        closed = []
+        for s in self._sessions.values():
+            if s.status in (SessionStatus.active, SessionStatus.pending) and (
+                s.initiator_agent_id == agent_id or s.target_agent_id == agent_id
+            ):
+                s.status = SessionStatus.closed
+                closed.append(s)
+        return closed
+
     def list_for_agent(self, agent_id: str) -> list[Session]:
         return [
             s for s in self._sessions.values()

@@ -184,10 +184,24 @@ async def revoke_agent_binding(
     # revoked bindings take effect immediately without waiting for token expiry.
     await invalidate_agent_tokens(db, binding.agent_id)
 
+    # Close all active sessions for this agent and persist the change.
+    from app.broker.session import get_session_store
+    from app.broker.persistence import save_session
+    from app.broker.ws_manager import ws_manager
+
+    store = get_session_store()
+    closed_sessions = store.close_all_for_agent(binding.agent_id)
+    for s in closed_sessions:
+        await save_session(db, s)
+
+    # Force-disconnect the agent's WebSocket connection (if any)
+    if ws_manager.is_connected(binding.agent_id):
+        await ws_manager.disconnect(binding.agent_id)
+
     await log_event(
         db, "binding.revoked", "ok",
         agent_id=binding.agent_id, org_id=binding.org_id,
-        details={"binding_id": binding_id},
+        details={"binding_id": binding_id, "sessions_closed": len(closed_sessions)},
     )
 
     return BindingResponse(

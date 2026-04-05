@@ -127,15 +127,19 @@ flowchart LR
 - **RSA-OAEP-SHA256** for key encapsulation
 - **Two-layer RSA-PSS signing**: inner signature for non-repudiation (recipient verifies sender), outer signature for transport integrity (broker verifies sender before forwarding)
 
-### Federated Policy (PDP Webhooks)
+### Federated Policy (PDP Webhooks + OPA)
 
 Each organization registers a webhook at onboarding. For every session request, the broker calls both organizations' webhooks and proceeds **only if both return allow**. If an organization has no webhook configured, the PDP check is skipped for that org (the session policy engine still applies).
+
+Alternatively, set `POLICY_BACKEND=opa` to use **Open Policy Agent** as the policy engine. ATN ships with Rego policies and a ready-to-deploy OPA sidecar (`enterprise-kit/opa/`). The webhook and OPA backends share the same interface — switching requires only an environment variable change.
 
 Organizations retain full sovereignty over authorization decisions. The broker is a neutral enforcer.
 
 ### Immutable Audit Trail
 
-Every authentication, session, message, and policy decision is recorded in an **append-only cryptographic ledger**. No UPDATE or DELETE operations on audit records. Acts as a neutral notary for inter-organizational disputes.
+Every authentication, session, message, and policy decision is recorded in an **append-only cryptographic ledger** with SHA-256 hash chaining. Each entry's hash includes the previous entry's hash — any tampering (insert, modify, delete, reorder) breaks the chain and is immediately detectable.
+
+No UPDATE or DELETE operations on audit records. Verification endpoint validates the entire chain. Admin export API (`GET /v1/admin/audit/export`) supports NDJSON and CSV with date range and org filters — ready for SIEM ingestion (Splunk, Datadog, ELK).
 
 ### Enterprise KMS Integration
 
@@ -185,7 +189,8 @@ A self-contained kit for onboarding customer organizations:
 
 - **Bring Your Own CA guide** — step-by-step for the customer's security team
 - **Docker Compose template** — deploy agent + PDP webhook in customer infrastructure
-- **PDP webhook template** — configurable rules (allowed orgs, capabilities, blocked agents)
+- **PDP webhook template** — configurable rules (allowed orgs, capabilities, blocked agents), optional OPA forwarding
+- **OPA policy bundle** — Rego session policy + config data + Docker Compose with OPA sidecar
 - **Quickstart script** — generates CA, agent cert, registers org in one command
 
 ### Agent SDK
@@ -197,10 +202,10 @@ A Python SDK (`agents/sdk.py`) handles the full lifecycle: x509 authentication, 
 
 | Metric | Value |
 |--------|-------|
-| Broker codebase | ~55 Python modules + templates, ~9,200 lines |
-| Test suite | 18 test files, 203 tests, ~5,800 lines |
-| Test coverage | Auth, DPoP, broker, crypto, policy, revocation, rate limiting, WebSocket, E2E, dashboard, CSRF, security headers, cert pinning |
-| Standards referenced | WIMSE, SPIFFE, RFC 9449 (DPoP), RFC 7638 (JWK Thumbprint) |
+| Broker codebase | ~60 Python modules + templates, ~10,500 lines |
+| Test suite | 27 test files, 274 tests |
+| Test coverage | Auth, DPoP, broker, crypto, policy, OPA, revocation, rate limiting, WebSocket, E2E, dashboard, CSRF, security headers, cert pinning, KMS encryption, health probes, audit export |
+| Standards referenced | WIMSE, SPIFFE, RFC 9449 (DPoP), RFC 7638 (JWK Thumbprint), RFC 7517 (JWKS) |
 
 ---
 
@@ -231,12 +236,25 @@ A Python SDK (`agents/sdk.py`) handles the full lifecycle: x509 authentication, 
 | Session policy management from dashboard | Done |
 | OpenTelemetry observability | Done |
 | DPoP Server Nonce (RFC 9449 Section 8) | Done |
-| JWKS key rotation endpoint | Planned |
-| E2E crypto hardening (ciphertext limits, RSA key size enforcement) | Planned |
-| JWT validation hardening (iss/aud enforcement, claims format) | Planned |
-| OPA as alternative policy engine | Planned |
+| Alembic database migrations | Done |
+| API versioning (`/v1/`) | Done |
+| JWKS endpoint + kid in JWT (RFC 7517) | Done |
+| E2E AAD with client sequence number (anti-reordering) | Done |
+| Structured JSON logging (SIEM-ready) | Done |
+| Audit log hash chain (SHA-256, tamper detection) | Done |
+| OIDC federation (org + network admin login) | Done |
+| OIDC client secret encryption at rest (KMS) | Done |
+| Health/readiness probes (`/healthz`, `/readyz`) | Done |
+| Audit log export API (JSON/CSV, admin-only) | Done |
+| OPA as alternative policy engine | Done |
+| Async-safe locks (threading.Lock → asyncio.Lock) | Done |
+| 3-VM enterprise demo lab | Planned |
+| Transaction tokens (per-operation authorization) | Planned |
+| MCP proxy (cross-org tool invocation) | Planned |
+| Supply chain traceability ledger | Planned |
+| Multi-broker trust federation | Planned |
+| TypeScript SDK | Planned |
 | Beckn protocol (agent-to-agent commerce) | Planned |
-| Hyperledger distributed audit ledger | Planned |
 
 ---
 
@@ -285,7 +303,7 @@ ATN is not an Identity Provider (Okta) nor an API Gateway (Kong). It is purpose-
 
 ## Tech Stack
 
-Python 3.11, FastAPI, SQLAlchemy async, PostgreSQL 16, cryptography (RSA 4096, x509, EC P-256), PyJWT RS256, HashiCorp Vault, WebSocket (FastAPI native), Anthropic SDK.
+Python 3.11, FastAPI, SQLAlchemy async, PostgreSQL 16, Redis, cryptography (RSA 4096, x509, EC P-256), PyJWT RS256, HashiCorp Vault, Alembic, Open Policy Agent, OpenTelemetry + Jaeger, WebSocket (FastAPI native), Authlib (OIDC), Anthropic SDK.
 
 ---
 
