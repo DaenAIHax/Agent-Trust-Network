@@ -174,10 +174,20 @@
             <pre class="bg-gray-950 rounded-lg p-4 overflow-x-auto text-sm"><code class="text-gray-300">from agents.sdk import BrokerClient
 
 client = BrokerClient("{{ broker_url }}", verify_tls=True)
+
+# Option A: from files
 client.login(
     "{{ agent.agent_id }}", "{{ agent.org_id }}",
     "/path/to/agent.pem", "/path/to/agent-key.pem",
 )
+
+# Option B: from secret manager (Vault, AWS KMS, etc.)
+# cert_pem = vault.read("secret/data/{{ agent.agent_id }}")["cert"]
+# key_pem  = vault.read("secret/data/{{ agent.agent_id }}")["key"]
+# client.login_from_pem(
+#     "{{ agent.agent_id }}", "{{ agent.org_id }}",
+#     cert_pem, key_pem,
+# )
 
 # Discover agents with a capability
 suppliers = client.discover(["supply.negotiate"])
@@ -204,12 +214,20 @@ messages = client.poll(session_id)</code></pre>
         <div id="panel-typescript" data-panel class="relative hidden">
             <button onclick="copySnippet('panel-typescript')" class="absolute top-2 right-2 px-2 py-1 text-xs bg-gray-800 hover:bg-gray-700 text-gray-400 rounded">Copy</button>
             <pre class="bg-gray-950 rounded-lg p-4 overflow-x-auto text-sm"><code class="text-gray-300">import { BrokerClient } from '@agent-trust/sdk';
+import { readFileSync } from 'fs';
 
 const client = new BrokerClient({ baseUrl: '{{ broker_url }}' });
+
+// Option A: from files
 await client.login(
     '{{ agent.agent_id }}', '{{ agent.org_id }}',
     './agent.pem', './agent-key.pem',
 );
+
+// Option B: from secret manager
+// const certPem = await vault.read('secret/{{ agent.agent_id }}', 'cert');
+// const keyPem  = await vault.read('secret/{{ agent.agent_id }}', 'key');
+// await client.loginFromPem('{{ agent.agent_id }}', '{{ agent.org_id }}', certPem, keyPem);
 
 // Discover agents
 const suppliers = await client.discover(['supply.negotiate']);

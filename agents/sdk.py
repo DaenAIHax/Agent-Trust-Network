@@ -232,13 +232,23 @@ class BrokerClient:
         return True
 
     def login(self, agent_id: str, org_id: str, cert_path: str, key_path: str) -> None:
-        """Authenticate the agent via x509 client_assertion + DPoP proof (RFC 9449)."""
+        """Authenticate via x509 + DPoP, reading cert and key from file paths."""
+        cert_pem = Path(cert_path).read_text()
+        key_pem = Path(key_path).read_text()
+        self.login_from_pem(agent_id, org_id, cert_pem, key_pem)
+
+    def login_from_pem(self, agent_id: str, org_id: str,
+                       cert_pem: str, key_pem: str) -> None:
+        """Authenticate via x509 + DPoP using PEM strings directly.
+
+        Use this when loading credentials from a secret manager (Vault,
+        AWS KMS, Azure Key Vault, etc.) instead of files on disk.
+        """
         self._label = agent_id
         try:
-            priv_key_pem = Path(key_path).read_text()
-            self._signing_key_pem = priv_key_pem
-            cert_pem = Path(cert_path).read_bytes()
-            cert     = crypto_x509.load_pem_x509_certificate(cert_pem)
+            self._signing_key_pem = key_pem
+            cert_bytes = cert_pem.encode() if isinstance(cert_pem, str) else cert_pem
+            cert     = crypto_x509.load_pem_x509_certificate(cert_bytes)
             cert_der = cert.public_bytes(serialization.Encoding.DER)
             x5c      = [base64.b64encode(cert_der).decode()]
 
@@ -252,7 +262,7 @@ class BrokerClient:
                 "jti": str(uuid.uuid4()),
             }
             assertion = jose_jwt.encode(
-                payload, priv_key_pem, algorithm="RS256", headers={"x5c": x5c}
+                payload, key_pem, algorithm="RS256", headers={"x5c": x5c}
             )
 
             # Generate ephemeral DPoP key for this session
@@ -281,10 +291,10 @@ class BrokerClient:
             self._update_nonce(resp)
             self.token = resp.json()["access_token"]
         except (httpx.ConnectError, httpx.TimeoutException) as e:
-            print(f"[{agent_id}] Broker non raggiungibile: {e}", flush=True)
+            print(f"[{agent_id}] Broker unreachable: {e}", flush=True)
             sys.exit(1)
         except httpx.HTTPStatusError as e:
-            print(f"[{agent_id}] Login fallito (HTTP {e.response.status_code}): {e.response.text}", flush=True)
+            print(f"[{agent_id}] Login failed (HTTP {e.response.status_code}): {e.response.text}", flush=True)
             sys.exit(1)
 
     _PUBKEY_CACHE_TTL = 300  # seconds — force refresh after 5 minutes
