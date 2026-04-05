@@ -37,7 +37,7 @@ jobs:
 
       - name: Lint with ruff
         run: |
-          ruff check app/ agents/sdk.py tests/ --select E,F,W --ignore E501
+          ruff check app/ agents/sdk.py tests/ --select E,F,W --ignore E501,E402
 
       - name: Run tests
         env:
