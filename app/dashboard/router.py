@@ -266,6 +266,129 @@ async def settings_upload_ca(request: Request, db: AsyncSession = Depends(get_db
              error=None, success="CA certificate uploaded and locked."))
 
 
+@router.post("/settings/generate-ca", response_class=HTMLResponse)
+async def settings_generate_ca(request: Request, db: AsyncSession = Depends(get_db)):
+    """Generate a demo CA certificate for the organization.
+
+    The CA private key is stored in the broker's Vault instance.
+    This is NOT secure for production — the broker should never hold
+    org CA private keys.  Use BYOCA (Bring Your Own CA) in production.
+    """
+    session = require_login(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    if session.is_admin:
+        return RedirectResponse(url="/dashboard", status_code=303)
+    if not await verify_csrf(request, session):
+        org = await get_org_by_id(db, session.org_id)
+        return templates.TemplateResponse("settings.html",
+            _ctx(request, session, active="settings", org=org,
+                 error="Invalid CSRF token.", success=None))
+
+    org = await get_org_by_id(db, session.org_id)
+    if not org:
+        return RedirectResponse(url="/dashboard/login", status_code=303)
+
+    # Refuse if CA already exists
+    meta = _json.loads(org.metadata_json or "{}")
+    if org.ca_certificate and meta.get("ca_locked", False):
+        return templates.TemplateResponse("settings.html",
+            _ctx(request, session, active="settings", org=org, ca_locked=True,
+                 error="CA certificate is already locked.", success=None))
+
+    # Generate org CA using the same logic as generate_certs.py
+    import datetime as _dt
+    from cryptography import x509 as _x509
+    from cryptography.hazmat.primitives import hashes as _hashes, serialization as _ser
+    from cryptography.hazmat.primitives.asymmetric import rsa as _rsa
+    from cryptography.x509.oid import NameOID as _NameOID
+
+    ca_key = _rsa.generate_private_key(public_exponent=65537, key_size=4096)
+    now = _dt.datetime.now(_dt.timezone.utc)
+    subject = _x509.Name([
+        _x509.NameAttribute(_NameOID.COMMON_NAME, f"{org.display_name} CA"),
+        _x509.NameAttribute(_NameOID.ORGANIZATION_NAME, session.org_id),
+    ])
+    ca_cert = (
+        _x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(subject)
+        .public_key(ca_key.public_key())
+        .serial_number(_x509.random_serial_number())
+        .not_valid_before(now)
+        .not_valid_after(now + _dt.timedelta(days=365 * 5))
+        .add_extension(_x509.BasicConstraints(ca=True, path_length=0), critical=True)
+        .add_extension(
+            _x509.SubjectKeyIdentifier.from_public_key(ca_key.public_key()),
+            critical=False,
+        )
+        .sign(ca_key, _hashes.SHA256())
+    )
+
+    ca_key_pem = ca_key.private_bytes(
+        encoding=_ser.Encoding.PEM,
+        format=_ser.PrivateFormat.TraditionalOpenSSL,
+        encryption_algorithm=_ser.NoEncryption(),
+    ).decode()
+    ca_cert_pem = ca_cert.public_bytes(_ser.Encoding.PEM).decode()
+
+    # Store private key in Vault at secret/data/org/{org_id}
+    import os
+    import httpx
+    vault_addr = os.environ.get("VAULT_ADDR", "http://localhost:8200")
+    vault_token = os.environ.get("VAULT_TOKEN", "dev-root-token")
+    vault_path = f"secret/data/org/{session.org_id}"
+    vault_payload = {"data": {"private_key_pem": ca_key_pem, "ca_cert_pem": ca_cert_pem}}
+
+    try:
+        allow_http = os.environ.get("VAULT_ALLOW_HTTP", "").lower() == "true"
+        async with httpx.AsyncClient(verify=not allow_http) as client:
+            resp = await client.post(
+                f"{vault_addr}/v1/{vault_path}",
+                headers={"X-Vault-Token": vault_token, "Content-Type": "application/json"},
+                json=vault_payload,
+                timeout=10,
+            )
+            if resp.status_code not in (200, 204):
+                raise RuntimeError(f"Vault returned HTTP {resp.status_code}")
+    except Exception as exc:
+        # Fallback: save to disk (dev only)
+        import logging
+        logging.getLogger("agent_trust").warning(
+            "Vault unavailable for org CA storage, falling back to disk: %s", exc)
+        certs_dir = pathlib.Path(__file__).parent.parent.parent / "certs" / session.org_id
+        certs_dir.mkdir(parents=True, exist_ok=True)
+        (certs_dir / "ca-key.pem").write_text(ca_key_pem)
+        (certs_dir / "ca-key.pem").chmod(0o600)
+        (certs_dir / "ca.pem").write_text(ca_cert_pem)
+
+    # Also save to disk so bundle download works
+    certs_dir = pathlib.Path(__file__).parent.parent.parent / "certs" / session.org_id
+    certs_dir.mkdir(parents=True, exist_ok=True)
+    (certs_dir / "ca-key.pem").write_text(ca_key_pem)
+    (certs_dir / "ca-key.pem").chmod(0o600)
+    (certs_dir / "ca.pem").write_text(ca_cert_pem)
+
+    # Store public cert in org record and lock
+    await update_org_ca_cert(db, session.org_id, ca_cert_pem)
+    meta["ca_locked"] = True
+    meta["ca_source"] = "broker-generated-demo"
+    org.metadata_json = _json.dumps(meta)
+    await db.commit()
+
+    await log_event(db, "registry.ca_certificate_generated", "ok",
+                    org_id=session.org_id,
+                    details={"source": "dashboard", "mode": "demo",
+                             "warning": "CA private key stored on broker — not for production"})
+
+    org = await get_org_by_id(db, session.org_id)
+    return templates.TemplateResponse("settings.html",
+        _ctx(request, session, active="settings", org=org, ca_locked=True,
+             error=None,
+             success="Demo CA generated. WARNING: The private key is stored on this broker. "
+                     "Use Bring Your Own CA (BYOCA) for production deployments."))
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # OIDC federation login
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1227,6 +1350,149 @@ async def agent_delete(request: Request, agent_id: str, db: AsyncSession = Depen
                         details={"source": "dashboard"})
 
     return RedirectResponse(url="/dashboard/agents", status_code=303)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Agent Detail — Developer Portal Page
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _broker_url_from_request(request: Request) -> str:
+    """Compute the broker public URL from request headers."""
+    scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
+    host = request.headers.get("x-forwarded-host", request.url.hostname)
+    port = request.url.port
+    if scheme == "https" and port and port != 443:
+        return f"{scheme}://{host}:{port}"
+    elif scheme == "http" and port and port != 80:
+        return f"{scheme}://{host}:{port}"
+    return f"{scheme}://{host}"
+
+
+@router.get("/agents/{agent_id:path}", response_class=HTMLResponse)
+async def agent_detail(request: Request, agent_id: str,
+                       db: AsyncSession = Depends(get_db)):
+    """Developer portal page for a single agent."""
+    session = require_login(request)
+    if isinstance(session, RedirectResponse):
+        return session
+
+    agent = (await db.execute(
+        select(AgentRecord).where(AgentRecord.agent_id == agent_id)
+    )).scalar_one_or_none()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    if not session.is_admin and agent.org_id != session.org_id:
+        return RedirectResponse(url="/dashboard/agents", status_code=303)
+
+    # Binding
+    binding = await get_binding_by_org_agent(db, agent.org_id, agent_id)
+
+    # WebSocket status
+    ws_connected = ws_manager.is_connected(agent_id)
+
+    # Certificate expiry
+    cert_expiry = None
+    if agent.cert_pem:
+        try:
+            from cryptography.x509 import load_pem_x509_certificate
+            cert = load_pem_x509_certificate(agent.cert_pem.encode())
+            cert_expiry = cert.not_valid_after_utc.strftime("%Y-%m-%d")
+        except Exception:
+            pass
+
+    # Recent audit events
+    from app.db.audit import AuditLog
+    q = (select(AuditLog)
+         .where(AuditLog.agent_id == agent_id)
+         .order_by(AuditLog.id.desc())
+         .limit(10))
+    if not session.is_admin:
+        q = q.where(AuditLog.org_id == session.org_id)
+    audit_events = (await db.execute(q)).scalars().all()
+
+    broker_url = _broker_url_from_request(request)
+
+    return templates.TemplateResponse("agent_detail.html",
+        _ctx(request, session, active="agents",
+             agent=agent, binding=binding, ws_connected=ws_connected,
+             cert_expiry=cert_expiry, audit_events=audit_events,
+             broker_url=broker_url))
+
+
+@router.post("/agents/{agent_id:path}/credentials")
+async def agent_credentials_download(request: Request, agent_id: str,
+                                     db: AsyncSession = Depends(get_db)):
+    """Generate and download credentials-only bundle (cert + key + env)."""
+    session = require_login(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    if not await verify_csrf(request, session):
+        raise HTTPException(status_code=403, detail="Invalid CSRF token")
+
+    agent = (await db.execute(
+        select(AgentRecord).where(AgentRecord.agent_id == agent_id)
+    )).scalar_one_or_none()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    if not session.is_admin and agent.org_id != session.org_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    org_id = agent.org_id
+
+    # Load org CA
+    from cryptography.hazmat.primitives.serialization import load_pem_private_key
+    from cryptography.x509 import load_pem_x509_certificate
+
+    certs_dir = pathlib.Path(__file__).parent.parent.parent / "certs"
+    org_ca_key_path = certs_dir / org_id / "ca-key.pem"
+    org_ca_cert_path = certs_dir / org_id / "ca.pem"
+
+    if not org_ca_key_path.exists() or not org_ca_cert_path.exists():
+        raise HTTPException(status_code=500,
+            detail=f"Org CA not found for '{org_id}'. Upload CA certificate first.")
+
+    org_ca_key = load_pem_private_key(org_ca_key_path.read_bytes(), password=None)
+    org_ca_cert = load_pem_x509_certificate(org_ca_cert_path.read_bytes())
+
+    # Generate cert + key
+    key_pem, cert_pem = _generate_agent_cert(agent_id, org_id, org_ca_key, org_ca_cert)
+
+    # Pin cert in DB
+    from app.registry.store import rotate_agent_cert
+    await rotate_agent_cert(db, agent_id, cert_pem.decode())
+
+    broker_url = _broker_url_from_request(request)
+
+    # Minimal env — just connection essentials
+    env_content = (
+        f"# Agent Trust Network — credentials\n"
+        f"# Generated: {datetime.datetime.now(datetime.timezone.utc).isoformat()}\n"
+        f"BROKER_URL={broker_url}\n"
+        f"AGENT_ID={agent_id}\n"
+        f"ORG_ID={org_id}\n"
+        f"CAPABILITIES={','.join(agent.capabilities)}\n"
+    )
+
+    # Build credentials-only zip
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("agent.pem", cert_pem)
+        zf.writestr("agent-key.pem", key_pem)
+        zf.writestr("agent.env", env_content)
+
+    buf.seek(0)
+    safe_name = agent_id.replace("::", "__")
+
+    await log_event(db, "registry.agent_credentials_generated", "ok",
+                    agent_id=agent_id, org_id=org_id,
+                    details={"source": "dashboard"})
+
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}-credentials.zip"'},
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

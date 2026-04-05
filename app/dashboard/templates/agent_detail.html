@@ -1,0 +1,289 @@
+{% extends "base.html" %}
+{% block title %}Agent: {{ agent.display_name }}{% endblock %}
+{% block content %}
+<div class="max-w-4xl">
+
+    <!-- Back link -->
+    <a href="/dashboard/agents" class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-300 mb-4">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+        Back to Agents
+    </a>
+
+    <!-- Header -->
+    <div class="mb-6">
+        <h2 class="text-2xl font-bold text-white">{{ agent.display_name }}</h2>
+        <p class="text-sm font-mono text-gray-500 mt-1">{{ agent.agent_id }}</p>
+    </div>
+
+    <!-- ── Section 1: Agent Info ─────────────────────────────────────────── -->
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-5 mb-6">
+        <h3 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">Agent Info</h3>
+        <div class="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
+            <div>
+                <span class="text-gray-500">Organization</span>
+                <p class="text-white font-mono">{{ agent.org_id }}</p>
+            </div>
+            <div>
+                <span class="text-gray-500">Status</span>
+                <p>
+                    {% if agent.is_active %}
+                    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400">
+                        <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>Active
+                    </span>
+                    {% else %}
+                    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-gray-500/10 text-gray-400">Inactive</span>
+                    {% endif %}
+                </p>
+            </div>
+            <div>
+                <span class="text-gray-500">Registered</span>
+                <p class="text-white">{{ agent.registered_at.strftime('%Y-%m-%d %H:%M') if agent.registered_at else '—' }}</p>
+            </div>
+            <div>
+                <span class="text-gray-500">Binding</span>
+                <p>
+                    {% if binding and binding.status == 'approved' %}
+                    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400">Approved</span>
+                    {% elif binding and binding.status == 'pending' %}
+                    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-yellow-500/10 text-yellow-400">Pending</span>
+                    {% elif binding and binding.status == 'revoked' %}
+                    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-red-500/10 text-red-400">Revoked</span>
+                    {% else %}
+                    <span class="text-gray-600">None</span>
+                    {% endif %}
+                </p>
+            </div>
+            <div>
+                <span class="text-gray-500">WebSocket</span>
+                <p>
+                    {% if ws_connected %}
+                    <span class="inline-flex items-center gap-1 text-xs text-emerald-400">
+                        <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 pulse-dot"></span>Connected
+                    </span>
+                    {% else %}
+                    <span class="text-xs text-gray-600">Offline</span>
+                    {% endif %}
+                </p>
+            </div>
+        </div>
+        {% if agent.capabilities %}
+        <div class="mt-4">
+            <span class="text-sm text-gray-500">Capabilities</span>
+            <div class="flex flex-wrap gap-1.5 mt-1">
+                {% for cap in agent.capabilities %}
+                <span class="px-2 py-0.5 rounded text-xs font-medium bg-brand-500/10 text-brand-400">{{ cap }}</span>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- ── Section 2: Credentials ────────────────────────────────────────── -->
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-5 mb-6">
+        <h3 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">Credentials</h3>
+
+        {% if agent.cert_thumbprint %}
+        <div class="grid grid-cols-2 gap-4 text-sm mb-4">
+            <div>
+                <span class="text-gray-500">Certificate</span>
+                <p>
+                    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400">Active</span>
+                </p>
+            </div>
+            <div>
+                <span class="text-gray-500">Thumbprint</span>
+                <p class="font-mono text-xs text-gray-400" title="{{ agent.cert_thumbprint }}">{{ agent.cert_thumbprint[:16] }}...</p>
+            </div>
+            {% if cert_expiry %}
+            <div>
+                <span class="text-gray-500">Expires</span>
+                <p class="text-white">{{ cert_expiry }}</p>
+            </div>
+            {% endif %}
+        </div>
+        {% else %}
+        <div class="mb-4 p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-md">
+            <p class="text-sm text-yellow-400">No certificate generated yet. Generate credentials to connect this agent to the network.</p>
+        </div>
+        {% endif %}
+
+        <div class="p-3 bg-amber-500/5 border border-amber-500/20 rounded-md mb-4">
+            <div class="flex items-start gap-2">
+                <svg class="w-4 h-4 text-amber-400 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4.5c-.77-.833-1.964-.833-2.732 0L4.268 16.5c-.77.833.192 2.5 1.732 2.5z"/></svg>
+                <p class="text-xs text-amber-400/80">The private key is included only in the downloaded zip. Store it securely in your infrastructure — it cannot be retrieved again from the dashboard.</p>
+            </div>
+        </div>
+
+        <form method="post" action="/dashboard/agents/{{ agent.agent_id }}/credentials" class="inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            {% if agent.cert_thumbprint %}
+            <button type="submit" class="px-4 py-2 bg-yellow-600 hover:bg-yellow-700 text-white text-sm rounded-md"
+                    onclick="return confirm('This will generate new credentials and invalidate existing tokens. Continue?')">
+                Regenerate Credentials
+            </button>
+            {% else %}
+            <button type="submit" class="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white text-sm rounded-md">
+                Generate Credentials
+            </button>
+            {% endif %}
+        </form>
+    </div>
+
+    <!-- ── Section 3: Integration Guide ──────────────────────────────────── -->
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-5 mb-6">
+        <h3 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">Integration Guide</h3>
+
+        <!-- Tab bar -->
+        <div class="flex gap-1 bg-gray-950 rounded-lg p-1 mb-4 w-fit">
+            <button data-tab="python" class="px-3 py-1.5 rounded-md text-xs font-medium bg-gray-700 text-white" onclick="switchTab('python')">Python</button>
+            <button data-tab="typescript" class="px-3 py-1.5 rounded-md text-xs font-medium text-gray-400" onclick="switchTab('typescript')">TypeScript</button>
+            <button data-tab="curl" class="px-3 py-1.5 rounded-md text-xs font-medium text-gray-400" onclick="switchTab('curl')">cURL</button>
+        </div>
+
+        <!-- Python -->
+        <div id="panel-python" data-panel class="relative">
+            <button onclick="copySnippet('panel-python')" class="absolute top-2 right-2 px-2 py-1 text-xs bg-gray-800 hover:bg-gray-700 text-gray-400 rounded">Copy</button>
+            <pre class="bg-gray-950 rounded-lg p-4 overflow-x-auto text-sm"><code class="text-gray-300">from agents.sdk import BrokerClient
+
+client = BrokerClient("{{ broker_url }}", verify_tls=True)
+client.login(
+    "{{ agent.agent_id }}", "{{ agent.org_id }}",
+    "/path/to/agent.pem", "/path/to/agent-key.pem",
+)
+
+# Discover agents with a capability
+suppliers = client.discover(["supply.negotiate"])
+
+# Open a session
+session_id = client.open_session(
+    suppliers[0]["agent_id"],
+    suppliers[0]["org_id"],
+    ["supply.negotiate"],
+)
+
+# Send a message (E2E encrypted + signed)
+client.send(session_id, "{{ agent.agent_id }}", {
+    "type": "rfq",
+    "item": "BLT-M10-ZN",
+    "quantity": 2000,
+}, recipient_agent_id=suppliers[0]["agent_id"])
+
+# Poll for responses
+messages = client.poll(session_id)</code></pre>
+        </div>
+
+        <!-- TypeScript -->
+        <div id="panel-typescript" data-panel class="relative hidden">
+            <button onclick="copySnippet('panel-typescript')" class="absolute top-2 right-2 px-2 py-1 text-xs bg-gray-800 hover:bg-gray-700 text-gray-400 rounded">Copy</button>
+            <pre class="bg-gray-950 rounded-lg p-4 overflow-x-auto text-sm"><code class="text-gray-300">import { BrokerClient } from '@agent-trust/sdk';
+
+const client = new BrokerClient({ baseUrl: '{{ broker_url }}' });
+await client.login(
+    '{{ agent.agent_id }}', '{{ agent.org_id }}',
+    './agent.pem', './agent-key.pem',
+);
+
+// Discover agents
+const suppliers = await client.discover(['supply.negotiate']);
+
+// Open session + send message
+const sessionId = await client.openSession(
+    suppliers[0].agent_id,
+    suppliers[0].org_id,
+    ['supply.negotiate'],
+);
+
+await client.send(sessionId, '{{ agent.agent_id }}', {
+    type: 'rfq',
+    item: 'BLT-M10-ZN',
+    quantity: 2000,
+}, suppliers[0].agent_id);
+
+const messages = await client.poll(sessionId);</code></pre>
+        </div>
+
+        <!-- cURL -->
+        <div id="panel-curl" data-panel class="relative hidden">
+            <button onclick="copySnippet('panel-curl')" class="absolute top-2 right-2 px-2 py-1 text-xs bg-gray-800 hover:bg-gray-700 text-gray-400 rounded">Copy</button>
+            <pre class="bg-gray-950 rounded-lg p-4 overflow-x-auto text-sm"><code class="text-gray-300"># 1. Authenticate (requires client_assertion JWT + DPoP proof)
+curl -X POST {{ broker_url }}/v1/auth/token \
+  -H "Content-Type: application/json" \
+  -H "DPoP: &lt;dpop_proof_jwt&gt;" \
+  -d '{"client_assertion": "&lt;client_assertion_jwt&gt;"}'
+
+# 2. Discover agents
+curl {{ broker_url }}/v1/registry/agents/search?capability=supply.negotiate \
+  -H "Authorization: DPoP &lt;access_token&gt;" \
+  -H "DPoP: &lt;proof&gt;"
+
+# 3. Open session
+curl -X POST {{ broker_url }}/v1/broker/sessions \
+  -H "Authorization: DPoP &lt;access_token&gt;" \
+  -H "DPoP: &lt;proof&gt;" \
+  -H "Content-Type: application/json" \
+  -d '{"target_agent_id":"...","target_org_id":"...","requested_capabilities":["supply.negotiate"]}'
+
+# See SDK documentation for client_assertion and DPoP proof generation.</code></pre>
+        </div>
+    </div>
+
+    <!-- ── Section 4: Recent Activity ────────────────────────────────────── -->
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-5">
+        <h3 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">Recent Activity</h3>
+
+        {% if audit_events %}
+        <table class="w-full">
+            <thead>
+                <tr class="border-b border-gray-800">
+                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Timestamp</th>
+                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Event</th>
+                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Result</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-800">
+                {% for evt in audit_events %}
+                <tr class="hover:bg-gray-800/50">
+                    <td class="px-3 py-2 text-xs text-gray-500 font-mono">{{ evt.created_at.strftime('%Y-%m-%d %H:%M:%S') if evt.created_at else '—' }}</td>
+                    <td class="px-3 py-2 text-xs text-gray-300">{{ evt.event_type }}</td>
+                    <td class="px-3 py-2">
+                        {% if evt.result == 'ok' %}
+                        <span class="text-xs text-emerald-400">ok</span>
+                        {% elif evt.result == 'denied' %}
+                        <span class="text-xs text-red-400">denied</span>
+                        {% else %}
+                        <span class="text-xs text-yellow-400">{{ evt.result }}</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p class="text-sm text-gray-600 text-center py-6">No activity recorded for this agent.</p>
+        {% endif %}
+    </div>
+
+</div>
+
+<script>
+function switchTab(tab) {
+    document.querySelectorAll('[data-tab]').forEach(b => {
+        b.classList.remove('bg-gray-700', 'text-white');
+        b.classList.add('text-gray-400');
+    });
+    document.querySelectorAll('[data-panel]').forEach(p => p.classList.add('hidden'));
+    document.querySelector('[data-tab="' + tab + '"]').classList.add('bg-gray-700', 'text-white');
+    document.querySelector('[data-tab="' + tab + '"]').classList.remove('text-gray-400');
+    document.getElementById('panel-' + tab).classList.remove('hidden');
+}
+function copySnippet(panelId) {
+    const code = document.querySelector('#' + panelId + ' code').textContent;
+    navigator.clipboard.writeText(code).then(() => {
+        const btn = document.querySelector('#' + panelId + ' button');
+        const orig = btn.textContent;
+        btn.textContent = 'Copied!';
+        setTimeout(() => btn.textContent = orig, 1500);
+    });
+}
+</script>
+{% endblock %}
