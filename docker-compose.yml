@@ -109,6 +109,10 @@ services:
       VAULT_ADDR: ${VAULT_ADDR:-http://vault:8200}
       VAULT_TOKEN: ${VAULT_TOKEN:-dev-root-token}
       VAULT_SECRET_PATH: ${VAULT_SECRET_PATH:-secret/data/broker}
+      VAULT_ALLOW_HTTP: "true"  # Dev only — Vault in Docker uses HTTP
+      # Policy backend — use OPA instead of webhooks for enterprise lab
+      POLICY_BACKEND: ${POLICY_BACKEND:-webhook}
+      OPA_URL: ${OPA_URL:-}
       # OpenTelemetry
       OTEL_ENABLED: "true"
       OTEL_SERVICE_NAME: "agent-trust-broker"
