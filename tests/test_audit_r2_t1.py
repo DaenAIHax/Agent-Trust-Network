@@ -47,7 +47,7 @@ def _extract_csrf(cookies: dict) -> str:
 async def _admin_login(client: AsyncClient) -> tuple[dict, str]:
     """Login as admin, return (cookies, csrf_token)."""
     resp = await client.post("/dashboard/login", data={
-        "login_type": "admin", "admin_secret": get_settings().admin_secret,
+        "user_id": "admin", "password": get_settings().admin_secret,
     }, follow_redirects=False)
     assert resp.status_code == 303
     cookies = dict(resp.cookies)
