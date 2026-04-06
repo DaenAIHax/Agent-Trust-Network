@@ -89,20 +89,21 @@ Cullis is a **federated trust broker** (credential broker pattern): x509 PKI for
 
 ```mermaid
 flowchart TB
-    A["Org A Agent<br><i>x509 + SPIFFE</i>"] -->|client_assertion + DPoP| B["Credential Broker"]
-    C["Org B Agent<br><i>x509 + SPIFFE</i>"] -->|client_assertion + DPoP| B
-
-    B -->|policy query| D["Org A PDP<br><i>webhook / OPA</i>"]
-    B -->|policy query| E["Org B PDP<br><i>webhook / OPA</i>"]
+    A["Org A Agent<br><i>initiator</i>"] -->|"1. x509 + DPoP auth"| B["Credential Broker"]
+    B -->|"2. policy query"| D["Org A PDP<br><i>webhook / OPA</i>"]
+    B -->|"2. policy query"| E["Org B PDP<br><i>webhook / OPA</i>"]
 
     D -->|allow / deny| F{"Both must allow"}
     E -->|allow / deny| F
 
-    F -->|allowed| G["Short-lived DPoP-bound<br>credentials issued"]
     F -->|denied| H["Request rejected"]
+    F -->|allowed| G["Session created<br><i>pending acceptance</i>"]
 
-    G -->|E2E encrypted session| A
-    G -->|E2E encrypted session| C
+    G -->|"3. WebSocket notification"| C["Org B Agent<br><i>target</i>"]
+    C -->|"4. x509 + DPoP auth → accept"| B
+
+    B -->|"5. E2E encrypted session"| A
+    B -->|"5. E2E encrypted session"| C
 
     style B fill:#4f46e5,stroke:#6366f1,color:#fff
     style F fill:#d97706,stroke:#f59e0b,color:#fff
