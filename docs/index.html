@@ -7,7 +7,7 @@
 <meta name="description" content="Open-source federated trust broker for inter-organizational AI agents. Cryptographic identity, zero-knowledge messaging, compliance-grade audit.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Instrument+Serif:ital@0;1&family=Satoshi:wght@300;400;500;700;900&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Instrument+Serif:ital@0;1&family=Satoshi:wght@300;400;500;700;900&family=Chakra+Petch:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -117,11 +117,6 @@ nav .container {
 }
 
 .nav-logo {
-  font-family: var(--font-mono);
-  font-size: 1.05rem;
-  font-weight: 500;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
   color: var(--text-primary);
   text-decoration: none;
   display: flex;
@@ -129,13 +124,14 @@ nav .container {
   gap: 0.6rem;
 }
 
+.nav-logo img {
+  height: 32px;
+  width: auto;
+  filter: drop-shadow(0 0 8px rgba(59, 208, 213, 0.2));
+}
+
 .nav-logo .dot {
-  width: 8px;
-  height: 8px;
-  background: var(--accent-cyan);
-  border-radius: 50%;
-  box-shadow: 0 0 12px var(--accent-cyan);
-  animation: pulse-dot 3s ease-in-out infinite;
+  display: none;
 }
 
 @keyframes pulse-dot {
@@ -172,6 +168,30 @@ nav .container {
 
 .hero-content {
   max-width: 820px;
+}
+
+/* ── BRAND LOCKUP ────────────────────────────────── */
+.brand-lockup {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 2rem;
+}
+
+.brand-lockup img {
+  height: clamp(64px, 8vw, 100px);
+  width: auto;
+  filter: drop-shadow(0 0 20px rgba(59, 208, 213, 0.25));
+}
+
+.brand-lockup .brand-name {
+  font-family: 'Chakra Petch', sans-serif;
+  font-weight: 600;
+  font-size: clamp(2.8rem, 6vw, 4.5rem);
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  color: var(--text-primary);
+  line-height: 1;
 }
 
 .hero-eyebrow {
@@ -727,8 +747,7 @@ footer {
 <nav>
   <div class="container">
     <a href="#" class="nav-logo">
-      <span class="dot"></span>
-      Cullis
+      <img src="cullis.svg" alt="Cullis">
     </a>
     <ul class="nav-links">
       <li><a href="#problem">Problem</a></li>
@@ -745,8 +764,12 @@ footer {
 <section class="hero">
   <div class="container">
     <div class="hero-content">
+      <div class="brand-lockup reveal">
+        <img src="cullis.svg" alt="Cullis logo">
+        <span class="brand-name">Cullis</span>
+      </div>
       <div class="hero-eyebrow reveal">Open Source &middot; Apache 2.0</div>
-      <h1 class="reveal"><em>Cullis</em> &mdash; the trust layer<br>for AI agents</h1>
+      <h1 class="reveal">The trust layer<br>for AI agents</h1>
       <p class="hero-sub reveal">
         The federated trust broker that gives your AI agents cryptographic identity,
         zero-knowledge messaging, and compliance-grade audit &mdash; across organizational boundaries.
@@ -1179,8 +1202,7 @@ footer {
     <div class="footer-grid">
       <div class="footer-brand">
         <a href="#" class="nav-logo">
-          <span class="dot"></span>
-          Cullis
+          <img src="cullis.svg" alt="Cullis">
         </a>
         <p>Federated trust broker for inter-organizational AI agents. Cryptographic identity, zero-knowledge messaging, compliance-grade audit.</p>
       </div>

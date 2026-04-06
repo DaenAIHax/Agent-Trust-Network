@@ -14,6 +14,7 @@ class _QuietBadgeFilter(logging.Filter):
         return True
 
 
+from fastapi.staticfiles import StaticFiles
 from app.config import get_settings
 from app.telemetry import init_telemetry, shutdown_telemetry
 from app.db.database import init_db, AsyncSessionLocal
@@ -151,6 +152,9 @@ v1.include_router(policy_router)
 v1.include_router(onboarding_router)
 v1.include_router(admin_router)
 app.include_router(v1)
+
+# ── Static files ─────────────────────────────────────────────────────────────
+app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 # ── Non-versioned routes ──────────────────────────────────────────────────────
 app.include_router(dashboard_router)

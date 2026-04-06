@@ -6,6 +6,7 @@
     <title>{% block title %}Cullis{% endblock %} — Federated Trust Broker</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&display=swap" rel="stylesheet">
     <script>
         tailwind.config = {
             theme: {
@@ -30,7 +31,10 @@
     <!-- Sidebar -->
     <nav class="w-56 bg-gray-900 border-r border-gray-800 flex flex-col">
         <div class="px-4 py-5 border-b border-gray-800">
-            <h1 class="text-lg font-bold text-white tracking-tight">Cullis</h1>
+            <div class="flex items-center gap-2 mb-1">
+                <img src="/static/cullis.svg" alt="Cullis" style="height: 28px; width: auto;">
+                <span style="font-family: 'Chakra Petch', sans-serif; font-weight: 600; font-size: 1.1rem; text-transform: uppercase; letter-spacing: 0.15em; color: white;">Cullis</span>
+            </div>
             <p class="text-xs text-gray-500 mt-0.5">Federated Trust Broker</p>
         </div>
         <div class="flex-1 px-2 py-3 space-y-0.5">

@@ -1,5 +1,6 @@
 <p align="center">
-  <strong>Cullis</strong><br>
+  <img src="cullis.svg" alt="Cullis" width="120"><br>
+  <strong style="font-size: 1.5em; letter-spacing: 0.15em;">CULLIS</strong><br>
   Zero-trust identity and authorization for AI agent-to-agent communication
 </p>
 
