@@ -100,10 +100,11 @@ flowchart TB
     F -->|allowed| G["Session created<br><i>pending acceptance</i>"]
 
     G -->|"3. WebSocket notification"| C["Org B Agent<br><i>target</i>"]
+
     C -->|"4. x509 + DPoP auth → accept"| B
 
-    B -->|"5. E2E encrypted session"| A
-    B -->|"5. E2E encrypted session"| C
+    B -.->|"5. E2E encrypted session"| A
+    B -.->|"5. E2E encrypted session"| C
 
     style B fill:#4f46e5,stroke:#6366f1,color:#fff
     style F fill:#d97706,stroke:#f59e0b,color:#fff
