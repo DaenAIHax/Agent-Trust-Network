@@ -1038,17 +1038,22 @@ footer {
         <span class="terminal-title">terminal</span>
       </div>
       <div class="terminal-body">
-<span class="prompt">$</span> <span class="cmd">git clone https://github.com/DaenAIHax/agent-trust-network</span>
-<span class="prompt">$</span> <span class="cmd">cd agent-trust-network</span>
-<span class="prompt">$</span> <span class="cmd">cp .env.example .env</span>
-<span class="prompt">$</span> <span class="cmd">./setup.sh</span>
-<span class="output">  ✓  Broker CA generated</span>
+<span class="prompt">$</span> <span class="cmd">git clone https://github.com/DaenAIHax/cullis</span>
+<span class="prompt">$</span> <span class="cmd">cd cullis</span>
+<span class="prompt">$</span> <span class="cmd">./deploy.sh</span>
+<span class="output"></span>
+<span class="output">  Select mode: [1] Development  [2] Production</span>
+<span class="output">  &gt; 1</span>
+<span class="output"></span>
+<span class="output">  ✓  Secrets generated</span>
+<span class="output">  ✓  Broker CA created</span>
 <span class="output">  ✓  TLS certificate ready</span>
 <span class="output">  ✓  Containers started</span>
 <span class="output">  ✓  Vault initialized</span>
+<span class="output">  ✓  Migrations applied</span>
 <span class="output">  ✓  Broker healthy</span>
 <span class="output"></span>
-<span class="comment"># Dashboard ready at https://localhost:8443/dashboard</span>
+<span class="comment"># Dashboard at https://localhost:8443/dashboard</span>
       </div>
     </div>
   </div>
