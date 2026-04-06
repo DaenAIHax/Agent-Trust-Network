@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}Admin Settings{% endblock %}
+{% block content %}
+<div class="max-w-2xl">
+    <h2 class="text-2xl font-bold text-white mb-6">Admin Settings</h2>
+
+    {% if error %}
+    <div class="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-md text-sm text-red-400">{{ error }}</div>
+    {% endif %}
+    {% if success %}
+    <div class="mb-4 p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-md text-sm text-emerald-400">{{ success }}</div>
+    {% endif %}
+
+    <!-- Change Admin Password -->
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-5">
+        <h3 class="text-sm font-semibold text-white mb-1">Change Admin Password</h3>
+        <p class="text-xs text-gray-500 mb-4">The admin password is stored as a bcrypt hash in the KMS backend. It is never saved in cleartext.</p>
+
+        <form method="post" action="/dashboard/admin/settings/password" class="space-y-4">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+            <div>
+                <label class="block text-xs text-gray-400 mb-1">Current Password</label>
+                <input type="password" name="current_password" required autocomplete="current-password"
+                       class="w-full bg-gray-950 border border-gray-700 rounded-md px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-brand-500">
+            </div>
+
+            <div>
+                <label class="block text-xs text-gray-400 mb-1">New Password</label>
+                <input type="password" name="new_password" required autocomplete="new-password"
+                       class="w-full bg-gray-950 border border-gray-700 rounded-md px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-brand-500">
+                <p class="text-xs text-gray-600 mt-1">Minimum 12 characters.</p>
+            </div>
+
+            <div>
+                <label class="block text-xs text-gray-400 mb-1">Confirm New Password</label>
+                <input type="password" name="confirm_password" required autocomplete="new-password"
+                       class="w-full bg-gray-950 border border-gray-700 rounded-md px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-brand-500">
+            </div>
+
+            <button type="submit"
+                    class="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white text-sm rounded-md">
+                Update Password
+            </button>
+        </form>
+    </div>
+
+    <!-- KMS Backend Info -->
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-5 mt-6">
+        <h3 class="text-sm font-semibold text-white mb-3">KMS Backend</h3>
+        <div class="grid grid-cols-2 gap-4 text-sm">
+            <div>
+                <span class="text-gray-500">Backend</span>
+                <p class="text-white font-mono">{{ kms_backend }}</p>
+            </div>
+            <div>
+                <span class="text-gray-500">Admin Secret</span>
+                <p>
+                    {% if hash_present %}
+                    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400">Stored in KMS</span>
+                    {% else %}
+                    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-yellow-500/10 text-yellow-400">Fallback to .env</span>
+                    {% endif %}
+                </p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
