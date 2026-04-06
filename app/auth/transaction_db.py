@@ -2,7 +2,7 @@
 SQLAlchemy model for transaction tokens — single-use, short-lived tokens
 that authorize a specific operation (e.g., CREATE_ORDER) after human approval.
 """
-from sqlalchemy import Column, String, Text, DateTime, Integer
+from sqlalchemy import Column, String, DateTime
 
 from app.db.database import Base
 

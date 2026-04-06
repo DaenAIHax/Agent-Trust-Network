@@ -20,7 +20,7 @@ from app.registry.models import (
 )
 from app.registry.store import (
     register_agent, get_agent_by_id, list_agents,
-    search_agents_by_capabilities, search_agents, rotate_agent_cert,
+    search_agents, rotate_agent_cert,
 )
 from app.registry.org_store import get_org_by_id, verify_org_credentials
 from app.spiffe import internal_id_to_spiffe

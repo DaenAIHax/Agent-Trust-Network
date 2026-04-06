@@ -121,8 +121,6 @@ async def test_transaction_token_single_use(client: AsyncClient, dpop, db_sessio
         approved_by="admin@acme.com",
     )
 
-    # Decode to get the token payload
-    from app.auth.jwt import decode_token
     # Build a mock TokenPayload instead of decoding (avoids DPoP verification)
     tp = TokenPayload(
         sub="spiffe://atn.local/tt-single/agent",

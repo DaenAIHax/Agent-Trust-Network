@@ -85,8 +85,6 @@ async def test_rfq_broadcast_and_respond(client: AsyncClient, dpop):
     token_sup = await _setup(client, "rfq-sup2", "rfq-sup2::agent",
                              ["supply.negotiate"], dpop)
 
-    rfq_id_holder = {}
-
     # Start RFQ in a background task (it will wait for responses)
     async def do_rfq():
         return await client.post("/v1/broker/rfq",

@@ -105,8 +105,6 @@ async def validate_and_consume_transaction_token(
 
     Raises ValueError if validation fails.
     """
-    from app.auth.models import TokenPayload  # noqa: avoid circular
-
     if token_payload.token_type != "transaction":
         raise ValueError("Not a transaction token")
 

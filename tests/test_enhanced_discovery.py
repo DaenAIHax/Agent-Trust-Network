@@ -172,7 +172,7 @@ async def test_search_include_own_org(client: AsyncClient, dpop):
 async def test_session_creation_validates_target_capabilities(client: AsyncClient, dpop, db_session):
     """Session denied when target's agent record doesn't advertise the requested capability."""
     import json as _json
-    from app.registry.store import AgentRecord, get_agent_by_id
+    from app.registry.store import get_agent_by_id
     # Setup both with supply.negotiate initially
     token_buyer = await _setup(client, "ed-cap-buyer", "ed-cap-buyer::agent",
                                ["order.read", "supply.negotiate"], dpop)
