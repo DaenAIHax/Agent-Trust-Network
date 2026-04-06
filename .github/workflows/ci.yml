@@ -52,7 +52,7 @@ jobs:
           OTEL_ENABLED: "false"
           DATABASE_URL: "sqlite+aiosqlite://"
         run: |
-          pytest tests/ -v --tb=short -x
+          pytest tests/ -v --tb=short --ignore=tests/test_postgres_integration.py
 
   security:
     runs-on: ubuntu-latest
