@@ -7,6 +7,7 @@ Two roles:
 
 Authentication via signed cookie set at /dashboard/login.
 """
+import asyncio
 import io
 import re
 import json as _json
@@ -1145,6 +1146,41 @@ async def badge_pending_sessions(request: Request, db: AsyncSession = Depends(ge
     if count > 0:
         return f'<span class="px-1.5 py-0.5 rounded-full text-xs bg-yellow-500/20 text-yellow-400">{count}</span>'
     return ""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SSE — real-time dashboard updates
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/sse")
+async def dashboard_sse(request: Request):
+    session = get_session(request)
+    if not session.logged_in:
+        raise HTTPException(status_code=401)
+
+    from app.dashboard.sse import sse_manager
+
+    client_id, queue = sse_manager.connect()
+
+    async def event_stream():
+        try:
+            yield "event: connected\ndata: ok\n\n"
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    data = await asyncio.wait_for(queue.get(), timeout=30.0)
+                    yield f"event: update\ndata: {data}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+        finally:
+            sse_manager.disconnect(client_id)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 # ═════════════════════════════════════════════════════════════════════════════

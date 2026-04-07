@@ -23,6 +23,8 @@
         .htmx-request .htmx-indicator  { display: inline-block; }
         @keyframes pulse-dot { 0%,100% { opacity: 1; } 50% { opacity: .4; } }
         .pulse-dot { animation: pulse-dot 2s infinite; }
+        @keyframes sse-flash { 0% { opacity: 0.4; } 100% { opacity: 0; } }
+        .sse-flash { animation: sse-flash 0.6s ease-out; }
     </style>
 </head>
 <body class="h-full">
@@ -112,6 +114,10 @@
                 <span class="w-2 h-2 rounded-full bg-emerald-500 pulse-dot"></span>
                 <span class="text-xs text-gray-500">Broker online</span>
             </div>
+            <div class="flex items-center gap-2">
+                <span id="sse-dot" class="w-2 h-2 rounded-full bg-gray-600"></span>
+                <span id="sse-label" class="text-xs text-gray-600">Connecting...</span>
+            </div>
         </div>
     </nav>
 
@@ -144,5 +150,61 @@
     </div>
 
 </div>
+<script>
+(function() {
+    var dot = document.getElementById('sse-dot');
+    var label = document.getElementById('sse-label');
+    if (!dot) return; // not logged in
+
+    var es = null;
+    var debounce = null;
+
+    function setStatus(connected) {
+        dot.className = 'w-2 h-2 rounded-full ' + (connected
+            ? 'bg-emerald-500 pulse-dot'
+            : 'bg-gray-600');
+        label.textContent = connected ? 'Live' : 'Reconnecting...';
+        label.className = 'text-xs ' + (connected ? 'text-gray-500' : 'text-gray-600');
+    }
+
+    function connect() {
+        if (es) { es.close(); }
+        es = new EventSource('/dashboard/sse');
+
+        es.addEventListener('connected', function() {
+            setStatus(true);
+        });
+
+        es.addEventListener('update', function(e) {
+            var data = JSON.parse(e.data);
+            var el = document.getElementById('page-content');
+            if (!el) return;
+            var page = el.getAttribute('data-sse-page');
+            if (!page) return;
+            // Only refresh if this event is relevant to the current page
+            if (data.categories && data.categories.indexOf(page) === -1) return;
+
+            // Debounce: batch rapid events into a single refresh
+            if (debounce) clearTimeout(debounce);
+            debounce = setTimeout(function() {
+                htmx.ajax('GET', window.location.href, {
+                    target: '#page-content',
+                    select: '#page-content',
+                    swap: 'outerHTML'
+                });
+            }, 300);
+        });
+
+        es.onerror = function() {
+            setStatus(false);
+            es.close();
+            // Reconnect after 3s
+            setTimeout(connect, 3000);
+        };
+    }
+
+    connect();
+})();
+</script>
 </body>
 </html>

@@ -103,6 +103,14 @@ async def log_event(
         await db.commit()
 
     await db.refresh(entry)
+
+    # Notify connected dashboard clients via SSE
+    try:
+        from app.dashboard.sse import sse_manager
+        await sse_manager.broadcast(event_type)
+    except Exception:
+        pass  # SSE failure must never break audit logging
+
     return entry
 
 

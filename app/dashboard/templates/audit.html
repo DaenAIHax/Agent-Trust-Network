@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Audit Log{% endblock %}
 {% block content %}
-<div class="max-w-6xl">
+<div id="page-content" data-sse-page="audit" class="max-w-6xl">
     <div class="flex items-center justify-between mb-6">
         <h2 class="text-2xl font-bold text-white">Audit Log</h2>
         <span class="text-sm text-gray-500">{{ events | length }} events{% if events | length >= limit %} (showing last {{ limit }}){% endif %}</span>

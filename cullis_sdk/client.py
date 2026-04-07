@@ -1,0 +1,561 @@
+"""
+CullisClient — main class for connecting agents to the Cullis trust network.
+
+Handles authentication (x509 + DPoP), session lifecycle, E2E encrypted
+messaging, agent discovery, RFQ, and WebSocket real-time events.
+
+Usage::
+
+    from cullis_sdk import CullisClient
+
+    client = CullisClient("https://broker.example.com")
+    client.login("myorg::agent", "myorg", "cert.pem", "key.pem")
+
+    agents = client.discover(capabilities=["order.write"])
+    session_id = client.open_session(agents[0].agent_id, agents[0].org_id, ["order.write"])
+    client.send(session_id, "myorg::agent", {"text": "Hello"}, recipient_agent_id=agents[0].agent_id)
+"""
+from __future__ import annotations
+
+import json
+import sys
+import time
+import uuid
+from pathlib import Path
+from typing import Any
+
+import httpx
+
+from cullis_sdk.auth import generate_dpop_keypair, build_dpop_proof, build_client_assertion
+from cullis_sdk.crypto.message_signer import sign_message
+from cullis_sdk.crypto.e2e import encrypt_for_agent, decrypt_from_agent
+from cullis_sdk.types import AgentInfo, SessionInfo, InboxMessage, RfqResult
+from cullis_sdk._logging import log, RED
+
+_PUBKEY_CACHE_TTL = 300  # seconds
+
+
+class CullisClient:
+    """Client for the Cullis federated agent trust broker."""
+
+    def __init__(
+        self,
+        broker_url: str,
+        *,
+        verify_tls: bool = True,
+        timeout: float = 10.0,
+    ) -> None:
+        self.base = broker_url.rstrip("/")
+        self._verify_tls = verify_tls
+        self._http = httpx.Client(timeout=timeout, verify=verify_tls)
+        self.token: str | None = None
+        self._label: str = "agent"
+        self._signing_key_pem: str | None = None
+        self._pubkey_cache: dict[str, tuple[str, float]] = {}
+        self._client_seq: dict[str, int] = {}
+
+        # DPoP ephemeral key pair
+        self._dpop_privkey = None
+        self._dpop_pubkey_jwk: dict | None = None
+        self._dpop_nonce: str | None = None
+
+    def __enter__(self) -> CullisClient:
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.close()
+
+    def close(self) -> None:
+        """Close the underlying HTTP client."""
+        self._http.close()
+
+    # ── Internal helpers ────────────────────────────────────────────
+
+    def _dpop_proof(self, method: str, url: str, access_token: str | None = None) -> str:
+        if self._dpop_privkey is None or self._dpop_pubkey_jwk is None:
+            raise RuntimeError("DPoP key not initialized — call login() first")
+        return build_dpop_proof(
+            self._dpop_privkey, self._dpop_pubkey_jwk,
+            method, url, access_token, self._dpop_nonce,
+        )
+
+    def _update_nonce(self, response: httpx.Response) -> None:
+        nonce = response.headers.get("dpop-nonce")
+        if nonce:
+            self._dpop_nonce = nonce
+
+    def _headers(self, method: str, path: str) -> dict:
+        if not self.token:
+            raise RuntimeError("Not authenticated — call login() first")
+        url = f"{self.base}{path}"
+        return {
+            "Authorization": f"DPoP {self.token}",
+            "DPoP": self._dpop_proof(method, url, self.token),
+        }
+
+    def _authed_request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
+        """Make an authenticated request with automatic DPoP nonce retry."""
+        resp = self._http.request(
+            method, f"{self.base}{path}",
+            headers=self._headers(method, path), **kwargs,
+        )
+        self._update_nonce(resp)
+        if resp.status_code == 401 and "use_dpop_nonce" in resp.text:
+            resp = self._http.request(
+                method, f"{self.base}{path}",
+                headers=self._headers(method, path), **kwargs,
+            )
+            self._update_nonce(resp)
+        return resp
+
+    def _ws_url(self) -> str:
+        return self.base.replace("https://", "wss://").replace("http://", "ws://")
+
+    # ── Authentication ──────────────────────────────────────────────
+
+    def login(self, agent_id: str, org_id: str, cert_path: str, key_path: str) -> None:
+        """Authenticate via x509 + DPoP, reading cert and key from file paths."""
+        cert_pem = Path(cert_path).read_text()
+        key_pem = Path(key_path).read_text()
+        self.login_from_pem(agent_id, org_id, cert_pem, key_pem)
+
+    def login_from_pem(self, agent_id: str, org_id: str,
+                       cert_pem: str, key_pem: str) -> None:
+        """
+        Authenticate via x509 + DPoP using PEM strings directly.
+
+        Use this when loading credentials from a secret manager (Vault,
+        AWS KMS, Azure Key Vault, etc.) instead of files on disk.
+        """
+        self._label = agent_id
+        try:
+            self._signing_key_pem = key_pem
+            assertion, _ = build_client_assertion(agent_id, cert_pem, key_pem)
+
+            # Generate ephemeral DPoP key for this session
+            self._dpop_privkey, self._dpop_pubkey_jwk = generate_dpop_keypair()
+            token_url = f"{self.base}/v1/auth/token"
+
+            dpop_proof = self._dpop_proof("POST", token_url, access_token=None)
+            resp = self._http.post(
+                token_url,
+                json={"client_assertion": assertion},
+                headers={"DPoP": dpop_proof},
+            )
+
+            if resp.status_code == 401 and "use_dpop_nonce" in resp.text:
+                self._update_nonce(resp)
+                dpop_proof = self._dpop_proof("POST", token_url, access_token=None)
+                resp = self._http.post(
+                    token_url,
+                    json={"client_assertion": assertion},
+                    headers={"DPoP": dpop_proof},
+                )
+
+            resp.raise_for_status()
+            self._update_nonce(resp)
+            self.token = resp.json()["access_token"]
+        except (httpx.ConnectError, httpx.TimeoutException) as e:
+            print(f"[{agent_id}] Broker unreachable: {e}", flush=True)
+            sys.exit(1)
+        except httpx.HTTPStatusError as e:
+            print(f"[{agent_id}] Login failed (HTTP {e.response.status_code}): {e.response.text}", flush=True)
+            sys.exit(1)
+
+    # ── Registry ────────────────────────────────────────────────────
+
+    def register(self, agent_id: str, org_id: str, display_name: str,
+                 capabilities: list[str]) -> bool:
+        """Register an agent in the network. Returns False if already exists."""
+        body: dict = {
+            "agent_id": agent_id,
+            "org_id": org_id,
+            "display_name": display_name,
+            "capabilities": capabilities,
+        }
+        resp = self._http.post(f"{self.base}/v1/registry/agents", json=body)
+        if resp.status_code == 409:
+            return False
+        resp.raise_for_status()
+        return True
+
+    def discover(
+        self,
+        capabilities: list[str] | None = None,
+        org_id: str | None = None,
+        pattern: str | None = None,
+        q: str | None = None,
+    ) -> list[AgentInfo]:
+        """Search for agents in the network."""
+        path = "/v1/registry/agents/search"
+        params: list[tuple[str, str]] = []
+        if capabilities:
+            params.extend([("capability", c) for c in capabilities])
+        if org_id:
+            params.append(("org_id", org_id))
+        if pattern:
+            params.append(("pattern", pattern))
+        if q:
+            params.append(("q", q))
+        if not params:
+            params.append(("pattern", "*"))
+        resp = self._authed_request("GET", path, params=params)
+        resp.raise_for_status()
+        return [AgentInfo.from_dict(a) for a in resp.json().get("agents", [])]
+
+    def get_agent_public_key(self, agent_id: str, force_refresh: bool = False) -> str:
+        """Retrieve agent PEM public key from the broker (TTL-cached)."""
+        if not force_refresh and agent_id in self._pubkey_cache:
+            pubkey_pem, fetched_at = self._pubkey_cache[agent_id]
+            if time.time() - fetched_at < _PUBKEY_CACHE_TTL:
+                return pubkey_pem
+        path = f"/v1/registry/agents/{agent_id}/public-key"
+        resp = self._authed_request("GET", path)
+        resp.raise_for_status()
+        pubkey_pem = resp.json()["public_key_pem"]
+        self._pubkey_cache[agent_id] = (pubkey_pem, time.time())
+        return pubkey_pem
+
+    # ── Sessions ────────────────────────────────────────────────────
+
+    def open_session(self, target_agent_id: str, target_org_id: str,
+                     capabilities: list[str]) -> str:
+        """Open a new session with a target agent. Returns session_id."""
+        path = "/v1/broker/sessions"
+        resp = self._authed_request("POST", path, json={
+            "target_agent_id": target_agent_id,
+            "target_org_id": target_org_id,
+            "requested_capabilities": capabilities,
+        })
+        resp.raise_for_status()
+        return resp.json()["session_id"]
+
+    def accept_session(self, session_id: str) -> None:
+        """Accept a pending session."""
+        path = f"/v1/broker/sessions/{session_id}/accept"
+        resp = self._authed_request("POST", path)
+        resp.raise_for_status()
+
+    def reject_session(self, session_id: str) -> None:
+        """Reject a pending session."""
+        path = f"/v1/broker/sessions/{session_id}/reject"
+        resp = self._authed_request("POST", path)
+        resp.raise_for_status()
+
+    def close_session(self, session_id: str) -> None:
+        """Close an active session."""
+        path = f"/v1/broker/sessions/{session_id}/close"
+        resp = self._authed_request("POST", path)
+        resp.raise_for_status()
+
+    def list_sessions(self, status: str | None = None) -> list[SessionInfo]:
+        """List sessions, optionally filtered by status."""
+        path = "/v1/broker/sessions"
+        params = {}
+        if status:
+            params["status"] = status
+        resp = self._authed_request("GET", path, params=params)
+        resp.raise_for_status()
+        return [SessionInfo.from_dict(s) for s in resp.json()]
+
+    # ── Messaging ───────────────────────────────────────────────────
+
+    def send(self, session_id: str, sender_agent_id: str, payload: dict,
+             recipient_agent_id: str) -> None:
+        """
+        Send an E2E encrypted, signed message through a session.
+
+        The message is encrypted with the recipient's public key and signed
+        with the sender's private key. The broker cannot read the content.
+        """
+        if not self._signing_key_pem:
+            raise RuntimeError("Signing key not available — call login() first")
+
+        nonce = str(uuid.uuid4())
+        timestamp = int(time.time())
+
+        # Client-side sequence number for E2E ordering integrity
+        client_seq = self._client_seq.get(session_id, 0)
+        self._client_seq[session_id] = client_seq + 1
+
+        # Inner signature on plaintext (non-repudiation for the recipient)
+        inner_sig = sign_message(
+            self._signing_key_pem, session_id, sender_agent_id,
+            nonce, timestamp, payload, client_seq=client_seq,
+        )
+        # Encrypt payload + inner signature with recipient's public key
+        recipient_pubkey = self.get_agent_public_key(recipient_agent_id)
+        cipher_blob = encrypt_for_agent(
+            recipient_pubkey, payload, inner_sig,
+            session_id, sender_agent_id, client_seq=client_seq,
+        )
+        # Outer signature on ciphertext (transport integrity for the broker)
+        outer_sig = sign_message(
+            self._signing_key_pem, session_id, sender_agent_id,
+            nonce, timestamp, cipher_blob, client_seq=client_seq,
+        )
+
+        envelope = {
+            "session_id": session_id,
+            "sender_agent_id": sender_agent_id,
+            "payload": cipher_blob,
+            "nonce": nonce,
+            "timestamp": timestamp,
+            "signature": outer_sig,
+            "client_seq": client_seq,
+        }
+        path = f"/v1/broker/sessions/{session_id}/messages"
+        for attempt in range(3):
+            try:
+                resp = self._authed_request("POST", path, json=envelope)
+                resp.raise_for_status()
+                return
+            except (httpx.ConnectError, httpx.TimeoutException):
+                if attempt < 2:
+                    print(f"[{self._label}] Broker unreachable — retry in 2s...", flush=True)
+                    time.sleep(2)
+                else:
+                    print(f"[{self._label}] Broker unreachable after 3 attempts.", flush=True)
+                    sys.exit(1)
+
+    def decrypt_payload(self, msg: dict, session_id: str | None = None) -> dict:
+        """
+        Decrypt the payload of a received message.
+
+        Returns the message dict with the payload replaced by the decrypted plaintext.
+        Raises ValueError if decryption fails (integrity violation).
+        """
+        if not self._signing_key_pem:
+            return msg
+        p = msg.get("payload", {})
+        if not isinstance(p, dict) or "ciphertext" not in p:
+            return msg
+        sid = session_id or msg.get("session_id", "")
+        if not sid:
+            return msg
+        try:
+            sender_agent_id = msg.get("sender_agent_id", "")
+            client_seq = msg.get("client_seq")
+            plaintext_dict, _inner_sig = decrypt_from_agent(
+                self._signing_key_pem, p, sid, sender_agent_id, client_seq=client_seq,
+            )
+            msg = dict(msg)
+            msg["payload"] = plaintext_dict
+        except Exception as exc:
+            log("sdk", f"E2E decryption failed for session {sid} — message rejected", RED)
+            raise ValueError("E2E decryption failed: message integrity cannot be verified") from exc
+        return msg
+
+    def poll(self, session_id: str, after: int = -1, poll_interval: int = 2) -> list[InboxMessage]:
+        """Poll for new messages in a session. Returns decrypted messages."""
+        path = f"/v1/broker/sessions/{session_id}/messages"
+        for attempt in range(5):
+            try:
+                resp = self._authed_request("GET", path, params={"after": after})
+                resp.raise_for_status()
+                messages = resp.json()
+                result = []
+                for m in messages:
+                    decrypted = self.decrypt_payload(m, session_id=session_id)
+                    result.append(InboxMessage.from_dict(decrypted))
+                return result
+            except (httpx.ConnectError, httpx.TimeoutException):
+                if attempt < 4:
+                    time.sleep(poll_interval)
+                else:
+                    print(f"[{self._label}] Broker unreachable.", flush=True)
+                    sys.exit(1)
+        return []
+
+    # ── WebSocket ───────────────────────────────────────────────────
+
+    def connect_websocket(self) -> "WebSocketConnection":
+        """
+        Open an authenticated WebSocket connection for real-time events.
+
+        Returns a WebSocketConnection that yields parsed event dicts.
+        The connection handles auth handshake and DPoP automatically.
+        """
+        return WebSocketConnection(self)
+
+    # ── RFQ ─────────────────────────────────────────────────────────
+
+    def create_rfq(
+        self,
+        capability_filter: list[str],
+        payload: dict,
+        timeout_seconds: int = 30,
+    ) -> RfqResult:
+        """Broadcast an RFQ to agents matching capability filter."""
+        path = "/v1/broker/rfq"
+        resp = self._authed_request("POST", path, json={
+            "capability_filter": capability_filter,
+            "payload": payload,
+            "timeout_seconds": timeout_seconds,
+        })
+        resp.raise_for_status()
+        return RfqResult.from_dict(resp.json())
+
+    def respond_to_rfq(self, rfq_id: str, payload: dict) -> None:
+        """Submit a quote response to an open RFQ."""
+        path = f"/v1/broker/rfq/{rfq_id}/respond"
+        resp = self._authed_request("POST", path, json={"payload": payload})
+        resp.raise_for_status()
+
+    def get_rfq(self, rfq_id: str) -> RfqResult:
+        """Get RFQ status and collected quotes."""
+        path = f"/v1/broker/rfq/{rfq_id}"
+        resp = self._authed_request("GET", path)
+        resp.raise_for_status()
+        return RfqResult.from_dict(resp.json())
+
+    # ── Transaction Tokens ──────────────────────────────────────────
+
+    def request_transaction_token(
+        self,
+        txn_type: str,
+        payload_hash: str,
+        *,
+        session_id: str | None = None,
+        counterparty_agent_id: str | None = None,
+        resource_id: str | None = None,
+        rfq_id: str | None = None,
+        ttl_seconds: int = 60,
+    ) -> dict:
+        """Request a single-use transaction token for a specific operation."""
+        path = "/v1/auth/token/transaction"
+        body: dict[str, Any] = {
+            "agent_id": self._label,
+            "txn_type": txn_type,
+            "payload_hash": payload_hash,
+            "ttl_seconds": ttl_seconds,
+        }
+        if session_id:
+            body["session_id"] = session_id
+        if counterparty_agent_id:
+            body["target_agent_id"] = counterparty_agent_id
+        if resource_id:
+            body["resource_id"] = resource_id
+        if rfq_id:
+            body["rfq_id"] = rfq_id
+        resp = self._authed_request("POST", path, json=body)
+        resp.raise_for_status()
+        return resp.json()
+
+    # ── Notifications ───────────────────────────────────────────────
+
+    def get_notifications(self) -> list[dict]:
+        """Get pending notifications for this agent."""
+        path = "/v1/broker/notifications"
+        resp = self._authed_request("GET", path)
+        resp.raise_for_status()
+        return resp.json()
+
+    # ── Onboarding ──────────────────────────────────────────────────
+
+    @classmethod
+    def join_network(
+        cls,
+        broker_url: str,
+        org_id: str,
+        display_name: str,
+        secret: str,
+        ca_certificate: str,
+        *,
+        contact_email: str = "",
+        webhook_url: str | None = None,
+        verify_tls: bool = True,
+    ) -> dict:
+        """
+        Request to join the Cullis network as a new organization.
+
+        This is a public endpoint — no authentication required.
+        The request will be reviewed by the network admin.
+        """
+        url = broker_url.rstrip("/") + "/v1/onboarding/join"
+        body: dict[str, Any] = {
+            "org_id": org_id,
+            "display_name": display_name,
+            "secret": secret,
+            "ca_certificate": ca_certificate,
+        }
+        if contact_email:
+            body["contact_email"] = contact_email
+        if webhook_url:
+            body["webhook_url"] = webhook_url
+
+        with httpx.Client(verify=verify_tls) as client:
+            resp = client.post(url, json=body)
+            resp.raise_for_status()
+            return resp.json()
+
+
+class WebSocketConnection:
+    """
+    Authenticated WebSocket connection that yields parsed event dicts.
+
+    Usage::
+
+        ws = client.connect_websocket()
+        for event in ws:
+            if event["type"] == "new_message":
+                msg = client.decrypt_payload(event["message"], session_id=event["session_id"])
+                print(msg["payload"])
+            elif event["type"] == "session_pending":
+                client.accept_session(event["session_id"])
+        ws.close()
+    """
+
+    def __init__(self, client: CullisClient) -> None:
+        self._client = client
+        self._ws = None
+        self._connect()
+
+    def _connect(self) -> None:
+        import ssl as _ssl
+        from websockets.sync.client import connect as ws_connect
+
+        ws_url = self._client._ws_url() + "/v1/broker/ws"
+        ws_kwargs: dict = {"open_timeout": 5}
+        if ws_url.startswith("wss://") and not self._client._verify_tls:
+            ssl_ctx = _ssl.create_default_context()
+            ssl_ctx.check_hostname = False
+            ssl_ctx.verify_mode = _ssl.CERT_NONE
+            ws_kwargs["ssl"] = ssl_ctx
+        self._ws = ws_connect(ws_url, **ws_kwargs)
+
+        # Auth handshake with DPoP proof
+        http_htu = ws_url.replace("wss://", "https://").replace("ws://", "http://")
+        dpop_proof = self._client._dpop_proof("GET", http_htu, self._client.token)
+
+        self._ws.send(json.dumps({
+            "type": "auth",
+            "token": self._client.token,
+            "dpop_proof": dpop_proof,
+        }))
+        resp = json.loads(self._ws.recv())
+        if resp.get("type") != "auth_ok":
+            self._ws.close()
+            raise ConnectionError(f"WebSocket auth failed: {resp}")
+
+    def __iter__(self) -> WebSocketConnection:
+        return self
+
+    def __next__(self) -> dict:
+        if self._ws is None:
+            raise StopIteration
+        try:
+            raw = self._ws.recv()
+            return json.loads(raw)
+        except Exception:
+            self.close()
+            raise StopIteration
+
+    def close(self) -> None:
+        """Close the WebSocket connection."""
+        if self._ws:
+            try:
+                self._ws.close()
+            except Exception:
+                pass
+            self._ws = None
