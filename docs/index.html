@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Cullis — The Trust Layer for AI Agents</title>
-<meta name="description" content="Open-source federated trust broker for inter-organizational AI agents. Cryptographic identity, zero-knowledge messaging, compliance-grade audit.">
+<meta name="description" content="Open-source federated trust broker and MCP proxy for inter-organizational AI agents. Fully self-hosted. Cryptographic identity, zero-knowledge messaging, compliance-grade audit.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Instrument+Serif:ital@0;1&family=Satoshi:wght@300;400;500;700;900&family=Chakra+Petch:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -27,6 +27,7 @@
   --accent-amber: #f0a500;
   --accent-red: #ff4d6a;
   --accent-blue: #3d7aed;
+  --accent-teal: #00b8a9;
   --font-display: 'Instrument Serif', Georgia, serif;
   --font-body: 'Satoshi', -apple-system, sans-serif;
   --font-mono: 'DM Mono', 'SF Mono', monospace;
@@ -673,7 +674,7 @@ footer {
 /* ── STATS BAR ───────────────────────────────────── */
 .stats-bar {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 1px;
   background: var(--border-subtle);
   border: 1px solid var(--border-subtle);
@@ -771,7 +772,7 @@ footer {
       <div class="hero-eyebrow reveal">Open Source &middot; Apache 2.0</div>
       <h1 class="reveal">The trust layer<br>for AI agents</h1>
       <p class="hero-sub reveal">
-        The federated trust broker that gives your AI agents cryptographic identity,
+        A self-hosted trust broker and MCP proxy that gives your AI agents cryptographic identity,
         zero-knowledge messaging, and compliance-grade audit &mdash; across organizational boundaries.
       </p>
       <div class="hero-actions reveal">
@@ -789,8 +790,12 @@ footer {
 <div class="container">
   <div class="stats-bar reveal">
     <div class="stat">
-      <div class="stat-value">381<span class="accent">+</span></div>
+      <div class="stat-value">450<span class="accent">+</span></div>
       <div class="stat-label">Tests passing</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value"><span class="accent">2</span></div>
+      <div class="stat-label">Components</div>
     </div>
     <div class="stat">
       <div class="stat-value">RFC <span class="accent">9449</span></div>
@@ -847,9 +852,24 @@ footer {
     </p>
     <div class="features-grid">
       <div class="feature-card reveal">
+        <div class="feature-tag">Gateway</div>
+        <h3>MCP Proxy</h3>
+        <p>Org-level gateway that handles all crypto complexity. Agents authenticate with simple API keys. The proxy manages certificates, Vault secrets, and broker communication automatically.</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-tag">Automation</div>
+        <h3>Auto PKI</h3>
+        <p>Certificates generated automatically when orgs join and agents register. No openssl commands, no manual CSR flows. RSA-4096 Org CA created on first join, agent certs on demand.</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-tag">Onboarding</div>
+        <h3>Invite Onboarding</h3>
+        <p>Broker admin generates invite tokens. Org admins open the proxy dashboard, enter broker URL and token, and self-register. Approval-based flow with zero manual certificate exchange.</p>
+      </div>
+      <div class="feature-card reveal">
         <div class="feature-tag">Identity</div>
         <h3>Workload x509 PKI</h3>
-        <p>Three-tier certificate hierarchy with SPIFFE IDs. Each organization brings its own CA. No passwords, no API keys &mdash; cryptographic identity from day one.</p>
+        <p>Three-tier certificate hierarchy with SPIFFE IDs. Each organization brings its own CA. No passwords, no shared secrets &mdash; cryptographic identity from day one.</p>
       </div>
       <div class="feature-card reveal">
         <div class="feature-tag">Credentials</div>
@@ -894,7 +914,7 @@ footer {
       <div class="feature-card reveal">
         <div class="feature-tag">Developer Portal</div>
         <h3>Agent Onboarding</h3>
-        <p>Stripe-style developer portal per agent. BYOCA certificate upload, integration guides with Python/TypeScript/cURL snippets, recent activity feed, credential management.</p>
+        <p>Proxy dashboard for org admins. Create agents, view credentials, manage capabilities, and monitor activity. Certificates auto-generated, bindings auto-created on the broker.</p>
       </div>
       <div class="feature-card reveal">
         <div class="feature-tag">Observability</div>
@@ -916,96 +936,92 @@ footer {
     <div class="section-label reveal">Architecture</div>
     <h2 class="section-title reveal">Federated by design</h2>
     <p class="section-desc reveal">
-      The broker is a neutral intermediary. Each organization retains full control
-      over its agents, policies, and encryption keys.
+      Agents talk to their local MCP Proxy with simple API keys. Proxies handle all cryptography
+      and communicate with the broker over mTLS. Each organization retains full control.
     </p>
     <div class="arch-container reveal">
       <div class="arch-svg-wrap">
-        <svg viewBox="0 0 860 580" fill="none" xmlns="http://www.w3.org/2000/svg">
-
-          <!-- ── AGENT A BOX (initiator) ── -->
-          <rect x="60" y="30" width="200" height="76" rx="4" stroke="#00e5c7" stroke-width="1.5" fill="rgba(0,229,199,0.04)" class="node-glow"/>
-          <text x="160" y="58" text-anchor="middle" font-family="'DM Mono', monospace" font-size="13" font-weight="500" fill="#00e5c7">Org A Agent</text>
-          <text x="160" y="78" text-anchor="middle" font-family="'DM Mono', monospace" font-size="10" fill="#555868">x509 + SPIFFE &middot; initiator</text>
-
-          <!-- ── AGENT B BOX (responder) ── -->
-          <rect x="600" y="30" width="200" height="76" rx="4" stroke="#3d7aed" stroke-width="1.5" fill="rgba(61,122,237,0.04)" class="node-glow"/>
-          <text x="700" y="58" text-anchor="middle" font-family="'DM Mono', monospace" font-size="13" font-weight="500" fill="#3d7aed">Org B Agent</text>
-          <text x="700" y="78" text-anchor="middle" font-family="'DM Mono', monospace" font-size="10" fill="#555868">x509 + SPIFFE &middot; responder</text>
-
-          <!-- ── ARROW: A → Broker (request) ── -->
-          <line x1="160" y1="106" x2="160" y2="196" stroke="#f0a500" stroke-width="1.5" stroke-dasharray="6 4" class="flow-line"/>
-          <polygon points="153,192 160,206 167,192" fill="#f0a500"/>
-          <text x="178" y="155" font-family="'DM Mono', monospace" font-size="10" fill="#f0a500">mTLS + DPoP</text>
-          <text x="178" y="170" font-family="'DM Mono', monospace" font-size="9" fill="#555868">session request</text>
-
-          <!-- ── ARROW: Broker → B (E2E forward) ── -->
-          <line x1="700" y1="196" x2="700" y2="106" stroke="#3d7aed" stroke-width="1.5" stroke-dasharray="6 4" class="flow-line"/>
-          <polygon points="693,110 700,96 707,110" fill="#3d7aed"/>
-          <text x="718" y="145" font-family="'DM Mono', monospace" font-size="10" fill="#3d7aed">E2E encrypted</text>
-          <text x="718" y="160" font-family="'DM Mono', monospace" font-size="9" fill="#555868">session forwarded</text>
-
-          <!-- ── BROKER BOX ── -->
-          <rect x="40" y="206" width="780" height="120" rx="4" stroke="rgba(255,255,255,0.15)" stroke-width="1.5" fill="rgba(16,18,26,0.9)"/>
-          <text x="430" y="238" text-anchor="middle" font-family="'DM Mono', monospace" font-size="14" font-weight="500" fill="#e8e9ed">CREDENTIAL BROKER</text>
-
-          <!-- Pipeline steps -->
-          <rect x="80" y="258" width="130" height="30" rx="3" fill="rgba(0,229,199,0.08)" stroke="rgba(0,229,199,0.2)" stroke-width="1"/>
-          <text x="145" y="278" text-anchor="middle" font-family="'DM Mono', monospace" font-size="9.5" fill="#8a8d9b">Verify cert chain</text>
-
-          <text x="225" y="278" text-anchor="middle" font-family="'DM Mono', monospace" font-size="12" fill="#555868">&rarr;</text>
-
-          <rect x="242" y="258" width="115" height="30" rx="3" fill="rgba(0,229,199,0.08)" stroke="rgba(0,229,199,0.2)" stroke-width="1"/>
-          <text x="300" y="278" text-anchor="middle" font-family="'DM Mono', monospace" font-size="9.5" fill="#8a8d9b">Validate DPoP</text>
-
-          <text x="372" y="278" text-anchor="middle" font-family="'DM Mono', monospace" font-size="12" fill="#555868">&rarr;</text>
-
-          <rect x="390" y="258" width="125" height="30" rx="3" fill="rgba(0,229,199,0.08)" stroke="rgba(0,229,199,0.2)" stroke-width="1"/>
-          <text x="453" y="278" text-anchor="middle" font-family="'DM Mono', monospace" font-size="9.5" fill="#8a8d9b">Query policies</text>
-
-          <text x="530" y="278" text-anchor="middle" font-family="'DM Mono', monospace" font-size="12" fill="#555868">&rarr;</text>
-
-          <rect x="548" y="258" width="125" height="30" rx="3" fill="rgba(0,229,199,0.08)" stroke="rgba(0,229,199,0.2)" stroke-width="1"/>
-          <text x="611" y="278" text-anchor="middle" font-family="'DM Mono', monospace" font-size="9.5" fill="#8a8d9b">Forward E2E</text>
-
-          <!-- Cannot read plaintext -->
-          <text x="430" y="312" text-anchor="middle" font-family="'DM Mono', monospace" font-size="10" font-weight="500" fill="#ff4d6a">&#x26D4; Cannot read plaintext &mdash; zero-knowledge forwarding</text>
-
-          <!-- ── BROKER → PDP A (query, arrow down) ── -->
-          <line x1="195" y1="326" x2="195" y2="410" stroke="#00e5c7" stroke-width="1.2" stroke-dasharray="4 3" class="flow-line"/>
-          <polygon points="189,406 195,418 201,406" fill="#00e5c7" opacity="0.6"/>
-
-          <!-- ── PDP A → BROKER (response, arrow up) ── -->
-          <line x1="225" y1="410" x2="225" y2="326" stroke="#f0a500" stroke-width="1.2" stroke-dasharray="4 3" class="flow-line"/>
-          <polygon points="219,332 225,320 231,332" fill="#f0a500" opacity="0.6"/>
-
-          <!-- ── BROKER → PDP B (query, arrow down) ── -->
-          <line x1="635" y1="326" x2="635" y2="410" stroke="#3d7aed" stroke-width="1.2" stroke-dasharray="4 3" class="flow-line"/>
-          <polygon points="629,406 635,418 641,406" fill="#3d7aed" opacity="0.6"/>
-
-          <!-- ── PDP B → BROKER (response, arrow up) ── -->
-          <line x1="665" y1="410" x2="665" y2="326" stroke="#f0a500" stroke-width="1.2" stroke-dasharray="4 3" class="flow-line"/>
-          <polygon points="659,332 665,320 671,332" fill="#f0a500" opacity="0.6"/>
-
-          <!-- Labels on PDP arrows -->
-          <text x="248" y="370" font-family="'DM Mono', monospace" font-size="9" fill="#555868">query / response</text>
-          <text x="688" y="370" font-family="'DM Mono', monospace" font-size="9" fill="#555868">query / response</text>
+        <svg viewBox="0 0 860 640" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <!-- Agent 1 -->
+          <rect x="30" y="20" width="170" height="66" rx="4" stroke="#8a8d9b" stroke-width="1" fill="rgba(138,141,155,0.04)"/>
+          <text x="115" y="46" text-anchor="middle" font-family="'DM Mono', monospace" font-size="12" font-weight="500" fill="#e8e9ed">Agent 1</text>
+          <text x="115" y="66" text-anchor="middle" font-family="'DM Mono', monospace" font-size="9" fill="#555868">API Key auth</text>
+          <!-- Agent 2 -->
+          <rect x="660" y="20" width="170" height="66" rx="4" stroke="#8a8d9b" stroke-width="1" fill="rgba(138,141,155,0.04)"/>
+          <text x="745" y="46" text-anchor="middle" font-family="'DM Mono', monospace" font-size="12" font-weight="500" fill="#e8e9ed">Agent 2</text>
+          <text x="745" y="66" text-anchor="middle" font-family="'DM Mono', monospace" font-size="9" fill="#555868">API Key auth</text>
+          <!-- Agent 1 → Proxy A -->
+          <line x1="115" y1="86" x2="115" y2="138" stroke="#8a8d9b" stroke-width="1.2" stroke-dasharray="4 3" class="flow-line"/>
+          <polygon points="109,134 115,146 121,134" fill="#8a8d9b"/>
+          <text x="135" y="118" font-family="'DM Mono', monospace" font-size="9" fill="#8a8d9b">API Key</text>
+          <!-- Agent 2 → Proxy B -->
+          <line x1="745" y1="86" x2="745" y2="138" stroke="#8a8d9b" stroke-width="1.2" stroke-dasharray="4 3" class="flow-line"/>
+          <polygon points="739,134 745,146 751,134" fill="#8a8d9b"/>
+          <text x="765" y="118" font-family="'DM Mono', monospace" font-size="9" fill="#8a8d9b">API Key</text>
+          <!-- MCP Proxy A -->
+          <rect x="20" y="148" width="190" height="80" rx="4" stroke="#00b8a9" stroke-width="1.5" fill="rgba(0,184,169,0.05)" class="node-glow"/>
+          <text x="115" y="175" text-anchor="middle" font-family="'DM Mono', monospace" font-size="12" font-weight="500" fill="#00b8a9">MCP Proxy A</text>
+          <text x="115" y="195" text-anchor="middle" font-family="'DM Mono', monospace" font-size="9" fill="#555868">Auto PKI &middot; Vault</text>
+          <text x="115" y="212" text-anchor="middle" font-family="'DM Mono', monospace" font-size="9" fill="#555868">API Key auth</text>
+          <!-- MCP Proxy B -->
+          <rect x="650" y="148" width="190" height="80" rx="4" stroke="#00b8a9" stroke-width="1.5" fill="rgba(0,184,169,0.05)" class="node-glow"/>
+          <text x="745" y="175" text-anchor="middle" font-family="'DM Mono', monospace" font-size="12" font-weight="500" fill="#00b8a9">MCP Proxy B</text>
+          <text x="745" y="195" text-anchor="middle" font-family="'DM Mono', monospace" font-size="9" fill="#555868">Auto PKI &middot; Vault</text>
+          <text x="745" y="212" text-anchor="middle" font-family="'DM Mono', monospace" font-size="9" fill="#555868">API Key auth</text>
+          <!-- Proxy A → Broker -->
+          <line x1="115" y1="228" x2="115" y2="286" stroke="#f0a500" stroke-width="1.5" stroke-dasharray="6 4" class="flow-line"/>
+          <polygon points="108,282 115,296 122,282" fill="#f0a500"/>
+          <text x="135" y="258" font-family="'DM Mono', monospace" font-size="9" fill="#f0a500">mTLS + DPoP</text>
+          <text x="135" y="272" font-family="'DM Mono', monospace" font-size="8" fill="#555868">x509 + E2E</text>
+          <!-- Broker → Proxy B -->
+          <line x1="745" y1="286" x2="745" y2="228" stroke="#3d7aed" stroke-width="1.5" stroke-dasharray="6 4" class="flow-line"/>
+          <polygon points="738,234 745,220 752,234" fill="#3d7aed"/>
+          <text x="765" y="258" font-family="'DM Mono', monospace" font-size="9" fill="#3d7aed">E2E encrypted</text>
+          <text x="765" y="272" font-family="'DM Mono', monospace" font-size="8" fill="#555868">x509 + E2E</text>
+          <!-- Broker box -->
+          <rect x="40" y="296" width="780" height="120" rx="4" stroke="rgba(255,255,255,0.15)" stroke-width="1.5" fill="rgba(16,18,26,0.9)"/>
+          <text x="430" y="328" text-anchor="middle" font-family="'DM Mono', monospace" font-size="14" font-weight="500" fill="#e8e9ed">CULLIS BROKER</text>
+          <!-- Pipeline -->
+          <rect x="80" y="348" width="130" height="30" rx="3" fill="rgba(0,229,199,0.08)" stroke="rgba(0,229,199,0.2)" stroke-width="1"/>
+          <text x="145" y="368" text-anchor="middle" font-family="'DM Mono', monospace" font-size="9.5" fill="#8a8d9b">Verify cert chain</text>
+          <text x="225" y="368" text-anchor="middle" font-family="'DM Mono', monospace" font-size="12" fill="#555868">&rarr;</text>
+          <rect x="242" y="348" width="115" height="30" rx="3" fill="rgba(0,229,199,0.08)" stroke="rgba(0,229,199,0.2)" stroke-width="1"/>
+          <text x="300" y="368" text-anchor="middle" font-family="'DM Mono', monospace" font-size="9.5" fill="#8a8d9b">Validate DPoP</text>
+          <text x="372" y="368" text-anchor="middle" font-family="'DM Mono', monospace" font-size="12" fill="#555868">&rarr;</text>
+          <rect x="390" y="348" width="125" height="30" rx="3" fill="rgba(0,229,199,0.08)" stroke="rgba(0,229,199,0.2)" stroke-width="1"/>
+          <text x="453" y="368" text-anchor="middle" font-family="'DM Mono', monospace" font-size="9.5" fill="#8a8d9b">Query policies</text>
+          <text x="530" y="368" text-anchor="middle" font-family="'DM Mono', monospace" font-size="12" fill="#555868">&rarr;</text>
+          <rect x="548" y="348" width="125" height="30" rx="3" fill="rgba(0,229,199,0.08)" stroke="rgba(0,229,199,0.2)" stroke-width="1"/>
+          <text x="611" y="368" text-anchor="middle" font-family="'DM Mono', monospace" font-size="9.5" fill="#8a8d9b">Forward E2E</text>
+          <text x="430" y="402" text-anchor="middle" font-family="'DM Mono', monospace" font-size="10" font-weight="500" fill="#ff4d6a">&#x26D4; Cannot read plaintext &mdash; zero-knowledge forwarding</text>
+          <!-- Broker ↔ PDP A -->
+          <line x1="195" y1="416" x2="195" y2="490" stroke="#00e5c7" stroke-width="1.2" stroke-dasharray="4 3" class="flow-line"/>
+          <polygon points="189,486 195,498 201,486" fill="#00e5c7" opacity="0.6"/>
+          <line x1="225" y1="490" x2="225" y2="416" stroke="#f0a500" stroke-width="1.2" stroke-dasharray="4 3" class="flow-line"/>
+          <polygon points="219,422 225,410 231,422" fill="#f0a500" opacity="0.6"/>
+          <!-- Broker ↔ PDP B -->
+          <line x1="635" y1="416" x2="635" y2="490" stroke="#3d7aed" stroke-width="1.2" stroke-dasharray="4 3" class="flow-line"/>
+          <polygon points="629,486 635,498 641,486" fill="#3d7aed" opacity="0.6"/>
+          <line x1="665" y1="490" x2="665" y2="416" stroke="#f0a500" stroke-width="1.2" stroke-dasharray="4 3" class="flow-line"/>
+          <polygon points="659,422 665,410 671,422" fill="#f0a500" opacity="0.6"/>
+          <text x="248" y="458" font-family="'DM Mono', monospace" font-size="9" fill="#555868">query / response</text>
+          <text x="688" y="458" font-family="'DM Mono', monospace" font-size="9" fill="#555868">query / response</text>
 
           <!-- ── PDP A BOX ── -->
-          <rect x="110" y="420" width="230" height="80" rx="4" stroke="#00e5c7" stroke-width="1" fill="rgba(0,229,199,0.03)"/>
-          <text x="225" y="448" text-anchor="middle" font-family="'DM Mono', monospace" font-size="12" font-weight="500" fill="#00e5c7">Org A PDP</text>
-          <text x="225" y="468" text-anchor="middle" font-family="'DM Mono', monospace" font-size="10" fill="#555868">webhook / OPA</text>
-          <text x="225" y="490" text-anchor="middle" font-family="'DM Mono', monospace" font-size="10" font-weight="500" fill="#f0a500">allow &#x2713; / deny &#x2717;</text>
+          <rect x="110" y="500" width="230" height="70" rx="4" stroke="#00e5c7" stroke-width="1" fill="rgba(0,229,199,0.03)"/>
+          <text x="225" y="524" text-anchor="middle" font-family="'DM Mono', monospace" font-size="12" font-weight="500" fill="#00e5c7">Org A PDP</text>
+          <text x="225" y="544" text-anchor="middle" font-family="'DM Mono', monospace" font-size="10" fill="#555868">webhook / OPA</text>
+          <text x="225" y="562" text-anchor="middle" font-family="'DM Mono', monospace" font-size="10" font-weight="500" fill="#f0a500">allow &#x2713; / deny &#x2717;</text>
 
           <!-- ── PDP B BOX ── -->
-          <rect x="520" y="420" width="230" height="80" rx="4" stroke="#3d7aed" stroke-width="1" fill="rgba(61,122,237,0.03)"/>
-          <text x="635" y="448" text-anchor="middle" font-family="'DM Mono', monospace" font-size="12" font-weight="500" fill="#3d7aed">Org B PDP</text>
-          <text x="635" y="468" text-anchor="middle" font-family="'DM Mono', monospace" font-size="10" fill="#555868">webhook / OPA</text>
-          <text x="635" y="490" text-anchor="middle" font-family="'DM Mono', monospace" font-size="10" font-weight="500" fill="#f0a500">allow &#x2713; / deny &#x2717;</text>
+          <rect x="520" y="500" width="230" height="70" rx="4" stroke="#3d7aed" stroke-width="1" fill="rgba(61,122,237,0.03)"/>
+          <text x="635" y="524" text-anchor="middle" font-family="'DM Mono', monospace" font-size="12" font-weight="500" fill="#3d7aed">Org B PDP</text>
+          <text x="635" y="544" text-anchor="middle" font-family="'DM Mono', monospace" font-size="10" fill="#555868">webhook / OPA</text>
+          <text x="635" y="562" text-anchor="middle" font-family="'DM Mono', monospace" font-size="10" font-weight="500" fill="#f0a500">allow &#x2713; / deny &#x2717;</text>
 
           <!-- BOTTOM LABEL -->
-          <text x="430" y="535" text-anchor="middle" font-family="'DM Mono', monospace" font-size="11" fill="#555868">Both orgs must allow &rarr; session proceeds</text>
-          <text x="430" y="555" text-anchor="middle" font-family="'DM Mono', monospace" font-size="9" fill="#555868">Timeout or deny from either PDP = session rejected (fail-safe)</text>
+          <text x="430" y="600" text-anchor="middle" font-family="'DM Mono', monospace" font-size="11" fill="#555868">Both orgs must allow &rarr; session proceeds</text>
+          <text x="430" y="620" text-anchor="middle" font-family="'DM Mono', monospace" font-size="9" fill="#555868">Agents use API keys &rarr; Proxies handle x509 + DPoP + E2E &rarr; Broker verifies + routes</text>
         </svg>
       </div>
     </div>
@@ -1018,19 +1034,29 @@ footer {
     <div class="section-label reveal">Enterprise Ready</div>
     <h2 class="section-title reveal">Built for production, <br><em>not just demos</em></h2>
     <p class="section-desc reveal">
-      Multi-role dashboard, one-command deployment, database migrations, health probes,
-      structured logging, and a complete enterprise integration kit.
+      Two dashboards, one-command deployment, invite-based onboarding, auto PKI,
+      and a complete enterprise integration kit. Fully self-hosted.
     </p>
     <div class="features-grid">
       <div class="feature-card reveal">
+        <div class="feature-tag">Self-Hosted</div>
+        <h3>Fully Self-Hosted</h3>
+        <p>Deploy on your infrastructure. No SaaS dependency, no cloud lock-in, no data leaving your network. You own the broker, the proxies, and every encryption key.</p>
+      </div>
+      <div class="feature-card reveal">
         <div class="feature-tag">Dashboard</div>
-        <h3>Multi-Role Admin</h3>
-        <p>Network admin sees everything. Org admin sees only their agents, sessions, and audit. CSRF protection, security headers, HTMX live badges, dark theme. Zero build step.</p>
+        <h3>Dual Dashboard</h3>
+        <p>Broker dashboard for network admins: approve orgs, manage tokens, view audit. Proxy dashboard for org admins: create agents, manage credentials, monitor activity. CSRF protection, dark theme.</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-tag">Gateway</div>
+        <h3>MCP Proxy Gateway</h3>
+        <p>Each org deploys its own MCP Proxy. Agents connect with API keys. The proxy handles cert generation, Vault storage, and broker communication. Zero crypto knowledge required from agents.</p>
       </div>
       <div class="feature-card reveal">
         <div class="feature-tag">Deployment</div>
         <h3>One-Command Deploy</h3>
-        <p><code>./deploy.sh</code> generates secrets, configures TLS, starts Docker Compose. Dev, production, and Let's Encrypt modes. Vault production unsealing with Shamir 5/3.</p>
+        <p><code>./deploy.sh</code> for the broker. <code>docker compose -f docker-compose.proxy.yml up</code> for the proxy. Dev, production, and Let's Encrypt modes. Vault production unsealing with Shamir 5/3.</p>
       </div>
       <div class="feature-card reveal">
         <div class="feature-tag">Enterprise Kit</div>
@@ -1052,7 +1078,7 @@ footer {
     <div class="section-label reveal">Quick Start</div>
     <h2 class="section-title reveal">Running in 60 seconds</h2>
     <p class="section-desc reveal">
-      One command to deploy the full stack: broker, PostgreSQL, Redis, Vault, nginx, and Jaeger tracing.
+      Deploy the broker and proxy on your own infrastructure. Generate an invite token, register your org, create agents.
     </p>
     <div class="terminal reveal">
       <div class="terminal-bar">
@@ -1064,20 +1090,15 @@ footer {
       <div class="terminal-body">
 <span class="prompt">$</span> <span class="cmd">git clone https://github.com/DaenAIHax/cullis</span>
 <span class="prompt">$</span> <span class="cmd">cd cullis</span>
-<span class="prompt">$</span> <span class="cmd">./deploy.sh</span>
+<span class="prompt">$</span> <span class="cmd">./deploy.sh --dev</span>
+<span class="output">  &#x2713;  Broker ready at http://localhost:8000</span>
 <span class="output"></span>
-<span class="output">  Select mode: [1] Development  [2] Production</span>
-<span class="output">  &gt; 1</span>
+<span class="comment"># Deploy the MCP Proxy</span>
+<span class="prompt">$</span> <span class="cmd">docker compose -f docker-compose.proxy.yml up -d</span>
+<span class="output">  &#x2713;  Proxy ready at http://localhost:9100</span>
 <span class="output"></span>
-<span class="output">  ✓  Secrets generated</span>
-<span class="output">  ✓  Broker CA created</span>
-<span class="output">  ✓  TLS certificate ready</span>
-<span class="output">  ✓  Containers started</span>
-<span class="output">  ✓  Vault initialized</span>
-<span class="output">  ✓  Migrations applied</span>
-<span class="output">  ✓  Broker healthy</span>
-<span class="output"></span>
-<span class="comment"># Dashboard at https://localhost:8443/dashboard</span>
+<span class="comment"># Open proxy dashboard, enter broker URL + invite token</span>
+<span class="comment"># Register org &rarr; create agents &rarr; done</span>
       </div>
     </div>
   </div>
@@ -1152,6 +1173,18 @@ footer {
             <td class="check">Capability-based</td>
           </tr>
           <tr>
+            <td>Self-service onboarding</td>
+            <td class="cross">&mdash;</td>
+            <td class="cross">&mdash;</td>
+            <td class="check">Dashboard + auto PKI</td>
+          </tr>
+          <tr>
+            <td>Self-hosted deployment</td>
+            <td class="cross">&mdash;</td>
+            <td class="check">Partial</td>
+            <td class="check">Fully self-hosted</td>
+          </tr>
+          <tr>
             <td>SSO / OIDC federation</td>
             <td class="cross">&mdash;</td>
             <td class="check">Partial</td>
@@ -1181,8 +1214,8 @@ footer {
     <div class="section-label reveal" style="justify-content: center;">Get Involved</div>
     <h2 class="section-title reveal">Built by security researchers,<br>for the agent era</h2>
     <p class="section-desc reveal">
-      Cullis is open source, standards-aligned, and ready for your first pilot.
-      Star the repo, open an issue, or deploy it today.
+      Cullis is open source, standards-aligned, and ready to deploy on your infrastructure today.
+      Star the repo, open an issue, or run it in your own network.
     </p>
     <div class="hero-actions reveal" style="justify-content: center;">
       <a href="https://github.com/DaenAIHax/cullis" target="_blank" class="btn btn-primary">
@@ -1204,7 +1237,7 @@ footer {
         <a href="#" class="nav-logo">
           <img src="cullis.svg" alt="Cullis">
         </a>
-        <p>Federated trust broker for inter-organizational AI agents. Cryptographic identity, zero-knowledge messaging, compliance-grade audit.</p>
+        <p>Self-hosted federated trust broker and MCP proxy for inter-organizational AI agents. Cryptographic identity, zero-knowledge messaging, compliance-grade audit. Deploy on your infrastructure.</p>
       </div>
       <div class="footer-links">
         <div class="footer-col">
