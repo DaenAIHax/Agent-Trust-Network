@@ -59,35 +59,8 @@ services:
     environment:
       COLLECTOR_OTLP_ENABLED: "true"
 
-  mock-pdp-manufacturer:
-    image: python:3.11-slim
-    working_dir: /app
-    volumes:
-      - .:/app
-    command: python agents/mock_pdp.py --org manufacturer --port 9000
-    ports:
-      - "9000:9000"
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9000/health')"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-      start_period: 5s
-
-  mock-pdp-buyer:
-    image: python:3.11-slim
-    working_dir: /app
-    volumes:
-      - .:/app
-    command: python agents/mock_pdp.py --org buyer --port 9001
-    ports:
-      - "9001:9001"
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9001/health')"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-      start_period: 5s
+  # Mock PDPs removed — each org runs its own PDP via the MCP Proxy.
+  # See docker-compose.proxy.yml for the built-in PDP.
 
   broker:
     build: .
