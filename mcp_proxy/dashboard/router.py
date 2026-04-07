@@ -805,7 +805,8 @@ async def agent_detail_page(request: Request, agent_id: str):
     if isinstance(session, RedirectResponse):
         return session
 
-    from mcp_proxy.db import get_agent
+    from mcp_proxy.db import get_agent, get_config
+    from mcp_proxy.config import get_settings
 
     agent = await get_agent(agent_id)
     if agent is None:
@@ -823,12 +824,25 @@ async def agent_detail_page(request: Request, agent_id: str):
         rows = await cursor.fetchall()
         audit_entries = [dict(row) for row in rows]
 
+    # Extra context for integration snippets
+    settings = get_settings()
+    proxy_url = settings.proxy_public_url or f"http://localhost:{settings.port}"
+    broker_url = await get_config("broker_url") or ""
+    org_id = await get_config("org_id") or settings.org_id
+    agent_name = agent_id.split("::")[-1] if "::" in agent_id else agent_id
+    api_key_display = f"sk_local_{agent_name}_..."
+
     return templates.TemplateResponse("agent_detail.html", _ctx(
         request, session,
         active="agents",
         agent=agent,
         audit_entries=audit_entries,
         new_api_key=None,
+        proxy_url=proxy_url,
+        broker_url=broker_url,
+        org_id=org_id,
+        agent_name=agent_name,
+        api_key_display=api_key_display,
     ))
 
 
@@ -840,7 +854,7 @@ async def agent_rotate_key(request: Request, agent_id: str):
     if not await verify_csrf(request, session):
         raise HTTPException(status_code=403, detail="Invalid CSRF token")
 
-    from mcp_proxy.db import get_agent, get_db, log_audit
+    from mcp_proxy.db import get_agent, get_config, get_db, log_audit
     from mcp_proxy.auth.api_key import generate_api_key, hash_api_key
 
     agent = await get_agent(agent_id)
@@ -878,13 +892,66 @@ async def agent_rotate_key(request: Request, agent_id: str):
         rows = await cursor.fetchall()
         audit_entries = [dict(row) for row in rows]
 
+    # Extra context for integration snippets (show real key after rotation)
+    from mcp_proxy.config import get_settings
+    settings = get_settings()
+    proxy_url = settings.proxy_public_url or f"http://localhost:{settings.port}"
+    broker_url = await get_config("broker_url") or ""
+    org_id = await get_config("org_id") or settings.org_id
+    agent_name = agent_id.split("::")[-1] if "::" in agent_id else agent_id
+    api_key_display = raw_key  # Show real key in snippets right after rotation
+
     return templates.TemplateResponse("agent_detail.html", _ctx(
         request, session,
         active="agents",
         agent=agent,
         audit_entries=audit_entries,
         new_api_key=raw_key,
+        proxy_url=proxy_url,
+        broker_url=broker_url,
+        org_id=org_id,
+        agent_name=agent_name,
+        api_key_display=api_key_display,
     ))
+
+
+@router.get("/agents/{agent_id:path}/env-download")
+async def agent_env_download(request: Request, agent_id: str):
+    """Download .env file with agent configuration."""
+    session = require_login(request)
+    if isinstance(session, RedirectResponse):
+        return session
+
+    from mcp_proxy.db import get_agent, get_config
+    from mcp_proxy.config import get_settings
+
+    agent = await get_agent(agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    settings = get_settings()
+    proxy_url = settings.proxy_public_url or f"http://localhost:{settings.port}"
+    broker_url = await get_config("broker_url") or ""
+    org_id = await get_config("org_id") or settings.org_id
+
+    agent_name = agent_id.split("::")[-1] if "::" in agent_id else agent_id
+
+    env_content = f"""# Cullis Agent Configuration — {agent_id}
+# Generated from MCP Proxy dashboard
+CULLIS_PROXY_URL={proxy_url}
+CULLIS_API_KEY=sk_local_{agent_name}_YOUR_KEY_HERE
+CULLIS_AGENT_ID={agent_id}
+CULLIS_ORG_ID={org_id}
+CULLIS_BROKER_URL={broker_url}
+"""
+
+    return Response(
+        content=env_content,
+        media_type="text/plain",
+        headers={
+            "Content-Disposition": f'attachment; filename="{agent_name}.env"'
+        },
+    )
 
 
 @router.post("/agents/{agent_id:path}/deactivate")

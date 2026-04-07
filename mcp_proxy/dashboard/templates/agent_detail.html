@@ -1,8 +1,8 @@
 {% extends "base.html" %}
-{% block title %}{{ agent.display_name }}{% endblock %}
-{% block header_title %}Agent Detail{% endblock %}
+{% block title %}{{ agent.display_name }} — Developer Portal{% endblock %}
+{% block header_title %}Developer Portal{% endblock %}
 {% block content %}
-<div class="max-w-4xl">
+<div class="max-w-5xl">
 
     <!-- Back link -->
     <a href="/proxy/agents" class="inline-flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-300 transition-colors mb-6">
@@ -10,151 +10,497 @@
         Back to Agents
     </a>
 
-    <!-- New API Key reveal (shown only after rotation) -->
-    {% if new_api_key %}
-    <div class="mb-6 p-5 bg-amber-900/10 border border-amber-600/30 rounded-lg">
-        <div class="flex items-start gap-3">
-            <svg class="w-5 h-5 text-amber-500 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z"/></svg>
-            <div class="flex-1">
-                <p class="text-sm font-semibold text-amber-400 mb-1">New API Key — Save This Now</p>
-                <p class="text-xs text-amber-500/70 mb-3">This key will only be shown once. The old key is now invalid.</p>
-                <div class="flex items-center gap-2">
-                    <code class="flex-1 bg-surface-950 border border-gray-700/60 rounded px-3 py-2 text-xs text-accent-400 font-mono select-all break-all">{{ new_api_key }}</code>
-                    <button onclick="copyToClipboard('{{ new_api_key }}')"
-                            class="px-3 py-2 border border-gray-700 rounded text-xs text-gray-400 hover:text-white hover:bg-gray-800 transition-colors flex-shrink-0">
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3"/></svg>
-                    </button>
+    <!-- Agent header -->
+    <div class="flex items-start justify-between mb-6">
+        <div>
+            <h2 class="text-lg font-heading font-semibold text-white">{{ agent.display_name }}</h2>
+            <p class="text-xs font-mono text-gray-500 mt-1">{{ agent.agent_id }}</p>
+        </div>
+        {% if agent.is_active %}
+        <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-medium bg-emerald-500/10 text-emerald-400 uppercase tracking-wider">
+            <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 pulse-dot"></span>Active
+        </span>
+        {% else %}
+        <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-medium bg-gray-500/10 text-gray-500 uppercase tracking-wider">
+            <span class="w-1.5 h-1.5 rounded-full bg-gray-600"></span>Inactive
+        </span>
+        {% endif %}
+    </div>
+
+    <!-- ── Tab Navigation ────────────────────────────────────────────────── -->
+    <div class="flex gap-1 mb-6 border-b border-gray-800">
+        <button type="button" onclick="switchTab('overview')" id="tab-overview"
+                class="main-tab-btn px-4 py-2.5 text-sm font-medium border-b-2 transition-colors border-[#00e5c7] text-white">
+            Overview
+        </button>
+        <button type="button" onclick="switchTab('connect')" id="tab-connect"
+                class="main-tab-btn px-4 py-2.5 text-sm font-medium border-b-2 transition-colors border-transparent text-gray-500 hover:text-gray-300">
+            Connect
+        </button>
+        <button type="button" onclick="switchTab('activity')" id="tab-activity"
+                class="main-tab-btn px-4 py-2.5 text-sm font-medium border-b-2 transition-colors border-transparent text-gray-500 hover:text-gray-300">
+            Activity
+        </button>
+        <button type="button" onclick="switchTab('danger')" id="tab-danger"
+                class="main-tab-btn px-4 py-2.5 text-sm font-medium border-b-2 transition-colors border-transparent text-gray-500 hover:text-gray-300">
+            Danger Zone
+        </button>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <!-- TAB 1: Overview                                                    -->
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <div id="panel-overview" class="main-tab-panel">
+
+        <!-- New API Key reveal (shown only after rotation) -->
+        {% if new_api_key %}
+        <div class="mb-6 p-5 bg-amber-900/10 border border-amber-600/30 rounded-lg">
+            <div class="flex items-start gap-3">
+                <svg class="w-5 h-5 text-amber-500 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z"/></svg>
+                <div class="flex-1">
+                    <p class="text-sm font-semibold text-amber-400 mb-1">New API Key — Save This Now</p>
+                    <p class="text-xs text-amber-500/70 mb-3">This key will only be shown once. The old key is now invalid.</p>
+                    <div class="flex items-center gap-2">
+                        <code class="flex-1 bg-surface-950 border border-gray-700/60 rounded px-3 py-2 text-xs text-accent-400 font-mono select-all break-all">{{ new_api_key }}</code>
+                        <button type="button" onclick="copyToClipboard('{{ new_api_key }}')"
+                                class="px-3 py-2 border border-gray-700 rounded text-xs text-gray-400 hover:text-white hover:bg-gray-800 transition-colors flex-shrink-0">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3"/></svg>
+                        </button>
+                    </div>
                 </div>
             </div>
         </div>
-    </div>
-    {% endif %}
+        {% endif %}
 
-    <!-- Agent info card -->
-    <div class="bg-surface-900/80 border border-gray-800/50 rounded-lg p-6 card-glow backdrop-blur-sm mb-6">
-        <div class="flex items-start justify-between mb-6">
-            <div>
-                <h2 class="text-lg font-semibold text-white">{{ agent.display_name }}</h2>
-                <p class="text-xs font-mono text-gray-500 mt-1">{{ agent.agent_id }}</p>
+        <!-- Agent info card -->
+        <div class="bg-surface-900/80 border border-gray-800/50 rounded-lg p-6 card-glow backdrop-blur-sm mb-6">
+            <div class="grid grid-cols-2 md:grid-cols-3 gap-6">
+                <div>
+                    <p class="text-[10px] text-gray-600 uppercase tracking-wider mb-1">Agent ID</p>
+                    <p class="text-sm text-gray-300 font-mono break-all">{{ agent.agent_id }}</p>
+                </div>
+                <div>
+                    <p class="text-[10px] text-gray-600 uppercase tracking-wider mb-1">Created</p>
+                    <p class="text-sm text-gray-300 font-mono">{{ agent.created_at[:19] }}</p>
+                </div>
+                <div>
+                    <p class="text-[10px] text-gray-600 uppercase tracking-wider mb-1">Status</p>
+                    {% if agent.is_active %}
+                    <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium bg-emerald-500/10 text-emerald-400">
+                        <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 pulse-dot"></span>Active
+                    </span>
+                    {% else %}
+                    <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium bg-gray-500/10 text-gray-500">Inactive</span>
+                    {% endif %}
+                </div>
+                <div class="col-span-2 md:col-span-3">
+                    <p class="text-[10px] text-gray-600 uppercase tracking-wider mb-1">Capabilities</p>
+                    <div class="flex flex-wrap gap-1">
+                        {% for cap in agent.capabilities %}
+                        <span class="px-1.5 py-0.5 rounded text-[10px] font-mono bg-info-400/10 text-info-400">{{ cap }}</span>
+                        {% endfor %}
+                        {% if not agent.capabilities %}
+                        <span class="text-xs text-gray-600">none</span>
+                        {% endif %}
+                    </div>
+                </div>
             </div>
-            {% if agent.is_active %}
-            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-medium bg-emerald-500/10 text-emerald-400 uppercase tracking-wider">
-                <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 pulse-dot"></span>Active
-            </span>
+        </div>
+
+        <!-- Certificate status -->
+        <div class="bg-surface-900/80 border border-gray-800/50 rounded-lg p-6 card-glow backdrop-blur-sm mb-6">
+            <h3 class="text-sm font-semibold text-white uppercase tracking-wider mb-4">Certificate</h3>
+            {% if agent.cert_thumbprint %}
+            <div class="flex items-center gap-3">
+                <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+                    Issued
+                </span>
+                <span class="text-xs text-gray-500 font-mono" title="{{ agent.cert_thumbprint }}">{{ agent.cert_thumbprint[:24] }}...</span>
+            </div>
             {% else %}
-            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-medium bg-gray-500/10 text-gray-500 uppercase tracking-wider">
-                <span class="w-1.5 h-1.5 rounded-full bg-gray-600"></span>Inactive
-            </span>
+            <div class="flex items-center gap-3">
+                <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-medium bg-gray-500/10 text-gray-500 border border-gray-700/30">
+                    No cert
+                </span>
+                <span class="text-xs text-gray-600">Certificate not yet issued for this agent.</span>
+            </div>
             {% endif %}
         </div>
 
-        <div class="grid grid-cols-3 gap-6">
-            <div>
-                <p class="text-[10px] text-gray-600 uppercase tracking-wider mb-1">Created</p>
-                <p class="text-sm text-gray-300 font-mono">{{ agent.created_at[:19] }}</p>
-            </div>
-            <div>
-                <p class="text-[10px] text-gray-600 uppercase tracking-wider mb-1">Capabilities</p>
-                <div class="flex flex-wrap gap-1">
-                    {% for cap in agent.capabilities %}
-                    <span class="px-1.5 py-0.5 rounded text-[10px] font-mono bg-info-400/10 text-info-400">{{ cap }}</span>
-                    {% endfor %}
-                    {% if not agent.capabilities %}
-                    <span class="text-xs text-gray-600">none</span>
-                    {% endif %}
-                </div>
-            </div>
-            <div>
-                <p class="text-[10px] text-gray-600 uppercase tracking-wider mb-1">API Key Hash</p>
+        <!-- API Key management -->
+        <div class="bg-surface-900/80 border border-gray-800/50 rounded-lg p-6 card-glow backdrop-blur-sm">
+            <h3 class="text-sm font-semibold text-white uppercase tracking-wider mb-4">API Key</h3>
+            <div class="mb-4">
+                <p class="text-[10px] text-gray-600 uppercase tracking-wider mb-1">Current Key Hash</p>
                 <p class="text-xs text-gray-500 font-mono truncate" title="{{ agent.api_key_hash }}">{{ agent.api_key_hash[:20] }}...</p>
             </div>
+            <p class="text-xs text-gray-500 mb-4">Rotating the key immediately invalidates the current key. The agent must be updated with the new key.</p>
+            <form method="post" action="/proxy/agents/{{ agent.agent_id }}/rotate-key"
+                  onsubmit="return confirm('Rotate API key? The current key will stop working immediately.')">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button type="submit"
+                        class="px-4 py-2 text-xs font-medium uppercase tracking-wider border border-amber-600/40 text-amber-400 rounded hover:bg-amber-900/20 transition-colors">
+                    <svg class="w-3.5 h-3.5 inline mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                    Rotate Key
+                </button>
+            </form>
         </div>
     </div>
 
-    <!-- API Key management -->
-    <div class="bg-surface-900/80 border border-gray-800/50 rounded-lg p-6 card-glow backdrop-blur-sm mb-6">
-        <h3 class="text-sm font-semibold text-white uppercase tracking-wider mb-4">API Key Management</h3>
-        <p class="text-xs text-gray-500 mb-4">Rotating the key immediately invalidates the current key. The agent must be updated with the new key.</p>
-        <form method="post" action="/proxy/agents/{{ agent.agent_id }}/rotate-key"
-              onsubmit="return confirm('Rotate API key? The current key will stop working immediately.')">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <button type="submit"
-                    class="px-4 py-2 text-xs font-medium uppercase tracking-wider border border-amber-600/40 text-amber-400 rounded hover:bg-amber-900/20 transition-colors">
-                <svg class="w-3.5 h-3.5 inline mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
-                Rotate Key
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <!-- TAB 2: Connect                                                     -->
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <div id="panel-connect" class="main-tab-panel hidden">
+
+        <!-- Sub-tab navigation -->
+        <div class="flex flex-wrap gap-2 mb-6">
+            <button type="button" onclick="switchSubTab('python')" id="ctab-python"
+                    class="connect-tab-btn inline-flex items-center px-3 py-1.5 rounded-md text-xs font-medium border transition-colors bg-[#00e5c7]/10 text-[#00e5c7] border-[#00e5c7]/30">
+                Python
             </button>
-        </form>
+            <button type="button" onclick="switchSubTab('curl')" id="ctab-curl"
+                    class="connect-tab-btn inline-flex items-center px-3 py-1.5 rounded-md text-xs font-medium border transition-colors border-transparent text-gray-500 hover:text-gray-300">
+                cURL
+            </button>
+            <button type="button" onclick="switchSubTab('nodejs')" id="ctab-nodejs"
+                    class="connect-tab-btn inline-flex items-center px-3 py-1.5 rounded-md text-xs font-medium border transition-colors border-transparent text-gray-500 hover:text-gray-300">
+                Node.js
+            </button>
+            <button type="button" onclick="switchSubTab('docker')" id="ctab-docker"
+                    class="connect-tab-btn inline-flex items-center px-3 py-1.5 rounded-md text-xs font-medium border transition-colors border-transparent text-gray-500 hover:text-gray-300">
+                Docker
+            </button>
+            <button type="button" onclick="switchSubTab('mcp')" id="ctab-mcp"
+                    class="connect-tab-btn inline-flex items-center px-3 py-1.5 rounded-md text-xs font-medium border transition-colors border-transparent text-gray-500 hover:text-gray-300">
+                MCP Config
+            </button>
+            <button type="button" onclick="switchSubTab('iot')" id="ctab-iot"
+                    class="connect-tab-btn inline-flex items-center px-3 py-1.5 rounded-md text-xs font-medium border transition-colors border-transparent text-gray-500 hover:text-gray-300">
+                IoT
+            </button>
+        </div>
+
+        <!-- ── Python ──────────────────────────────────────────────────── -->
+        <div id="connect-python" class="connect-panel">
+            <div class="relative">
+                <button type="button" onclick="copyCode('code-python')" class="copy-btn absolute top-3 right-3 px-2.5 py-1 text-[10px] font-medium uppercase tracking-wider bg-surface-800 hover:bg-surface-700 text-gray-400 hover:text-white rounded border border-gray-700/50 transition-colors z-10">Copy</button>
+                <pre id="code-python" class="bg-[#0a0f1a] p-4 rounded-lg overflow-x-auto font-mono text-xs text-gray-300 leading-relaxed border border-gray-800/50">import httpx
+
+PROXY_URL = "{{ proxy_url }}"
+API_KEY = "{{ api_key_display }}"  # Shown once at creation — store securely
+
+headers = {"X-API-Key": API_KEY, "Content-Type": "application/json"}
+
+# 1. Discover remote agents
+resp = httpx.post(f"{PROXY_URL}/v1/egress/discover",
+    headers=headers,
+    json={"capabilities": ["order.read"]})
+agents = resp.json()["agents"]
+print(f"Found {len(agents)} agent(s)")
+
+# 2. Open session with a remote agent
+resp = httpx.post(f"{PROXY_URL}/v1/egress/sessions",
+    headers=headers,
+    json={
+        "target_agent_id": agents[0]["agent_id"],
+        "target_org_id": agents[0]["org_id"],
+        "capabilities": ["order.read"]
+    })
+session_id = resp.json()["session_id"]
+
+# 3. Send a message
+httpx.post(f"{PROXY_URL}/v1/egress/send",
+    headers=headers,
+    json={
+        "session_id": session_id,
+        "payload": {"text": "Hello from {{ agent.agent_id }}"},
+        "recipient_agent_id": agents[0]["agent_id"]
+    })
+
+# 4. Poll for responses
+resp = httpx.get(f"{PROXY_URL}/v1/egress/messages/{session_id}",
+    headers=headers)
+for msg in resp.json()["messages"]:
+    print(msg["payload"])</pre>
+            </div>
+        </div>
+
+        <!-- ── cURL ────────────────────────────────────────────────────── -->
+        <div id="connect-curl" class="connect-panel hidden">
+            <div class="relative">
+                <button type="button" onclick="copyCode('code-curl')" class="copy-btn absolute top-3 right-3 px-2.5 py-1 text-[10px] font-medium uppercase tracking-wider bg-surface-800 hover:bg-surface-700 text-gray-400 hover:text-white rounded border border-gray-700/50 transition-colors z-10">Copy</button>
+                <pre id="code-curl" class="bg-[#0a0f1a] p-4 rounded-lg overflow-x-auto font-mono text-xs text-gray-300 leading-relaxed border border-gray-800/50">export PROXY="{{ proxy_url }}"
+export KEY="{{ api_key_display }}"
+
+# Discover agents
+curl -s -X POST $PROXY/v1/egress/discover \
+  -H "X-API-Key: $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"capabilities": ["order.read"]}' | jq .
+
+# Open session
+curl -s -X POST $PROXY/v1/egress/sessions \
+  -H "X-API-Key: $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"target_agent_id":"partner::agent","target_org_id":"partner","capabilities":["order.read"]}' | jq .
+
+# Send message
+curl -s -X POST $PROXY/v1/egress/send \
+  -H "X-API-Key: $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"session_id":"SESSION_ID","payload":{"text":"Hello"},"recipient_agent_id":"partner::agent"}'
+
+# Poll messages
+curl -s $PROXY/v1/egress/messages/SESSION_ID \
+  -H "X-API-Key: $KEY" | jq .</pre>
+            </div>
+        </div>
+
+        <!-- ── Node.js ─────────────────────────────────────────────────── -->
+        <div id="connect-nodejs" class="connect-panel hidden">
+            <div class="relative">
+                <button type="button" onclick="copyCode('code-nodejs')" class="copy-btn absolute top-3 right-3 px-2.5 py-1 text-[10px] font-medium uppercase tracking-wider bg-surface-800 hover:bg-surface-700 text-gray-400 hover:text-white rounded border border-gray-700/50 transition-colors z-10">Copy</button>
+                <pre id="code-nodejs" class="bg-[#0a0f1a] p-4 rounded-lg overflow-x-auto font-mono text-xs text-gray-300 leading-relaxed border border-gray-800/50">const PROXY_URL = "{{ proxy_url }}";
+const API_KEY = "{{ api_key_display }}";
+const headers = {"X-API-Key": API_KEY, "Content-Type": "application/json"};
+
+// Discover agents
+const agents = await fetch(`${PROXY_URL}/v1/egress/discover`, {
+  method: "POST", headers,
+  body: JSON.stringify({capabilities: ["order.read"]})
+}).then(r => r.json()).then(d => d.agents);
+
+// Open session
+const {session_id} = await fetch(`${PROXY_URL}/v1/egress/sessions`, {
+  method: "POST", headers,
+  body: JSON.stringify({
+    target_agent_id: agents[0].agent_id,
+    target_org_id: agents[0].org_id,
+    capabilities: ["order.read"]
+  })
+}).then(r => r.json());
+
+// Send message
+await fetch(`${PROXY_URL}/v1/egress/send`, {
+  method: "POST", headers,
+  body: JSON.stringify({
+    session_id, payload: {text: "Hello from {{ agent.agent_id }}"},
+    recipient_agent_id: agents[0].agent_id
+  })
+});
+
+// Poll messages
+const {messages} = await fetch(
+  `${PROXY_URL}/v1/egress/messages/${session_id}`,
+  {headers}
+).then(r => r.json());</pre>
+            </div>
+        </div>
+
+        <!-- ── Docker ──────────────────────────────────────────────────── -->
+        <div id="connect-docker" class="connect-panel hidden">
+            <div class="relative">
+                <button type="button" onclick="copyCode('code-docker')" class="copy-btn absolute top-3 right-3 px-2.5 py-1 text-[10px] font-medium uppercase tracking-wider bg-surface-800 hover:bg-surface-700 text-gray-400 hover:text-white rounded border border-gray-700/50 transition-colors z-10">Copy</button>
+                <pre id="code-docker" class="bg-[#0a0f1a] p-4 rounded-lg overflow-x-auto font-mono text-xs text-gray-300 leading-relaxed border border-gray-800/50">docker run -d --name {{ agent_name }} \
+  -e CULLIS_PROXY_URL={{ proxy_url }} \
+  -e CULLIS_API_KEY={{ api_key_display }} \
+  -e CULLIS_AGENT_ID={{ agent.agent_id }} \
+  -e CULLIS_ORG_ID={{ org_id }} \
+  your-agent-image:latest
+
+# Or with docker compose:
+# services:
+#   {{ agent_name }}:
+#     image: your-agent-image
+#     environment:
+#       CULLIS_PROXY_URL: {{ proxy_url }}
+#       CULLIS_API_KEY: {{ api_key_display }}
+#       CULLIS_AGENT_ID: {{ agent.agent_id }}</pre>
+            </div>
+        </div>
+
+        <!-- ── MCP Config ──────────────────────────────────────────────── -->
+        <div id="connect-mcp" class="connect-panel hidden">
+            <div class="relative">
+                <button type="button" onclick="copyCode('code-mcp')" class="copy-btn absolute top-3 right-3 px-2.5 py-1 text-[10px] font-medium uppercase tracking-wider bg-surface-800 hover:bg-surface-700 text-gray-400 hover:text-white rounded border border-gray-700/50 transition-colors z-10">Copy</button>
+                <pre id="code-mcp" class="bg-[#0a0f1a] p-4 rounded-lg overflow-x-auto font-mono text-xs text-gray-300 leading-relaxed border border-gray-800/50">{
+  "mcpServers": {
+    "cullis": {
+      "command": "python",
+      "args": ["-m", "cullis_sdk.mcp_server"],
+      "env": {
+        "BROKER_URL": "{{ broker_url }}",
+        "AGENT_ID": "{{ agent.agent_id }}",
+        "ORG_ID": "{{ org_id }}",
+        "AGENT_CERT_PATH": "/path/to/agent.pem",
+        "AGENT_KEY_PATH": "/path/to/agent-key.pem"
+      }
+    }
+  }
+}</pre>
+            </div>
+            <div class="mt-3 p-3 bg-surface-900/80 border border-gray-800/50 rounded-lg">
+                <p class="text-xs text-gray-400 leading-relaxed">
+                    <svg class="w-3.5 h-3.5 inline mr-1 text-info-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                    MCP server uses the SDK directly with x509 certificates (not API key). Export the agent certificate from the <a href="/proxy/pki" class="text-accent-400 hover:underline">PKI page</a>.
+                </p>
+            </div>
+        </div>
+
+        <!-- ── IoT ─────────────────────────────────────────────────────── -->
+        <div id="connect-iot" class="connect-panel hidden">
+            <div class="relative">
+                <button type="button" onclick="copyCode('code-iot')" class="copy-btn absolute top-3 right-3 px-2.5 py-1 text-[10px] font-medium uppercase tracking-wider bg-surface-800 hover:bg-surface-700 text-gray-400 hover:text-white rounded border border-gray-700/50 transition-colors z-10">Copy</button>
+                <pre id="code-iot" class="bg-[#0a0f1a] p-4 rounded-lg overflow-x-auto font-mono text-xs text-gray-300 leading-relaxed border border-gray-800/50"># Environment variables for your IoT device
+CULLIS_PROXY_URL={{ proxy_url }}
+CULLIS_API_KEY={{ api_key_display }}
+CULLIS_AGENT_ID={{ agent.agent_id }}
+
+# All proxy endpoints accept standard HTTP + JSON
+# Compatible with any HTTP client (ESP32, Raspberry Pi, etc.)</pre>
+            </div>
+            <div class="mt-3 p-3 bg-amber-900/10 border border-amber-600/30 rounded-lg">
+                <div class="flex items-start gap-2">
+                    <svg class="w-4 h-4 text-amber-500 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z"/></svg>
+                    <p class="text-xs text-amber-400/80 leading-relaxed">
+                        <strong class="text-amber-400">Security:</strong> Use per-device API keys with minimal capabilities. Store keys in hardware secure element (TPM/SE) when available. Never share keys between devices.
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <!-- SPA warning + download .env -->
+        <div class="mt-6 space-y-4">
+            <div class="p-3 bg-surface-900/80 border border-gray-800/50 rounded-lg">
+                <p class="text-xs text-gray-400 leading-relaxed">
+                    <svg class="w-3.5 h-3.5 inline mr-1 text-info-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                    Browser SPAs cannot securely store API keys. For web frontends, route requests through your backend server.
+                </p>
+            </div>
+            <a href="/proxy/agents/{{ agent.agent_id }}/env-download"
+               class="inline-flex items-center gap-2 px-4 py-2 text-xs font-medium uppercase tracking-wider bg-surface-900/80 border border-gray-700/50 text-gray-300 rounded hover:bg-surface-800 hover:text-white transition-colors">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                Download .env
+            </a>
+        </div>
     </div>
 
-    <!-- Recent audit entries -->
-    <div class="bg-surface-900/80 border border-gray-800/50 rounded-lg overflow-hidden backdrop-blur-sm mb-6">
-        <div class="px-6 py-4 border-b border-gray-800/60">
-            <h3 class="text-sm font-semibold text-white uppercase tracking-wider">Recent Activity</h3>
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <!-- TAB 3: Activity                                                    -->
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <div id="panel-activity" class="main-tab-panel hidden">
+        <div class="bg-surface-900/80 border border-gray-800/50 rounded-lg overflow-hidden backdrop-blur-sm">
+            <div class="px-6 py-4 border-b border-gray-800/60">
+                <h3 class="text-sm font-semibold text-white uppercase tracking-wider">Recent Activity</h3>
+            </div>
+            <table class="w-full">
+                <thead>
+                    <tr class="border-b border-gray-800/40">
+                        <th class="px-5 py-2.5 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Timestamp</th>
+                        <th class="px-5 py-2.5 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Action</th>
+                        <th class="px-5 py-2.5 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Tool</th>
+                        <th class="px-5 py-2.5 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Status</th>
+                        <th class="px-5 py-2.5 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Detail</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-800/40">
+                    {% for entry in audit_entries %}
+                    <tr class="table-row-hover transition-colors">
+                        <td class="px-5 py-3 text-xs text-gray-500 font-mono whitespace-nowrap">{{ entry.timestamp[:19] }}</td>
+                        <td class="px-5 py-3 text-xs text-gray-300">{{ entry.action }}</td>
+                        <td class="px-5 py-3 text-xs text-gray-400 font-mono">{{ entry.tool_name or '-' }}</td>
+                        <td class="px-5 py-3">
+                            {% if entry.status == 'success' %}
+                            <span class="text-[10px] text-emerald-400 uppercase tracking-wider">OK</span>
+                            {% elif entry.status == 'denied' %}
+                            <span class="text-[10px] text-red-400 uppercase tracking-wider">Denied</span>
+                            {% elif entry.status == 'error' %}
+                            <span class="text-[10px] text-red-400 uppercase tracking-wider">Error</span>
+                            {% else %}
+                            <span class="text-[10px] text-yellow-400 uppercase tracking-wider">{{ entry.status }}</span>
+                            {% endif %}
+                        </td>
+                        <td class="px-5 py-3 text-xs text-gray-600 max-w-[200px] truncate" title="{{ entry.detail or '' }}">{{ entry.detail or '-' }}</td>
+                    </tr>
+                    {% endfor %}
+                    {% if not audit_entries %}
+                    <tr><td colspan="5" class="px-5 py-8 text-center text-xs text-gray-600">No recent activity</td></tr>
+                    {% endif %}
+                </tbody>
+            </table>
         </div>
-        <table class="w-full">
-            <thead>
-                <tr class="border-b border-gray-800/40">
-                    <th class="px-5 py-2.5 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Timestamp</th>
-                    <th class="px-5 py-2.5 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Action</th>
-                    <th class="px-5 py-2.5 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Tool</th>
-                    <th class="px-5 py-2.5 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Status</th>
-                    <th class="px-5 py-2.5 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Detail</th>
-                </tr>
-            </thead>
-            <tbody class="divide-y divide-gray-800/40">
-                {% for entry in audit_entries %}
-                <tr class="table-row-hover transition-colors">
-                    <td class="px-5 py-3 text-xs text-gray-500 font-mono whitespace-nowrap">{{ entry.timestamp[:19] }}</td>
-                    <td class="px-5 py-3 text-xs text-gray-300">{{ entry.action }}</td>
-                    <td class="px-5 py-3 text-xs text-gray-400 font-mono">{{ entry.tool_name or '-' }}</td>
-                    <td class="px-5 py-3">
-                        {% if entry.status == 'success' %}
-                        <span class="text-[10px] text-emerald-400 uppercase tracking-wider">OK</span>
-                        {% elif entry.status == 'denied' %}
-                        <span class="text-[10px] text-red-400 uppercase tracking-wider">Denied</span>
-                        {% elif entry.status == 'error' %}
-                        <span class="text-[10px] text-red-400 uppercase tracking-wider">Error</span>
-                        {% else %}
-                        <span class="text-[10px] text-yellow-400 uppercase tracking-wider">{{ entry.status }}</span>
-                        {% endif %}
-                    </td>
-                    <td class="px-5 py-3 text-xs text-gray-600 max-w-[200px] truncate" title="{{ entry.detail or '' }}">{{ entry.detail or '-' }}</td>
-                </tr>
-                {% endfor %}
-                {% if not audit_entries %}
-                <tr><td colspan="5" class="px-5 py-8 text-center text-xs text-gray-600">No recent activity</td></tr>
-                {% endif %}
-            </tbody>
-        </table>
     </div>
 
-    <!-- Danger zone -->
-    <div class="bg-red-900/5 border border-red-900/20 rounded-lg p-6">
-        <h3 class="text-sm font-semibold text-red-400 uppercase tracking-wider mb-2">Danger Zone</h3>
-        {% if agent.is_active %}
-        <div class="mb-4">
-            <p class="text-xs text-gray-500 mb-3">Deactivating an agent revokes its API key and prevents all future requests.</p>
-            <form method="post" action="/proxy/agents/{{ agent.agent_id }}/deactivate"
-                  onsubmit="return confirm('Deactivate this agent? It will no longer be able to authenticate.')">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                <button type="submit"
-                        class="px-4 py-2 text-xs font-medium uppercase tracking-wider bg-yellow-600/20 border border-yellow-600/30 text-yellow-400 rounded hover:bg-yellow-600/30 transition-colors">
-                    Deactivate Agent
-                </button>
-            </form>
-        </div>
-        {% endif %}
-        <div>
-            <p class="text-xs text-gray-500 mb-3">Permanently delete this agent, its certificate, and all associated data. This cannot be undone.</p>
-            <form method="post" action="/proxy/agents/{{ agent.agent_id }}/delete"
-                  onsubmit="return confirm('PERMANENTLY DELETE this agent? All data, certificates and keys will be lost. This cannot be undone.')">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                <button type="submit"
-                        class="px-4 py-2 text-xs font-medium uppercase tracking-wider bg-red-600/20 border border-red-600/30 text-red-400 rounded hover:bg-red-600/30 transition-colors">
-                    Delete Agent
-                </button>
-            </form>
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <!-- TAB 4: Danger Zone                                                 -->
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <div id="panel-danger" class="main-tab-panel hidden">
+        <div class="bg-red-900/5 border border-red-900/20 rounded-lg p-6">
+            <h3 class="text-sm font-semibold text-red-400 uppercase tracking-wider mb-2">Danger Zone</h3>
+            {% if agent.is_active %}
+            <div class="mb-6">
+                <p class="text-xs text-gray-500 mb-3">Deactivating an agent revokes its API key and prevents all future requests.</p>
+                <form method="post" action="/proxy/agents/{{ agent.agent_id }}/deactivate"
+                      onsubmit="return confirm('Deactivate this agent? It will no longer be able to authenticate.')">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <button type="submit"
+                            class="px-4 py-2 text-xs font-medium uppercase tracking-wider bg-yellow-600/20 border border-yellow-600/30 text-yellow-400 rounded hover:bg-yellow-600/30 transition-colors">
+                        Deactivate Agent
+                    </button>
+                </form>
+            </div>
+            {% endif %}
+            <div>
+                <p class="text-xs text-gray-500 mb-3">Permanently delete this agent, its certificate, and all associated data. This cannot be undone.</p>
+                <form method="post" action="/proxy/agents/{{ agent.agent_id }}/delete"
+                      onsubmit="return confirm('PERMANENTLY DELETE this agent? All data, certificates and keys will be lost. This cannot be undone.')">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <button type="submit"
+                            class="px-4 py-2 text-xs font-medium uppercase tracking-wider bg-red-600/20 border border-red-600/30 text-red-400 rounded hover:bg-red-600/30 transition-colors">
+                        Delete Agent
+                    </button>
+                </form>
+            </div>
         </div>
     </div>
+
 </div>
+
+<script>
+function switchTab(name) {
+    document.querySelectorAll('.main-tab-panel').forEach(function(p) { p.classList.add('hidden'); });
+    document.querySelectorAll('.main-tab-btn').forEach(function(b) {
+        b.classList.remove('border-[#00e5c7]', 'text-white');
+        b.classList.add('border-transparent', 'text-gray-500');
+    });
+    document.getElementById('panel-' + name).classList.remove('hidden');
+    var btn = document.getElementById('tab-' + name);
+    btn.classList.add('border-[#00e5c7]', 'text-white');
+    btn.classList.remove('border-transparent', 'text-gray-500');
+}
+
+function switchSubTab(name) {
+    document.querySelectorAll('.connect-panel').forEach(function(p) { p.classList.add('hidden'); });
+    document.querySelectorAll('.connect-tab-btn').forEach(function(b) {
+        b.classList.remove('bg-[#00e5c7]/10', 'text-[#00e5c7]', 'border-[#00e5c7]/30');
+        b.classList.add('border-transparent', 'text-gray-500');
+    });
+    document.getElementById('connect-' + name).classList.remove('hidden');
+    var btn = document.getElementById('ctab-' + name);
+    btn.classList.add('bg-[#00e5c7]/10', 'text-[#00e5c7]', 'border-[#00e5c7]/30');
+    btn.classList.remove('border-transparent', 'text-gray-500');
+}
+
+function copyCode(id) {
+    var el = document.getElementById(id);
+    navigator.clipboard.writeText(el.textContent).then(function() {
+        var btn = el.parentElement.querySelector('.copy-btn');
+        if (btn) {
+            btn.textContent = 'Copied!';
+            setTimeout(function() { btn.textContent = 'Copy'; }, 2000);
+        }
+    });
+}
+</script>
 {% endblock %}
