@@ -170,6 +170,20 @@ class BrokerBridge:
                 return [_session_to_dict(s) for s in sessions]
             raise
 
+    async def accept_session(self, agent_id: str, session_id: str) -> None:
+        """Accept a pending broker session."""
+        client = await self.get_client(agent_id)
+        try:
+            await asyncio.to_thread(client.accept_session, session_id)
+            logger.info("Session accepted: %s (agent %s)", session_id, agent_id)
+        except Exception as exc:
+            if _is_auth_error(exc):
+                logger.warning("Auth error for %s, re-authenticating: %s", agent_id, exc)
+                client = await self._evict_and_retry(agent_id)
+                await asyncio.to_thread(client.accept_session, session_id)
+                return
+            raise
+
     async def close_session(self, agent_id: str, session_id: str) -> None:
         """Close a broker session."""
         client = await self.get_client(agent_id)

@@ -242,12 +242,18 @@ async def register_submit(request: Request):
     contact_email = str(form.get("contact_email", "")).strip()
     webhook_url = str(form.get("webhook_url", "")).strip()
 
-    # If no webhook URL provided, use the built-in PDP from config/env
+    # If no webhook URL provided, use the built-in PDP endpoint on this proxy
     if not webhook_url:
         import os
+        # Try explicit PDP URL from env, then proxy's own public URL + /pdp/policy
         webhook_url = os.environ.get("MCP_PROXY_PDP_URL", "")
         if not webhook_url:
             webhook_url = await get_config("pdp_webhook_url") or ""
+        if not webhook_url:
+            # Auto-construct from proxy's public URL
+            proxy_public = get_settings().proxy_public_url
+            if proxy_public:
+                webhook_url = f"{proxy_public.rstrip('/')}/pdp/policy"
 
     # Validate
     errors: list[str] = []

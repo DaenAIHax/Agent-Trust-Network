@@ -183,6 +183,76 @@ async def security_headers(request: Request, call_next):
 # Routers
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Built-in PDP endpoint — the broker calls this for policy decisions
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.post("/pdp/policy", tags=["pdp"])
+async def pdp_policy(request: Request):
+    """Policy Decision Point webhook.
+
+    The broker calls this endpoint for every session request involving this org.
+    Evaluates rules from the dashboard Policies page (proxy_config DB).
+    Default: allow all (empty rules = no restrictions).
+    """
+    import json as _json
+    from mcp_proxy.db import get_config
+
+    body = await request.json()
+    initiator = body.get("initiator_agent_id", "?")
+    target = body.get("target_agent_id", "?")
+    context = body.get("session_context", "?")
+
+    # Load rules from DB (configured via dashboard Policies page)
+    rules_raw = await get_config("policy_rules")
+    if rules_raw:
+        try:
+            rules = _json.loads(rules_raw)
+        except _json.JSONDecodeError:
+            rules = {}
+    else:
+        rules = {}
+
+    # Evaluate rules (empty = allow all)
+    decision = "allow"
+    reason = ""
+
+    blocked = rules.get("blocked_agents", [])
+    if initiator in blocked or target in blocked:
+        decision = "deny"
+        reason = f"Agent blocked by policy"
+
+    allowed_orgs = rules.get("allowed_orgs", [])
+    if allowed_orgs:
+        initiator_org = body.get("initiator_org_id", "")
+        target_org = body.get("target_org_id", "")
+        peer_org = initiator_org if context == "target" else target_org
+        if peer_org not in allowed_orgs:
+            decision = "deny"
+            reason = f"Organization '{peer_org}' not in allowed list"
+
+    allowed_caps = rules.get("capabilities", [])
+    if allowed_caps and isinstance(allowed_caps, list):
+        requested = body.get("capabilities", [])
+        denied = [c for c in requested if c not in allowed_caps]
+        if denied:
+            decision = "deny"
+            reason = f"Capabilities not allowed: {denied}"
+
+    _log.info("PDP %s: %s -> %s (ctx=%s) %s", decision.upper(), initiator, target, context, reason)
+
+    resp: dict = {"decision": decision}
+    if reason:
+        resp["reason"] = reason
+    return JSONResponse(resp)
+
+
+@app.get("/pdp/health", tags=["pdp"])
+async def pdp_health():
+    """PDP health check."""
+    return {"status": "ok", "mode": "built-in"}
+
+
 from mcp_proxy.ingress.router import router as ingress_router
 app.include_router(ingress_router)
 

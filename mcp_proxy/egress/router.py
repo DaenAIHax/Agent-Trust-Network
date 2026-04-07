@@ -137,6 +137,37 @@ async def list_sessions(
         raise HTTPException(status_code=502, detail=f"Broker error: {exc}") from exc
 
 
+@router.post("/sessions/{session_id}/accept")
+async def accept_session(
+    session_id: str,
+    request: Request,
+    agent: InternalAgent = Depends(get_agent_from_api_key),
+):
+    """Accept a pending broker session."""
+    bridge = _get_bridge(request)
+    try:
+        await bridge.accept_session(agent.agent_id, session_id)
+
+        await log_audit(
+            agent_id=agent.agent_id,
+            action="egress_session_accept",
+            status="success",
+            detail=f"session={session_id}",
+        )
+
+        return {"status": "accepted", "session_id": session_id}
+
+    except Exception as exc:
+        await log_audit(
+            agent_id=agent.agent_id,
+            action="egress_session_accept",
+            status="error",
+            detail=str(exc)[:500],
+        )
+        logger.error("Failed to accept session for %s: %s", agent.agent_id, exc)
+        raise HTTPException(status_code=502, detail=f"Broker error: {exc}") from exc
+
+
 @router.post("/sessions/{session_id}/close")
 async def close_session(
     session_id: str,
