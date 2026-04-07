@@ -14,15 +14,17 @@
 
 When your AI agents negotiate with another company's AI agents -- who verifies identity? Who enforces policy? Who audits what happened?
 
-Cullis is a **federated trust broker** (credential broker pattern): x509 PKI for identity, DPoP-bound tokens, end-to-end encrypted messaging, default-deny policy, and a cryptographic audit ledger. Purpose-built infrastructure for the agent-to-agent era.
+Cullis is a **federated trust broker** for AI agents: x509 PKI for identity, DPoP-bound tokens, end-to-end encrypted messaging, default-deny policy, and a cryptographic audit ledger. Purpose-built infrastructure for the agent-to-agent era.
 
 ---
 
 ## Table of Contents
 
+- [Two Components](#two-components)
 - [Key Features](#key-features)
 - [Architecture](#architecture)
 - [Quick Start](#quick-start)
+- [MCP Proxy](#mcp-proxy)
 - [SDKs](#sdks)
 - [Enterprise Features](#enterprise-features)
 - [Positioning](#positioning)
@@ -34,14 +36,49 @@ Cullis is a **federated trust broker** (credential broker pattern): x509 PKI for
 
 ---
 
+## Two Components
+
+Cullis ships as **two independent, deployable components**:
+
+| | **Cullis Broker** | **Cullis MCP Proxy** |
+|---|---|---|
+| **Role** | Network control plane | Organization data plane |
+| **Deploys at** | Your infrastructure (self-hosted) | Each participating organization's network |
+| **Manages** | Identity, routing, policy federation, audit | Agent certs, tool execution, broker communication |
+| **Dashboard** | Network admin (onboard orgs, approve, audit) | Org admin (register, create agents, manage tools) |
+| **Port** | 8000 (HTTP) / 8443 (HTTPS) | 9100 |
+
+> **Fully self-hosted.** Both components run on your own infrastructure. There is no SaaS dependency. A single company can run both the broker and proxies internally, or a consortium of organizations can agree on who hosts the broker while each runs their own proxy.
+
+```
+                    ┌──────────────────────┐
+                    │    Cullis Broker      │
+                    │  (trust network hub)  │
+                    └──────────┬───────────┘
+                   ┌───────────┴───────────┐
+            ┌──────┴──────┐         ┌──────┴──────┐
+            │  MCP Proxy  │         │  MCP Proxy  │
+            │   (Org A)   │         │   (Org B)   │
+            └──┬───┬───┬──┘         └──┬───┬───┬──┘
+             Agent Agent Agent      Agent Agent Tool
+             (API Key auth)         (API Key auth)
+```
+
+The **Broker** is the neutral hub -- self-hosted by the network operator (a single company, a consortium, or an industry body). It verifies identities, routes messages, enforces dual-org policy, and maintains the audit ledger. It never reads message content (zero-knowledge forwarding).
+
+The **MCP Proxy** is each organization's gateway -- deployed in their own network. It handles x509 certificate generation, Vault key storage, and broker authentication **on behalf of internal agents**. Developers just use a local API key; the proxy handles all the cryptography.
+
+---
+
 ## Key Features
 
 ### Identity & Authentication
 
 - **3-tier PKI** -- Broker CA > Org CA > Agent Certificate with SPIFFE identity (`spiffe://trust-domain/org/agent`)
 - **DPoP token binding (RFC 9449)** -- every token bound to an ephemeral EC P-256 key; server nonce rotation (Section 8)
+- **Invite-based onboarding** -- broker admin generates one-time invite tokens; orgs join via MCP Proxy dashboard
+- **Automatic certificate issuance** -- MCP Proxy auto-generates Org CA and agent certs (no manual openssl)
 - **Certificate thumbprint pinning** -- SHA-256 pinned at first login, prevents rogue CA swaps
-- **Certificate rotation** -- API and dashboard with CA chain validation
 - **OIDC federation** -- Okta, Azure AD, Google; per-org IdP config, PKCE, client secret encrypted at rest via KMS
 - **JWKS endpoint** -- `/.well-known/jwks.json` with `kid` (RFC 7517 / RFC 7638)
 
@@ -80,8 +117,7 @@ Cullis is a **federated trust broker** (credential broker pattern): x509 PKI for
 - **Input validation** -- regex on org_id/agent_id, UUID format on session_id, webhook URL scheme check
 - **WebSocket hardening** -- Origin validation, auth timeout, connection limits, binding check
 - **Rate limiting** -- sliding window per-endpoint, per-agent (in-memory or Redis)
-- **EC curve whitelist** -- only P-256, P-384, P-521 accepted
-- **Session state locking** -- atomic transitions, eviction of expired sessions
+- **Domain whitelist** -- MCP Proxy enforces allowed domains per tool (SSRF prevention)
 
 ---
 
@@ -89,30 +125,33 @@ Cullis is a **federated trust broker** (credential broker pattern): x509 PKI for
 
 ```mermaid
 flowchart TB
-    A["Org A Agent<br><i>initiator</i>"] -->|"1. x509 + DPoP auth"| B["Credential Broker"]
-    B -->|"2. policy query"| D["Org A PDP<br><i>webhook / OPA</i>"]
-    B -->|"2. policy query"| E["Org B PDP<br><i>webhook / OPA</i>"]
+    subgraph org_a["Organization A — MCP Proxy"]
+        A1["Agent 1<br><i>API Key auth</i>"]
+        A2["Agent 2<br><i>API Key auth</i>"]
+        PA["MCP Proxy A<br><i>cert + DPoP + E2E</i>"]
+    end
 
-    D -->|allow / deny| F{"Both must allow"}
-    E -->|allow / deny| F
+    subgraph org_b["Organization B — MCP Proxy"]
+        B1["Agent 3<br><i>API Key auth</i>"]
+        PB["MCP Proxy B<br><i>cert + DPoP + E2E</i>"]
+        T1["Tool: ERP<br><i>local</i>"]
+    end
 
-    F -->|denied| H["Request rejected"]
-    F -->|allowed| G["Session created<br><i>pending acceptance</i>"]
+    A1 --> PA
+    A2 --> PA
+    PA -->|"x509 + DPoP + E2E"| BR["Cullis Broker"]
+    BR -->|"policy query"| D["Org A PDP"]
+    BR -->|"policy query"| E["Org B PDP"]
+    BR -->|"x509 + DPoP + E2E"| PB
+    PB --> B1
+    PB --> T1
 
-    G -->|"3. WebSocket notification"| C["Org B Agent<br><i>target</i>"]
-
-    C -->|"4. x509 + DPoP auth → accept"| B
-
-    B -.->|"5. E2E encrypted session"| A
-    B -.->|"5. E2E encrypted session"| C
-
-    style B fill:#4f46e5,stroke:#6366f1,color:#fff
-    style F fill:#d97706,stroke:#f59e0b,color:#fff
-    style G fill:#059669,stroke:#10b981,color:#fff
-    style H fill:#dc2626,stroke:#ef4444,color:#fff
+    style BR fill:#4f46e5,stroke:#6366f1,color:#fff
+    style PA fill:#0d9488,stroke:#14b8a6,color:#fff
+    style PB fill:#0d9488,stroke:#14b8a6,color:#fff
 ```
 
-**Session flow:** Agent submits signed Task Request Envelope --> Broker verifies x509 + SPIFFE identity --> Broker queries both orgs' PDP webhooks --> Only if both allow, issues DPoP-bound credentials --> All decisions recorded in cryptographic audit ledger.
+**Agents talk to their local MCP Proxy** using simple API keys. The proxy handles x509 certificates, DPoP token binding, and E2E encryption -- agents never see cryptographic keys.
 
 **KMS backends:** local filesystem (dev), HashiCorp Vault KV v2 (production), extensible to AWS KMS / Azure Key Vault.
 
@@ -120,83 +159,137 @@ flowchart TB
 
 ## Quick Start
 
+### 1. Deploy the Broker
+
 ```bash
 # One-command setup: PKI + Docker + Vault + bootstrap
-./deploy.sh
+./deploy.sh --dev
 
 # Services:
 #   Broker + Dashboard   http://localhost:8000
 #   Nginx HTTPS          https://localhost:8443
 #   Vault                http://localhost:8200
 #   Jaeger UI            http://localhost:16686
-#   PostgreSQL           localhost:5432
-#   Redis                localhost:6379
-
-# Tear down
-docker compose down -v
 ```
 
-After setup, use the admin dashboard at `/dashboard` to onboard organizations, register agents, and manage policies. See `enterprise-kit/` for integration guides, PDP webhook templates, and quickstart scripts.
+### 2. Deploy the MCP Proxy
 
-> **Production deployment:** `.env.example` with tagged secrets, `docker-compose.prod.yml` with resource limits and restart policies, `docs/ops-runbook.md` with 9 operational sections. Alembic migrations for schema versioning. API versioned under `/v1/`.
+```bash
+# Standalone Docker
+docker compose -f docker-compose.proxy.yml up -d
+
+# Or run locally
+PYTHONPATH=. uvicorn mcp_proxy.main:app --port 9100 --reload
+```
+
+### 3. Connect and Register
+
+1. Open the **Broker dashboard** at `http://localhost:8000/dashboard` -- log in with the admin secret from `.env`
+2. Go to **Organizations** → **Generate Invite Token** -- copy the token
+3. Open the **MCP Proxy dashboard** at `http://localhost:9100/proxy/login`
+4. Enter the **Broker URL** (`http://localhost:8000`) and the **Invite Token**
+5. **Register your organization** -- the proxy auto-generates a Certificate Authority
+6. Back in the Broker dashboard, **approve** the pending organization
+7. In the Proxy dashboard, **create agents** -- each gets an x509 cert + local API key
+
+No manual certificate generation. No openssl commands. No bootstrap scripts.
+
+---
+
+## MCP Proxy
+
+The MCP Proxy is the **org-level enterprise gateway**. It replaces manual certificate management with a self-service dashboard.
+
+### What It Handles
+
+| Before (manual) | After (MCP Proxy) |
+|---|---|
+| `openssl genrsa` + `openssl req` + `openssl x509` | One click in the dashboard |
+| Copy PEM files to every agent | Agents get a local API key |
+| Manual broker registration API calls | Dashboard handles it automatically |
+| Store keys in Vault manually | Proxy stores keys in Vault for you |
+
+### Endpoints
+
+| Path | Auth | Purpose |
+|---|---|---|
+| `POST /v1/ingress/execute` | JWT + DPoP | Execute a local tool (cross-org inbound) |
+| `GET /v1/ingress/tools` | JWT + DPoP | List available tools |
+| `POST /v1/egress/sessions` | API Key | Open broker session |
+| `POST /v1/egress/send` | API Key | Send E2E encrypted message |
+| `POST /v1/egress/discover` | API Key | Discover remote agents |
+| `POST /v1/egress/tools/invoke` | API Key | Invoke remote tool via broker |
+| `/proxy/*` | Session cookie | Dashboard UI |
+
+### Dashboard Pages
+
+- **Login** -- Broker URL + invite token
+- **Register Organization** -- auto-generates CA, registers with broker
+- **Agents** -- create, deactivate, delete; each gets x509 cert + API key
+- **PKI** -- CA overview, export certificate, rotate CA
+- **Vault** -- configure HashiCorp Vault, migrate keys
+- **Tools** -- view registered tools, reload from YAML
+- **Policies** -- built-in rules editor + external PDP webhook
+- **Audit** -- filterable, paginated audit log
 
 ---
 
 ## SDKs
 
-### Python
+### Python SDK
 
 ```python
-from agents.sdk import BrokerClient
+from cullis_sdk.client import CullisClient
 
-client = BrokerClient(broker_url="https://localhost:8443", verify_tls=False)
-client.login(agent_id="buyer", org_id="acme", cert_path="agent.pem", key_path="agent-key.pem")
+client = CullisClient("https://broker.example.com")
+client.login("buyer", "acme", "agent.pem", "agent-key.pem")
 
-# Or load credentials from a secret manager (key never on disk)
-client.login_from_pem(agent_id="buyer", org_id="acme", cert_pem=cert_str, key_pem=key_str)
+# Or via MCP Proxy (recommended -- no certs needed):
+# curl -X POST http://proxy:9100/v1/egress/sessions \
+#   -H "X-API-Key: sk_local_buyer_..." \
+#   -d '{"target_agent_id": "widgets::supplier", ...}'
 
-# Discover, negotiate, send E2E encrypted messages
-agents = client.discover(capability="supply")
-session = client.create_session(target_agent="supplier::widgets-corp", capabilities=["supply"])
-client.send_message(session["session_id"], {"order": "100 units"})
+agents = client.discover(capabilities=["supply"])
+session_id = client.open_session("widgets::supplier", "widgets", ["supply"])
+client.send(session_id, "acme::buyer", {"order": "100 units"}, "widgets::supplier")
 ```
 
-### TypeScript
+### MCP Server (for Claude, LLMs)
 
-```typescript
-import { BrokerClient } from '@atn/sdk';
-
-const client = new BrokerClient({ brokerUrl: 'https://localhost:8443' });
-await client.login({ agentId: 'buyer', orgId: 'acme', certPath: 'agent.pem', keyPath: 'agent-key.pem' });
-
-const agents = await client.discover({ capability: 'supply' });
-const session = await client.createSession({ targetAgent: 'supplier::widgets-corp', capabilities: ['supply'] });
-await client.sendMessage(session.sessionId, { order: '100 units' });
+```bash
+# Any MCP-compatible LLM can become a Cullis agent
+python -m cullis_sdk.mcp_server
 ```
 
-Full SDK source in `agents/sdk.py` (Python) and `sdk-ts/` (TypeScript).
+10 tools: `cullis_connect`, `cullis_discover`, `cullis_open_session`, `cullis_send`, `cullis_check_responses`, `cullis_check_pending`, `cullis_accept_session`, `cullis_close_session`, `cullis_list_sessions`, `cullis_select_session`.
+
+### TypeScript SDK
+
+Full SDK in `sdk-ts/` -- BrokerClient with login, discover, sessions, E2E send, RFQ, transaction tokens.
 
 ---
 
 ## Enterprise Features
 
-### Agent Developer Portal
+### Invite-Based Onboarding
 
-Stripe/Twilio-style portal at `/dashboard/agents/{id}` with credentials management, BYOCA certificate upload (production) or demo cert generation (dev), integration guide with Python/TypeScript/cURL tabs, and recent activity feed.
+Broker admins generate one-time invite tokens. Organizations use them to register via the MCP Proxy dashboard. No open registration -- every org is explicitly invited.
+
+### Automatic PKI
+
+The MCP Proxy generates Org CA (RSA-4096, 10-year validity) and agent certificates (RSA-2048, SPIFFE SAN, 1-year validity) automatically. Private keys are stored in Vault or the local encrypted database.
 
 ### Enterprise Integration Kit
 
-- Bring Your Own CA guide for customer security teams
-- Docker Compose template for agent + PDP webhook deployment
+- Bring Your Own CA guide for customer security teams (`enterprise-kit/BYOCA.md`)
 - PDP webhook template with configurable rules + optional OPA forwarding
 - OPA policy bundle with Rego policies and Docker Compose sidecar
-- Quickstart script -- generates CA, agent cert, registers org in one command
+- Docker Compose templates for agent deployment
 
-### Multi-Role Dashboard
+### Multi-Role Dashboards
 
-- **Network Admin** -- full visibility, org onboarding, agent management, audit chain verification
-- **Organization** -- scoped to own agents, sessions, audit events
-- Self-registration, OIDC SSO, CSRF protection, security headers, dark theme (Tailwind + HTMX)
+- **Broker Dashboard** (network admin) -- org onboarding, invite management, agent registry, audit chain verification, Jaeger traces
+- **Proxy Dashboard** (org admin) -- agent lifecycle, PKI management, Vault configuration, tool registry, local audit log
 
 ---
 
@@ -210,7 +303,8 @@ Stripe/Twilio-style portal at `/dashboard/agents/{id}` with credentials manageme
 | Credential lifetime | Long-lived | Long-lived | **Short-lived, scoped** |
 | Message security | None | TLS termination | **E2E encrypted + dual-signed** |
 | Audit | Application logs | Access logs | **Cryptographic hash-chained ledger** |
-| On-premise | Sometimes | Rarely | **Always** |
+| Agent onboarding | Manual provisioning | API key generation | **Self-service dashboard + auto PKI** |
+| Deployment | Cloud-only or hybrid | Cloud-only | **Fully self-hosted, no SaaS** |
 
 ---
 
@@ -220,35 +314,44 @@ Stripe/Twilio-style portal at `/dashboard/agents/{id}` with credentials manageme
 app/                            Broker FastAPI application
   auth/                         x509 verifier, JWT RS256, DPoP, JTI, revocation
   broker/                       Sessions, E2E messages, WebSocket, notifications
-  dashboard/                    Multi-role web UI (Jinja2 + HTMX + Tailwind)
+  dashboard/                    Broker admin web UI (Jinja2 + HTMX + Tailwind)
   policy/                       Engine, PDP webhooks, OPA adapter
   registry/                     Orgs, agents, bindings, capability discovery
-  onboarding/                   Join requests, admin approve/reject
+  onboarding/                   Join requests, invite tokens, admin approve/reject
   kms/                          KMS adapter (local filesystem, HashiCorp Vault)
-  redis/                        Async connection pool, graceful fallback
-  rate_limit/                   Sliding window (in-memory / Redis)
-  db/                           SQLAlchemy models, audit log
-agents/                         Python SDK + demo agents
+
+mcp_proxy/                      MCP Proxy — standalone org gateway
+  auth/                         DPoP, JWT validation, JWKS client, API key auth
+  ingress/                      Inbound tool execution (JWT+DPoP authenticated)
+  egress/                       Outbound broker communication (API key authenticated)
+  tools/                        Tool registry, executor, domain whitelist, secrets
+  dashboard/                    Org admin web UI (register, agents, PKI, Vault, audit)
+  db.py                         SQLite async (agents, audit, config)
+
+cullis_sdk/                     Python SDK + MCP server
 sdk-ts/                         TypeScript SDK for Node.js
 tests/                          Test suite (pytest-asyncio, ephemeral PKI)
-enterprise-kit/                 BYOCA guide, PDP template, OPA policies, quickstart
+enterprise-kit/                 BYOCA guide, PDP template, OPA policies
 alembic/                        Database migrations
-nginx/                          Reverse proxy + TLS termination
-vault/                          Vault config + init script (Shamir 5/3)
-scripts/                        pg-backup.sh, pg-restore.sh
 ```
 
 ---
 
 ## Tech Stack
 
-Python 3.11, FastAPI, SQLAlchemy async, PostgreSQL 16, Redis, PyJWT RS256, cryptography (RSA 4096, x509, EC P-256), HashiCorp Vault, Alembic, Open Policy Agent, OpenTelemetry + Jaeger, Authlib (OIDC), Nginx TLS, Docker Compose. TypeScript SDK for Node.js.
+**Broker:** Python 3.11, FastAPI, SQLAlchemy async, PostgreSQL 16, Redis, PyJWT RS256, cryptography (RSA 4096, x509, EC P-256), HashiCorp Vault, Alembic, Open Policy Agent, OpenTelemetry + Jaeger, Authlib (OIDC), Nginx TLS, Docker Compose.
+
+**MCP Proxy:** Python 3.11, FastAPI, aiosqlite, httpx, cryptography, bcrypt, PyJWT, Jinja2 + HTMX + Tailwind. Zero external database dependencies.
+
+**SDKs:** Python (cullis_sdk), TypeScript (sdk-ts), MCP server (stdio transport).
 
 ---
 
 ## Configuration
 
-All configuration is via environment variables. See [`.env.example`](.env.example) for the full reference with `[REQUIRED]` and `[PRODUCTION]` tags.
+### Broker
+
+All configuration via environment variables. See [`.env.example`](.env.example) for the full reference.
 
 | Variable | Description | Default |
 |---|---|---|
@@ -257,9 +360,19 @@ All configuration is via environment variables. See [`.env.example`](.env.exampl
 | `KMS_BACKEND` | `local` (dev) or `vault` (production) | `local` |
 | `POLICY_BACKEND` | `webhook` (per-org PDP) or `opa` | `webhook` |
 | `REDIS_URL` | Redis for JTI, rate limits, WebSocket pub/sub | in-memory fallback |
-| `TRUST_DOMAIN` | SPIFFE trust domain | `atn.local` |
-| `ENVIRONMENT` | `development` or `production` | `development` |
 | `BROKER_PUBLIC_URL` | Public URL for DPoP validation behind proxy | auto-detected |
+
+### MCP Proxy
+
+Configuration via `proxy.env` file or `MCP_PROXY_` prefixed environment variables.
+
+| Variable | Description | Default |
+|---|---|---|
+| `MCP_PROXY_DATABASE_URL` | SQLite path | `sqlite+aiosqlite:///./mcp_proxy.db` |
+| `MCP_PROXY_SECRET_BACKEND` | `env` or `vault` | `env` |
+| `MCP_PROXY_VAULT_ADDR` | Vault address | (empty) |
+| `MCP_PROXY_PORT` | Listen port | `9100` |
+| `MCP_PROXY_ENVIRONMENT` | `development` or `production` | `development` |
 
 ---
 
@@ -275,4 +388,4 @@ Security vulnerabilities: see [SECURITY.md](SECURITY.md) for private reporting g
 
 ---
 
-*If agents are to operate securely across organizations, we need a way to trust them, control them, and audit them -- without centralizing power in a single operator. Cullis provides the infrastructure to make this possible.*
+*If agents are to operate securely across organizations, we need infrastructure to trust them, control them, and audit them -- fully self-hosted, without dependence on any external service. Cullis provides that infrastructure: the broker for federation, the proxy for zero-friction adoption.*
