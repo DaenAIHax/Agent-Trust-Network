@@ -1,0 +1,230 @@
+{% extends "base.html" %}
+{% block title %}Setup{% endblock %}
+{% block header_title %}Setup Wizard{% endblock %}
+{% block content %}
+<div class="max-w-3xl mx-auto">
+
+    {% if success is defined and success %}
+    <div class="mb-6 p-4 bg-emerald-900/20 border border-emerald-700/30 rounded text-sm text-emerald-400 flex items-center gap-2">
+        <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+        Setup complete. Configuration saved.
+    </div>
+    {% endif %}
+
+    {% if errors is defined and errors %}
+    <div class="mb-6 p-4 bg-red-500/10 border border-red-500/20 rounded text-sm text-red-400">
+        {% for err in errors %}
+        <p>{{ err }}</p>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    <!-- Step indicator -->
+    <div class="flex items-center justify-center mb-10">
+        <div class="flex items-center gap-0">
+            <div class="flex items-center">
+                <div class="w-8 h-8 rounded-full bg-accent-400/20 border border-accent-400/40 flex items-center justify-center">
+                    <span class="text-xs font-mono font-semibold text-accent-400">1</span>
+                </div>
+                <span class="ml-2 text-xs text-accent-400 uppercase tracking-wider font-medium">Broker</span>
+            </div>
+            <div class="w-8 h-px bg-gray-700 mx-2"></div>
+            <div class="flex items-center">
+                <div class="w-8 h-8 rounded-full bg-gray-800 border border-gray-700 flex items-center justify-center">
+                    <span class="text-xs font-mono font-semibold text-gray-500">2</span>
+                </div>
+                <span class="ml-2 text-xs text-gray-500 uppercase tracking-wider font-medium">Org + CA</span>
+            </div>
+            <div class="w-8 h-px bg-gray-700 mx-2"></div>
+            <div class="flex items-center">
+                <div class="w-8 h-8 rounded-full bg-gray-800 border border-gray-700 flex items-center justify-center">
+                    <span class="text-xs font-mono font-semibold text-gray-500">3</span>
+                </div>
+                <span class="ml-2 text-xs text-gray-500 uppercase tracking-wider font-medium">Vault</span>
+            </div>
+            <div class="w-8 h-px bg-gray-700 mx-2"></div>
+            <div class="flex items-center">
+                <div class="w-8 h-8 rounded-full bg-gray-800 border border-gray-700 flex items-center justify-center">
+                    <span class="text-xs font-mono font-semibold text-gray-500">4</span>
+                </div>
+                <span class="ml-2 text-xs text-gray-500 uppercase tracking-wider font-medium">Confirm</span>
+            </div>
+        </div>
+    </div>
+
+    <form method="post" action="/proxy/setup" class="space-y-6">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+        <!-- Step 1: Broker Connection -->
+        <div class="bg-surface-900/80 border border-gray-800/50 rounded-lg p-6 card-glow backdrop-blur-sm">
+            <div class="flex items-center gap-3 mb-5">
+                <div class="w-6 h-6 rounded bg-accent-400/10 flex items-center justify-center">
+                    <span class="text-xs font-mono font-bold text-accent-400">1</span>
+                </div>
+                <h3 class="text-sm font-semibold text-white uppercase tracking-wider">Broker Connection</h3>
+            </div>
+            <div class="space-y-4">
+                <div>
+                    <label class="block text-xs font-medium text-gray-400 mb-1.5 uppercase tracking-wider">Broker URL</label>
+                    <div class="flex gap-2">
+                        <input type="url" name="broker_url" value="{{ broker_url }}"
+                               placeholder="https://broker.cullis.tech"
+                               class="flex-1 bg-surface-950 border border-gray-700/60 rounded px-3 py-2.5 text-sm text-white placeholder-gray-600 font-mono transition-all">
+                        <button type="button"
+                                hx-post="/proxy/setup/test-connection"
+                                hx-include="[name='broker_url']"
+                                hx-target="#connection-result"
+                                class="px-4 py-2 text-xs font-medium uppercase tracking-wider border border-gray-700 text-gray-400 rounded hover:bg-gray-800 hover:text-gray-300 transition-colors">
+                            Test
+                        </button>
+                    </div>
+                    <div id="connection-result" class="mt-2 text-xs"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Step 2: Organization + CA -->
+        <div class="bg-surface-900/80 border border-gray-800/50 rounded-lg p-6 card-glow backdrop-blur-sm">
+            <div class="flex items-center gap-3 mb-5">
+                <div class="w-6 h-6 rounded bg-gray-800 flex items-center justify-center">
+                    <span class="text-xs font-mono font-bold text-gray-500">2</span>
+                </div>
+                <h3 class="text-sm font-semibold text-white uppercase tracking-wider">Organization + CA</h3>
+                {% if has_ca %}
+                <span class="ml-auto inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium bg-emerald-500/10 text-emerald-400 uppercase tracking-wider">
+                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>CA Configured
+                </span>
+                {% endif %}
+            </div>
+            <div class="space-y-4">
+                <div>
+                    <label class="block text-xs font-medium text-gray-400 mb-1.5 uppercase tracking-wider">Organization ID</label>
+                    <input type="text" name="org_id" value="{{ org_id }}"
+                           placeholder="acme-corp"
+                           class="w-full bg-surface-950 border border-gray-700/60 rounded px-3 py-2.5 text-sm text-white placeholder-gray-600 font-mono transition-all">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-gray-400 mb-1.5 uppercase tracking-wider">Organization Secret</label>
+                    <input type="password" name="org_secret"
+                           placeholder="Shared secret for broker authentication"
+                           class="w-full bg-surface-950 border border-gray-700/60 rounded px-3 py-2.5 text-sm text-white placeholder-gray-600 transition-all">
+                    <p class="text-[10px] text-gray-600 mt-1">This secret authenticates the proxy to the broker on behalf of your organization.</p>
+                </div>
+
+                <!-- Org CA section -->
+                <div class="pt-3 border-t border-gray-800/40">
+                    <label class="block text-xs font-medium text-gray-400 mb-3 uppercase tracking-wider">Organization Certificate Authority</label>
+                    <p class="text-[10px] text-gray-500 mb-3">The Org CA signs x509 certificates for internal agents. You can generate a new self-signed CA or import an existing one.</p>
+
+                    <div class="flex items-center gap-4 mb-3">
+                        <label class="flex items-center gap-2 cursor-pointer">
+                            <input type="radio" name="org_ca_mode" value="skip" checked
+                                   onchange="document.getElementById('ca-import-fields').classList.add('hidden')"
+                                   class="text-accent-400">
+                            <span class="text-sm text-gray-300">{% if has_ca %}Keep existing{% else %}Skip for now{% endif %}</span>
+                        </label>
+                        <label class="flex items-center gap-2 cursor-pointer">
+                            <input type="radio" name="org_ca_mode" value="generate"
+                                   onchange="document.getElementById('ca-import-fields').classList.add('hidden')"
+                                   class="text-accent-400">
+                            <span class="text-sm text-gray-300">{% if has_ca %}Regenerate{% else %}Generate new{% endif %} (RSA-4096)</span>
+                        </label>
+                        <label class="flex items-center gap-2 cursor-pointer">
+                            <input type="radio" name="org_ca_mode" value="import"
+                                   onchange="document.getElementById('ca-import-fields').classList.remove('hidden')"
+                                   class="text-accent-400">
+                            <span class="text-sm text-gray-300">Import existing</span>
+                        </label>
+                    </div>
+
+                    <div id="ca-import-fields" class="hidden space-y-4">
+                        <div>
+                            <label class="block text-xs font-medium text-gray-400 mb-1.5 uppercase tracking-wider">CA Certificate PEM</label>
+                            <textarea name="ca_cert_pem" rows="5"
+                                      placeholder="-----BEGIN CERTIFICATE-----&#10;..."
+                                      class="w-full bg-surface-950 border border-gray-700/60 rounded px-3 py-2.5 text-xs text-white placeholder-gray-600 font-mono transition-all resize-y"></textarea>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-medium text-gray-400 mb-1.5 uppercase tracking-wider">CA Private Key PEM</label>
+                            <textarea name="ca_key_pem" rows="5"
+                                      placeholder="-----BEGIN PRIVATE KEY-----&#10;..."
+                                      class="w-full bg-surface-950 border border-gray-700/60 rounded px-3 py-2.5 text-xs text-white placeholder-gray-600 font-mono transition-all resize-y"></textarea>
+                            <p class="text-[10px] text-amber-500/70 mt-1">The private key never leaves the proxy. Stored in Vault if configured, otherwise in the local database.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Step 3: Vault -->
+        <div class="bg-surface-900/80 border border-gray-800/50 rounded-lg p-6 card-glow backdrop-blur-sm">
+            <div class="flex items-center gap-3 mb-5">
+                <div class="w-6 h-6 rounded bg-gray-800 flex items-center justify-center">
+                    <span class="text-xs font-mono font-bold text-gray-500">3</span>
+                </div>
+                <h3 class="text-sm font-semibold text-white uppercase tracking-wider">Vault (Optional)</h3>
+                {% if vault_enabled %}
+                <span class="ml-auto inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium bg-emerald-500/10 text-emerald-400 uppercase tracking-wider">
+                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>Configured
+                </span>
+                {% endif %}
+            </div>
+            <p class="text-xs text-gray-500 mb-4">Connect to HashiCorp Vault for secure private key storage. If not configured, keys are stored in the proxy database.</p>
+
+            <div class="space-y-4">
+                <label class="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" name="vault_enabled" value="1"
+                           {% if vault_enabled %}checked{% endif %}
+                           onchange="document.getElementById('vault-fields').classList.toggle('hidden', !this.checked)"
+                           class="rounded border-gray-700 bg-surface-950 text-accent-400">
+                    <span class="text-sm text-gray-300">Enable Vault integration</span>
+                </label>
+
+                <div id="vault-fields" class="{% if not vault_enabled %}hidden{% endif %} space-y-4">
+                    <div>
+                        <label class="block text-xs font-medium text-gray-400 mb-1.5 uppercase tracking-wider">Vault Address</label>
+                        <div class="flex gap-2">
+                            <input type="url" name="vault_addr" value="{{ vault_addr }}"
+                                   placeholder="https://vault.company.com:8200"
+                                   class="flex-1 bg-surface-950 border border-gray-700/60 rounded px-3 py-2.5 text-sm text-white placeholder-gray-600 font-mono transition-all">
+                            <button type="button"
+                                    hx-post="/proxy/vault/test"
+                                    hx-include="[name='vault_addr'],[name='vault_token']"
+                                    hx-target="#vault-test-result"
+                                    class="px-4 py-2 text-xs font-medium uppercase tracking-wider border border-gray-700 text-gray-400 rounded hover:bg-gray-800 hover:text-gray-300 transition-colors">
+                                Test
+                            </button>
+                        </div>
+                        <div id="vault-test-result" class="mt-2 text-xs"></div>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-gray-400 mb-1.5 uppercase tracking-wider">Vault Token</label>
+                        <input type="password" name="vault_token"
+                               placeholder="hvs.CAESIJ..."
+                               class="w-full bg-surface-950 border border-gray-700/60 rounded px-3 py-2.5 text-sm text-white placeholder-gray-600 font-mono transition-all">
+                        <p class="text-[10px] text-gray-600 mt-1">Token with read/write access to the secret path. Consider using AppRole in production.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Step 4: Confirm -->
+        <div class="bg-surface-900/80 border border-gray-800/50 rounded-lg p-6 card-glow backdrop-blur-sm">
+            <div class="flex items-center gap-3 mb-5">
+                <div class="w-6 h-6 rounded bg-gray-800 flex items-center justify-center">
+                    <span class="text-xs font-mono font-bold text-gray-500">4</span>
+                </div>
+                <h3 class="text-sm font-semibold text-white uppercase tracking-wider">Confirm</h3>
+            </div>
+            <p class="text-xs text-gray-500 mb-4">Review the above configuration and save. You can re-run this wizard at any time from the sidebar.</p>
+            <button type="submit"
+                    class="px-6 py-2.5 text-sm font-semibold rounded transition-all"
+                    style="font-family: 'Chakra Petch', sans-serif; background: #00e5c7; color: #0a0f1a; letter-spacing: 0.05em; text-transform: uppercase;"
+                    onmouseover="this.style.background='#fff'; this.style.boxShadow='0 0 20px rgba(0,229,199,0.15)'"
+                    onmouseout="this.style.background='#00e5c7'; this.style.boxShadow='none'">
+                Complete Setup
+            </button>
+        </div>
+    </form>
+</div>
+{% endblock %}

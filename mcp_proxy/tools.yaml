@@ -1,0 +1,13 @@
+tools:
+  check_erp_inventory:
+    module: mcp_proxy.tools.builtins.check_erp_inventory
+    capability: erp.inventory.read
+    description: "Query ERP database for inventory levels by SKU"
+    allowed_domains: []
+  query_salesforce:
+    module: mcp_proxy.tools.builtins.query_salesforce
+    capability: crm.read
+    description: "Query Salesforce SOQL endpoint"
+    allowed_domains:
+      - "login.salesforce.com"
+      - "*.salesforce.com"

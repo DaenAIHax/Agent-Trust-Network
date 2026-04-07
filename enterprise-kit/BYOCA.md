@@ -43,9 +43,13 @@ curl -X POST https://broker.example.com/onboarding/join \
     "secret": "a-strong-shared-secret",
     "ca_certificate": "'"$(cat org-ca.pem)"'",
     "contact_email": "security@my-org.com",
-    "webhook_url": "https://pdp.my-org.internal/policy"
+    "webhook_url": "https://pdp.my-org.internal/policy",
+    "invite_token": "YOUR_INVITE_TOKEN_HERE"
   }'
 ```
+
+> **Note:** An invite token is required. Request one from the network admin
+> before attempting to join. Tokens are single-use and time-limited.
 
 The broker admin will approve your join request.
 

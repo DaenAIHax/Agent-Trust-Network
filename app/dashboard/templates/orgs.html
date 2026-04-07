@@ -10,6 +10,70 @@
         </div>
     </div>
 
+    {# ── Invite Tokens ────────────────────────────────────────────────── #}
+    <div class="mb-8 bg-gray-900 border border-gray-800 rounded-lg p-5">
+        <div class="flex items-center justify-between mb-4">
+            <h3 class="text-lg font-semibold text-white">Invite Tokens</h3>
+            <form method="post" action="/dashboard/invites/generate" class="flex items-center gap-2">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <input type="text" name="label" placeholder="Label (e.g. Acme Corp)" maxlength="256"
+                       class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-brand-500">
+                <select name="ttl_hours" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-white">
+                    <option value="24">24h</option>
+                    <option value="72" selected>3 days</option>
+                    <option value="168">7 days</option>
+                    <option value="720">30 days</option>
+                </select>
+                <button type="submit" class="px-3 py-1 bg-brand-600 hover:bg-brand-700 text-white text-sm rounded-md">Generate</button>
+            </form>
+        </div>
+        <p class="text-xs text-gray-500 mb-3">One-time tokens required for organizations to join the network via <code class="text-gray-600">/onboarding/join</code>.</p>
+
+        {% if invites %}
+        <table class="w-full">
+            <thead>
+                <tr class="border-b border-gray-800">
+                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Label</th>
+                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Created</th>
+                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Expires</th>
+                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-800">
+                {% for inv in invites %}
+                <tr class="hover:bg-gray-800/50">
+                    <td class="px-3 py-2 text-sm text-white">{{ inv.label or '(no label)' }}</td>
+                    <td class="px-3 py-2 text-xs text-gray-400">{{ inv.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                    <td class="px-3 py-2 text-xs text-gray-400">{{ inv.expires_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                    <td class="px-3 py-2">
+                        {% if inv.revoked %}
+                        <span class="px-2 py-0.5 rounded-full text-xs bg-red-500/10 text-red-400">Revoked</span>
+                        {% elif inv.used %}
+                        <span class="px-2 py-0.5 rounded-full text-xs bg-emerald-500/10 text-emerald-400">Used by {{ inv.used_by_org_id }}</span>
+                        {% elif inv.expired %}
+                        <span class="px-2 py-0.5 rounded-full text-xs bg-gray-500/10 text-gray-400">Expired</span>
+                        {% else %}
+                        <span class="px-2 py-0.5 rounded-full text-xs bg-yellow-500/10 text-yellow-400">Active</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-3 py-2">
+                        {% if not inv.used and not inv.revoked and not inv.expired %}
+                        <form method="post" action="/dashboard/invites/{{ inv.id }}/revoke" class="inline">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                            <button class="px-2 py-0.5 text-xs bg-red-600 hover:bg-red-700 text-white rounded">Revoke</button>
+                        </form>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p class="text-sm text-gray-600">No invite tokens generated yet.</p>
+        {% endif %}
+    </div>
+
     <div class="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
         <table class="w-full">
             <thead>

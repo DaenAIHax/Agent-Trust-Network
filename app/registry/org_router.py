@@ -77,6 +77,28 @@ async def list_organizations(db: AsyncSession = Depends(get_db)):
     ]
 
 
+@router.get("/orgs/me", response_model=OrgResponse)
+async def get_own_organization(
+    x_org_id: str = Header(...),
+    x_org_secret: str = Header(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """Organization self-status check. Uses org credentials, not admin secret.
+    Returns org info including status (pending/active/rejected).
+    Used by MCP Proxy to poll for approval status."""
+    org = await get_org_by_id(db, x_org_id)
+    if not org:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organization not found")
+    if not org.verify_secret(x_org_secret):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid organization credentials")
+    return OrgResponse(
+        org_id=org.org_id,
+        display_name=org.display_name,
+        status=org.status,
+        registered_at=org.registered_at,
+    )
+
+
 @router.get("/orgs/{org_id}", response_model=OrgResponse,
             dependencies=[Depends(_require_admin)])
 async def get_organization(org_id: str, db: AsyncSession = Depends(get_db)):

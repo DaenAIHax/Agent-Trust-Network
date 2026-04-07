@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}Tools{% endblock %}
+{% block header_title %}Tool Registry{% endblock %}
+{% block content %}
+<div class="max-w-6xl">
+
+    <!-- Header -->
+    <div class="flex items-center justify-between mb-6">
+        <div>
+            <h2 class="text-lg font-semibold text-white uppercase tracking-wider">Registered Tools</h2>
+            <p class="text-xs text-gray-600 mt-0.5">{{ tools | length }} tool{{ 's' if tools | length != 1 else '' }} loaded</p>
+        </div>
+        <form method="post" action="/proxy/tools/reload">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit"
+                    class="px-4 py-2 text-xs font-medium uppercase tracking-wider border border-gray-700 text-gray-400 rounded hover:bg-gray-800 hover:text-gray-300 transition-colors">
+                <svg class="w-3.5 h-3.5 inline mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                Reload from YAML
+            </button>
+        </form>
+    </div>
+
+    {% if tools %}
+    <!-- Tool cards grid -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {% for tool in tools %}
+        <div class="bg-surface-900/80 border border-gray-800/50 rounded-lg p-5 card-glow backdrop-blur-sm">
+            <div class="flex items-start justify-between mb-3">
+                <div>
+                    <h3 class="text-sm font-mono font-medium text-white">{{ tool.name }}</h3>
+                    <p class="text-xs text-gray-500 mt-1">{{ tool.description or 'No description' }}</p>
+                </div>
+                <span class="px-2 py-0.5 rounded text-[10px] font-mono bg-accent-400/10 text-accent-400 flex-shrink-0">
+                    {{ tool.required_capability }}
+                </span>
+            </div>
+
+            {% if tool.allowed_domains %}
+            <div class="mb-3">
+                <p class="text-[10px] text-gray-600 uppercase tracking-wider mb-1">Allowed Domains</p>
+                <div class="flex flex-wrap gap-1">
+                    {% for domain in tool.allowed_domains %}
+                    <span class="px-1.5 py-0.5 rounded text-[10px] font-mono bg-surface-950 text-gray-400 border border-gray-800/50">{{ domain }}</span>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endif %}
+
+            {% if tool.parameters_schema %}
+            <div>
+                <p class="text-[10px] text-gray-600 uppercase tracking-wider mb-1">Parameters</p>
+                <pre class="bg-surface-950 rounded p-2 text-[10px] font-mono text-gray-500 overflow-x-auto max-h-32 border border-gray-800/30">{{ tool.parameters_schema | tojson(indent=2) }}</pre>
+            </div>
+            {% endif %}
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <!-- Empty state -->
+    <div class="bg-surface-900/80 border border-gray-800/50 rounded-lg p-16 text-center backdrop-blur-sm">
+        <svg class="w-12 h-12 mx-auto text-gray-800 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M11 4a2 2 0 114 0v1a1 1 0 001 1h3a1 1 0 011 1v3a1 1 0 01-1 1h-1a2 2 0 100 4h1a1 1 0 011 1v3a1 1 0 01-1 1h-3a1 1 0 01-1-1v-1a2 2 0 10-4 0v1a1 1 0 01-1 1H7a1 1 0 01-1-1v-3a1 1 0 00-1-1H4a2 2 0 110-4h1a1 1 0 001-1V7a1 1 0 011-1h3a1 1 0 001-1V4z"/></svg>
+        <p class="text-sm text-gray-500">No tools registered</p>
+        <p class="text-xs text-gray-600 mt-1">Add tool definitions to <code class="font-mono text-gray-500">tools.yaml</code> and reload.</p>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

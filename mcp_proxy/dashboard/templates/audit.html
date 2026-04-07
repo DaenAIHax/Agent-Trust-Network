@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% block title %}Audit Log{% endblock %}
+{% block header_title %}Audit Log{% endblock %}
+{% block content %}
+<div class="max-w-6xl">
+
+    <!-- Header -->
+    <div class="flex items-center justify-between mb-6">
+        <div>
+            <h2 class="text-lg font-semibold text-white uppercase tracking-wider">Audit Log</h2>
+            <p class="text-xs text-gray-600 mt-0.5">{{ total }} total entries</p>
+        </div>
+    </div>
+
+    <!-- Filter bar -->
+    <form method="get" action="/proxy/audit" class="flex items-center gap-3 mb-5">
+        <select name="agent" class="bg-surface-950 border border-gray-700/60 rounded px-3 py-2 text-xs text-gray-300 transition-all" style="font-family: 'DM Sans', sans-serif;">
+            <option value="">All Agents</option>
+            {% for aid in agent_ids %}
+            <option value="{{ aid }}" {% if aid == agent_filter %}selected{% endif %}>{{ aid }}</option>
+            {% endfor %}
+        </select>
+        <select name="action" class="bg-surface-950 border border-gray-700/60 rounded px-3 py-2 text-xs text-gray-300 transition-all" style="font-family: 'DM Sans', sans-serif;">
+            <option value="">All Actions</option>
+            <option value="tool_execute" {% if action_filter == 'tool_execute' %}selected{% endif %}>tool_execute</option>
+            <option value="agent.create" {% if action_filter == 'agent.create' %}selected{% endif %}>agent.create</option>
+            <option value="agent.rotate_key" {% if action_filter == 'agent.rotate_key' %}selected{% endif %}>agent.rotate_key</option>
+            <option value="agent.deactivate" {% if action_filter == 'agent.deactivate' %}selected{% endif %}>agent.deactivate</option>
+            <option value="setup.complete" {% if action_filter == 'setup.complete' %}selected{% endif %}>setup.complete</option>
+            <option value="policy.update_rules" {% if action_filter == 'policy.update_rules' %}selected{% endif %}>policy.update_rules</option>
+            <option value="tools.reload" {% if action_filter == 'tools.reload' %}selected{% endif %}>tools.reload</option>
+        </select>
+        <select name="status" class="bg-surface-950 border border-gray-700/60 rounded px-3 py-2 text-xs text-gray-300 transition-all" style="font-family: 'DM Sans', sans-serif;">
+            <option value="">All Statuses</option>
+            <option value="success" {% if status_filter == 'success' %}selected{% endif %}>Success</option>
+            <option value="error" {% if status_filter == 'error' %}selected{% endif %}>Error</option>
+            <option value="denied" {% if status_filter == 'denied' %}selected{% endif %}>Denied</option>
+        </select>
+        <button type="submit"
+                class="px-4 py-2 text-xs font-medium uppercase tracking-wider border border-gray-700 text-gray-400 rounded hover:bg-gray-800 hover:text-gray-300 transition-colors">
+            Filter
+        </button>
+        {% if agent_filter or action_filter or status_filter %}
+        <a href="/proxy/audit" class="px-3 py-2 text-xs text-gray-600 hover:text-gray-400 transition-colors">Clear</a>
+        {% endif %}
+    </form>
+
+    <!-- Audit table -->
+    <div class="bg-surface-900/80 border border-gray-800/50 rounded-lg overflow-hidden backdrop-blur-sm">
+        <table class="w-full">
+            <thead>
+                <tr class="border-b border-gray-800/60">
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider w-6"></th>
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Timestamp</th>
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Agent</th>
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Action</th>
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Tool</th>
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Status</th>
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Duration</th>
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Request ID</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-800/40">
+                {% for entry in entries %}
+                <tr class="table-row-hover transition-colors">
+                    <td class="px-5 py-3">
+                        <span class="w-1.5 h-1.5 rounded-full inline-block {% if entry.status == 'success' %}bg-emerald-500{% elif entry.status == 'denied' %}bg-red-500{% elif entry.status == 'error' %}bg-red-500{% else %}bg-yellow-500{% endif %}"></span>
+                    </td>
+                    <td class="px-5 py-3 text-xs text-gray-500 font-mono whitespace-nowrap">{{ entry.timestamp[:19] }}</td>
+                    <td class="px-5 py-3 text-xs text-gray-400 font-mono">{{ entry.agent_id }}</td>
+                    <td class="px-5 py-3 text-xs text-gray-300">{{ entry.action }}</td>
+                    <td class="px-5 py-3 text-xs text-gray-500 font-mono">{{ entry.tool_name or '-' }}</td>
+                    <td class="px-5 py-3">
+                        {% if entry.status == 'success' %}
+                        <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-500/10 text-emerald-400 uppercase tracking-wider">OK</span>
+                        {% elif entry.status == 'denied' %}
+                        <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-red-500/10 text-red-400 uppercase tracking-wider">Denied</span>
+                        {% elif entry.status == 'error' %}
+                        <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-red-500/10 text-red-400 uppercase tracking-wider">Error</span>
+                        {% else %}
+                        <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-yellow-500/10 text-yellow-400 uppercase tracking-wider">{{ entry.status }}</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-5 py-3 text-xs text-gray-500 font-mono">
+                        {% if entry.duration_ms is not none %}{{ '%.1f' | format(entry.duration_ms) }}ms{% else %}-{% endif %}
+                    </td>
+                    <td class="px-5 py-3 text-xs text-gray-600 font-mono" title="{{ entry.request_id or '' }}">
+                        {{ (entry.request_id or '')[:12] }}{% if entry.request_id %}...{% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+                {% if not entries %}
+                <tr>
+                    <td colspan="8" class="px-5 py-16 text-center">
+                        <svg class="w-10 h-10 mx-auto text-gray-800 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 5H7a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
+                        <p class="text-sm text-gray-600">No audit entries{% if agent_filter or action_filter or status_filter %} matching filters{% endif %}</p>
+                    </td>
+                </tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Pagination -->
+    {% if total_pages > 1 %}
+    <div class="flex items-center justify-between mt-4">
+        <p class="text-xs text-gray-600">
+            Page {{ page }} of {{ total_pages }}
+        </p>
+        <div class="flex items-center gap-2">
+            {% if page > 1 %}
+            <a href="/proxy/audit?page={{ page - 1 }}{% if agent_filter %}&agent={{ agent_filter }}{% endif %}{% if action_filter %}&action={{ action_filter }}{% endif %}{% if status_filter %}&status={{ status_filter }}{% endif %}"
+               class="px-3 py-1.5 text-xs font-medium border border-gray-700 text-gray-400 rounded hover:bg-gray-800 hover:text-gray-300 transition-colors">
+                Prev
+            </a>
+            {% endif %}
+            {% if page < total_pages %}
+            <a href="/proxy/audit?page={{ page + 1 }}{% if agent_filter %}&agent={{ agent_filter }}{% endif %}{% if action_filter %}&action={{ action_filter }}{% endif %}{% if status_filter %}&status={{ status_filter }}{% endif %}"
+               class="px-3 py-1.5 text-xs font-medium border border-gray-700 text-gray-400 rounded hover:bg-gray-800 hover:text-gray-300 transition-colors">
+                Next
+            </a>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

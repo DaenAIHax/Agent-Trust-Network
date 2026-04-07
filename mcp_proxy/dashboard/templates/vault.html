@@ -1,0 +1,165 @@
+{% extends "base.html" %}
+{% block title %}Vault{% endblock %}
+{% block header_title %}Vault Configuration{% endblock %}
+{% block content %}
+<div class="max-w-4xl">
+
+    <!-- Connection Card -->
+    <div class="bg-[#111827]/80 border border-gray-800/50 rounded-lg p-6 card-glow backdrop-blur-sm mb-6">
+        <div class="flex items-center gap-3 mb-5">
+            <div class="w-8 h-8 rounded bg-accent-400/10 flex items-center justify-center">
+                <svg class="w-4 h-4 text-accent-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
+            </div>
+            <h2 class="text-sm font-semibold text-white uppercase tracking-wider">Vault Connection</h2>
+        </div>
+        <form method="post" action="/proxy/vault/save" class="space-y-4">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <div>
+                <label class="block text-xs font-medium text-gray-400 mb-1.5 uppercase tracking-wider">Vault Address</label>
+                <input type="url" name="vault_addr" value="{{ vault_addr if vault_addr is defined else '' }}"
+                       placeholder="https://vault.internal:8200"
+                       class="w-full bg-surface-950 border border-gray-700/60 rounded px-3 py-2.5 text-sm text-white placeholder-gray-600 font-mono transition-all">
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-gray-400 mb-1.5 uppercase tracking-wider">Vault Token</label>
+                <div class="relative">
+                    <input type="password" name="vault_token" id="vault-token-input"
+                           value="{{ vault_token if vault_token is defined else '' }}"
+                           placeholder="hvs.CAESIG..."
+                           class="w-full bg-surface-950 border border-gray-700/60 rounded px-3 py-2.5 pr-10 text-sm text-white placeholder-gray-600 font-mono transition-all">
+                    <button type="button" onclick="toggleTokenVisibility()"
+                            class="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-500 hover:text-gray-300 transition-colors">
+                        <svg id="eye-icon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+                        <svg id="eye-off-icon" class="w-4 h-4 hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21"/></svg>
+                    </button>
+                </div>
+            </div>
+            <div class="flex items-center gap-3 pt-1">
+                <button type="button"
+                        hx-post="/proxy/vault/test"
+                        hx-include="[name='vault_addr'], [name='vault_token']"
+                        hx-target="#vault-connection-result"
+                        class="px-4 py-2 text-xs font-medium uppercase tracking-wider border border-gray-700 text-gray-400 rounded hover:bg-gray-800 hover:text-gray-300 transition-colors">
+                    Test Connection
+                </button>
+                <div id="vault-connection-result" class="text-xs"></div>
+            </div>
+            <div class="pt-2">
+                <button type="submit"
+                        class="px-5 py-2.5 text-sm font-semibold rounded transition-all"
+                        style="font-family: 'Chakra Petch', sans-serif; background: #00e5c7; color: #0a0f1a; letter-spacing: 0.05em; text-transform: uppercase;"
+                        onmouseover="this.style.background='#fff'; this.style.boxShadow='0 0 20px rgba(0,229,199,0.15)'"
+                        onmouseout="this.style.background='#00e5c7'; this.style.boxShadow='none'">
+                    Save Configuration
+                </button>
+            </div>
+        </form>
+    </div>
+
+    <!-- Status Card -->
+    <div class="bg-[#111827]/80 border border-gray-800/50 rounded-lg p-6 card-glow backdrop-blur-sm mb-6">
+        <div class="flex items-center justify-between mb-5">
+            <h3 class="text-sm font-semibold text-white uppercase tracking-wider">Vault Status</h3>
+            {% if vault_status is defined and vault_status and vault_status.connected %}
+            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-medium bg-emerald-500/10 text-emerald-400 uppercase tracking-wider">
+                <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 pulse-dot"></span>Connected
+            </span>
+            {% elif vault_status is defined and vault_status and vault_status.error %}
+            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-medium bg-red-500/10 text-red-400 uppercase tracking-wider">
+                <span class="w-1.5 h-1.5 rounded-full bg-red-500"></span>Error
+            </span>
+            {% else %}
+            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-medium bg-gray-500/10 text-gray-500 uppercase tracking-wider">
+                <span class="w-1.5 h-1.5 rounded-full bg-gray-600"></span>Not Connected
+            </span>
+            {% endif %}
+        </div>
+
+        {% if vault_status is defined and vault_status and vault_status.connected %}
+        <div class="grid grid-cols-3 gap-6">
+            <div>
+                <p class="text-[10px] text-gray-600 uppercase tracking-wider mb-1">Vault Version</p>
+                <p class="text-sm text-gray-300 font-mono">{{ vault_status.version }}</p>
+            </div>
+            <div>
+                <p class="text-[10px] text-gray-600 uppercase tracking-wider mb-1">Sealed</p>
+                {% if vault_status.sealed %}
+                <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium bg-red-500/10 text-red-400 uppercase tracking-wider">Sealed</span>
+                {% else %}
+                <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium bg-emerald-500/10 text-emerald-400 uppercase tracking-wider">Unsealed</span>
+                {% endif %}
+            </div>
+            <div>
+                <p class="text-[10px] text-gray-600 uppercase tracking-wider mb-1">Connection</p>
+                <p class="text-xs text-gray-400 font-mono">{{ vault_addr }}</p>
+            </div>
+        </div>
+        {% elif vault_status is defined and vault_status and vault_status.error %}
+        <div class="p-3 bg-red-900/10 border border-red-900/20 rounded">
+            <p class="text-xs text-red-400">{{ vault_status.error }}</p>
+        </div>
+        {% else %}
+        <p class="text-xs text-gray-600 py-4 text-center">Configure and test a Vault connection to see status details.</p>
+        {% endif %}
+    </div>
+
+    <!-- Key Migration Card -->
+    <div class="bg-[#111827]/80 border border-gray-800/50 rounded-lg p-6 card-glow backdrop-blur-sm">
+        <div class="flex items-center gap-3 mb-3">
+            <h3 class="text-sm font-semibold text-white uppercase tracking-wider">Migrate Agent Keys to Vault</h3>
+        </div>
+        <p class="text-xs text-gray-500 mb-4">Move agent private keys from the local database to Vault for enhanced security. This operation copies keys to Vault and removes local copies.</p>
+
+        <div class="flex items-center gap-4 mb-5 p-3 bg-surface-950 rounded-lg border border-gray-800/40">
+            <div>
+                <p class="text-[10px] text-gray-600 uppercase tracking-wider mb-1">Local Keys</p>
+                <p class="text-lg font-mono text-white">{{ local_key_count if local_key_count is defined else 0 }}</p>
+            </div>
+            <div class="text-gray-700">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"/></svg>
+            </div>
+            <div>
+                <p class="text-[10px] text-gray-600 uppercase tracking-wider mb-1">Vault Keys</p>
+                <p class="text-lg font-mono text-white">{{ vault_key_count if vault_key_count is defined else 0 }}</p>
+            </div>
+        </div>
+
+        {% if vault_status is defined and vault_status and vault_status.connected %}
+            {% if local_key_count is defined and local_key_count > 0 %}
+            <form method="post" action="/proxy/vault/migrate-keys"
+                  onsubmit="return confirm('Migrate all local keys to Vault? Local copies will be removed after successful migration.')">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button type="submit" id="migrate-btn"
+                        class="px-5 py-2.5 text-sm font-semibold rounded transition-all"
+                        style="font-family: 'Chakra Petch', sans-serif; background: #00e5c7; color: #0a0f1a; letter-spacing: 0.05em; text-transform: uppercase;"
+                        onmouseover="this.style.background='#fff'; this.style.boxShadow='0 0 20px rgba(0,229,199,0.15)'"
+                        onmouseout="this.style.background='#00e5c7'; this.style.boxShadow='none'">
+                    Migrate All Keys
+                </button>
+            </form>
+            {% else %}
+            <p class="text-xs text-gray-600 italic">No local keys to migrate.</p>
+            {% endif %}
+        {% else %}
+        <p class="text-xs text-gray-600 italic">Connect to Vault first to enable migration.</p>
+        {% endif %}
+    </div>
+</div>
+
+<script>
+function toggleTokenVisibility() {
+    var input = document.getElementById('vault-token-input');
+    var eyeIcon = document.getElementById('eye-icon');
+    var eyeOffIcon = document.getElementById('eye-off-icon');
+    if (input.type === 'password') {
+        input.type = 'text';
+        eyeIcon.classList.add('hidden');
+        eyeOffIcon.classList.remove('hidden');
+    } else {
+        input.type = 'password';
+        eyeIcon.classList.remove('hidden');
+        eyeOffIcon.classList.add('hidden');
+    }
+}
+</script>
+{% endblock %}

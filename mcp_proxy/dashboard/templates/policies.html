@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+{% block title %}Policies{% endblock %}
+{% block header_title %}Policy Management{% endblock %}
+{% block content %}
+<div class="max-w-4xl">
+
+    {% if error is defined and error %}
+    <div class="mb-4 p-3 bg-red-500/10 border border-red-500/20 rounded text-sm text-red-400">{{ error }}</div>
+    {% endif %}
+
+    <!-- Tabs -->
+    <div class="flex items-center gap-0 mb-6 border-b border-gray-800/60">
+        <button id="tab-rules" onclick="switchTab('rules')"
+                class="px-4 py-2.5 text-xs font-medium uppercase tracking-wider border-b-2 border-accent-400 text-accent-400 transition-colors">
+            Built-in Rules
+        </button>
+        <button id="tab-pdp" onclick="switchTab('pdp')"
+                class="px-4 py-2.5 text-xs font-medium uppercase tracking-wider border-b-2 border-transparent text-gray-500 hover:text-gray-300 transition-colors">
+            External PDP
+        </button>
+    </div>
+
+    <!-- Tab: Built-in Rules -->
+    <div id="panel-rules">
+        <form method="post" action="/proxy/policies/save">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="tab" value="rules">
+
+            <div class="bg-surface-900/80 border border-gray-800/50 rounded-lg p-6 card-glow backdrop-blur-sm">
+                <div class="flex items-center justify-between mb-4">
+                    <div>
+                        <h3 class="text-sm font-semibold text-white uppercase tracking-wider">Policy Rules</h3>
+                        <p class="text-xs text-gray-500 mt-1">JSON policy document applied to all tool execution requests.</p>
+                    </div>
+                </div>
+                <textarea name="rules_json"
+                          rows="18"
+                          spellcheck="false"
+                          class="w-full bg-surface-950 border border-gray-700/60 rounded px-4 py-3 text-xs text-gray-300 font-mono transition-all resize-y leading-relaxed"
+                          style="tab-size: 2;">{{ rules_json }}</textarea>
+                <div class="flex items-center justify-between mt-4">
+                    <p class="text-[10px] text-gray-600">Changes take effect immediately on save.</p>
+                    <button type="submit"
+                            class="px-5 py-2 text-xs font-semibold rounded transition-all"
+                            style="font-family: 'Chakra Petch', sans-serif; background: #00e5c7; color: #0a0f1a; letter-spacing: 0.05em; text-transform: uppercase;"
+                            onmouseover="this.style.background='#fff'"
+                            onmouseout="this.style.background='#00e5c7'">
+                        Save Rules
+                    </button>
+                </div>
+            </div>
+        </form>
+    </div>
+
+    <!-- Tab: External PDP -->
+    <div id="panel-pdp" class="hidden">
+        <form method="post" action="/proxy/policies/save">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="tab" value="pdp">
+
+            <div class="bg-surface-900/80 border border-gray-800/50 rounded-lg p-6 card-glow backdrop-blur-sm">
+                <div class="mb-5">
+                    <h3 class="text-sm font-semibold text-white uppercase tracking-wider">External Policy Decision Point</h3>
+                    <p class="text-xs text-gray-500 mt-1">Forward authorization decisions to an external webhook (OPA, Cedar, etc.).</p>
+                </div>
+
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-xs font-medium text-gray-400 mb-1.5 uppercase tracking-wider">Webhook URL</label>
+                        <div class="flex gap-2">
+                            <input type="url" name="pdp_url" value="{{ pdp_url }}"
+                                   placeholder="https://pdp.internal/v1/evaluate"
+                                   class="flex-1 bg-surface-950 border border-gray-700/60 rounded px-3 py-2.5 text-sm text-white placeholder-gray-600 font-mono transition-all">
+                            <button type="button"
+                                    hx-post="/proxy/policies/test-webhook"
+                                    hx-include="[name='pdp_url']"
+                                    hx-target="#webhook-result"
+                                    class="px-4 py-2 text-xs font-medium uppercase tracking-wider border border-gray-700 text-gray-400 rounded hover:bg-gray-800 hover:text-gray-300 transition-colors">
+                                Test
+                            </button>
+                        </div>
+                        <div id="webhook-result" class="mt-2 text-xs"></div>
+                    </div>
+
+                    <div>
+                        <label class="block text-xs font-medium text-gray-400 mb-1.5 uppercase tracking-wider">Timeout (seconds)</label>
+                        <input type="number" name="pdp_timeout" value="{{ pdp_timeout }}" min="1" max="30"
+                               class="w-24 bg-surface-950 border border-gray-700/60 rounded px-3 py-2.5 text-sm text-white font-mono transition-all">
+                        <p class="text-[10px] text-gray-600 mt-1">Requests that exceed this timeout will be denied.</p>
+                    </div>
+                </div>
+
+                <div class="flex items-center justify-end mt-6">
+                    <button type="submit"
+                            class="px-5 py-2 text-xs font-semibold rounded transition-all"
+                            style="font-family: 'Chakra Petch', sans-serif; background: #00e5c7; color: #0a0f1a; letter-spacing: 0.05em; text-transform: uppercase;"
+                            onmouseover="this.style.background='#fff'"
+                            onmouseout="this.style.background='#00e5c7'">
+                        Save PDP Config
+                    </button>
+                </div>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+function switchTab(tab) {
+    document.getElementById('panel-rules').classList.toggle('hidden', tab !== 'rules');
+    document.getElementById('panel-pdp').classList.toggle('hidden', tab !== 'pdp');
+
+    var rulesTab = document.getElementById('tab-rules');
+    var pdpTab = document.getElementById('tab-pdp');
+
+    if (tab === 'rules') {
+        rulesTab.className = 'px-4 py-2.5 text-xs font-medium uppercase tracking-wider border-b-2 border-accent-400 text-accent-400 transition-colors';
+        pdpTab.className = 'px-4 py-2.5 text-xs font-medium uppercase tracking-wider border-b-2 border-transparent text-gray-500 hover:text-gray-300 transition-colors';
+    } else {
+        pdpTab.className = 'px-4 py-2.5 text-xs font-medium uppercase tracking-wider border-b-2 border-accent-400 text-accent-400 transition-colors';
+        rulesTab.className = 'px-4 py-2.5 text-xs font-medium uppercase tracking-wider border-b-2 border-transparent text-gray-500 hover:text-gray-300 transition-colors';
+    }
+}
+</script>
+{% endblock %}

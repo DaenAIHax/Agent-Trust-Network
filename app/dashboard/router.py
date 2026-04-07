@@ -799,9 +799,72 @@ async def orgs_list(request: Request, db: AsyncSession = Depends(get_db)):
             "agent_count": agent_counts.get(org.org_id, 0),
         })
 
+    # Load invite tokens for admin
+    from app.onboarding.invite_store import list_invites, InviteToken
+    invites_raw = await list_invites(db)
+    invites = [
+        {
+            "id": inv.id,
+            "label": inv.label,
+            "created_at": inv.created_at,
+            "expires_at": inv.expires_at,
+            "used": inv.used,
+            "used_by_org_id": inv.used_by_org_id,
+            "revoked": inv.revoked,
+            "expired": inv.expires_at < datetime.datetime.now(datetime.timezone.utc),
+        }
+        for inv in invites_raw
+    ]
+
     return templates.TemplateResponse("orgs.html",
-        _ctx(request, session, active="orgs", orgs=org_list)
+        _ctx(request, session, active="orgs", orgs=org_list, invites=invites)
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Invite Token Dashboard Actions
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.post("/invites/generate", response_class=HTMLResponse)
+async def dashboard_generate_invite(request: Request, db: AsyncSession = Depends(get_db)):
+    session = require_login(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    if not session.is_admin:
+        return RedirectResponse(url="/dashboard", status_code=303)
+    if not await verify_csrf(request, session):
+        return RedirectResponse(url="/dashboard/orgs", status_code=303)
+
+    form_data = await request.form()
+    label = (form_data.get("label", "") or "").strip()
+    ttl_hours = int(form_data.get("ttl_hours", "72") or "72")
+
+    from app.onboarding.invite_store import create_invite
+    record, plaintext = await create_invite(db, label=label, ttl_hours=ttl_hours)
+    await log_event(db, "admin.invite_created", "ok",
+                    details={"invite_id": record.id, "label": label, "source": "dashboard"})
+
+    # Show the plaintext token once via flash-style redirect
+    return templates.TemplateResponse("invite_created.html",
+        _ctx(request, session, active="orgs",
+             invite_token=plaintext, invite_label=label, invite_id=record.id))
+
+
+@router.post("/invites/{invite_id}/revoke", response_class=HTMLResponse)
+async def dashboard_revoke_invite(request: Request, invite_id: str, db: AsyncSession = Depends(get_db)):
+    session = require_login(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    if not session.is_admin:
+        return RedirectResponse(url="/dashboard", status_code=303)
+    if not await verify_csrf(request, session):
+        return RedirectResponse(url="/dashboard/orgs", status_code=303)
+
+    from app.onboarding.invite_store import revoke_invite
+    await revoke_invite(db, invite_id)
+    await log_event(db, "admin.invite_revoked", "ok",
+                    details={"invite_id": invite_id, "source": "dashboard"})
+    return RedirectResponse(url="/dashboard/orgs", status_code=303)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

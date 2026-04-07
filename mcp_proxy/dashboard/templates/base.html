@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Dashboard{% endblock %} — Cullis MCP Proxy</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        surface: { 950:'#0a0f1a', 900:'#111827', 800:'#1a1f2e', 700:'#252b3d' },
+                        accent: { 400:'#00e5c7', 500:'#00c9ae', 600:'#00ad96' },
+                        info: { 400:'#0ea5e9', 500:'#0284c7' },
+                    },
+                    fontFamily: {
+                        heading: ['Chakra Petch', 'sans-serif'],
+                        body: ['DM Sans', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace'],
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body { font-family: 'DM Sans', sans-serif; background: #0a0f1a; color: #e5e7eb; }
+        h1, h2, h3, h4, h5, h6 { font-family: 'Chakra Petch', sans-serif; }
+        code, .font-mono, [class*="mono"] { font-family: 'JetBrains Mono', monospace; }
+
+        /* HTMX indicators */
+        [hx-indicator] .htmx-indicator { display: none; }
+        .htmx-request .htmx-indicator { display: inline-block; }
+
+        /* Pulse dot for active states */
+        @keyframes pulse-dot {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.4; transform: scale(0.85); }
+        }
+        .pulse-dot { animation: pulse-dot 2s ease-in-out infinite; }
+
+        /* SSE flash */
+        @keyframes sse-flash { 0% { opacity: 0.6; } 100% { opacity: 0; } }
+        .sse-flash { animation: sse-flash 0.6s ease-out; }
+
+        /* Card glow on hover */
+        .card-glow { transition: box-shadow 0.3s ease, border-color 0.3s ease; }
+        .card-glow:hover {
+            box-shadow: 0 0 20px rgba(0, 229, 199, 0.06);
+            border-color: rgba(0, 229, 199, 0.15);
+        }
+
+        /* Focus rings */
+        input:focus, select:focus, textarea:focus {
+            outline: none;
+            border-color: #00e5c7;
+            box-shadow: 0 0 0 2px rgba(0, 229, 199, 0.15);
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: #0a0f1a; }
+        ::-webkit-scrollbar-thumb { background: #252b3d; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #363d52; }
+
+        /* Toast container */
+        .toast-container { position: fixed; top: 1rem; right: 1rem; z-index: 100; }
+        @keyframes toast-in {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+        .toast-enter { animation: toast-in 0.3s ease-out; }
+
+        /* Sidebar active indicator */
+        .nav-active {
+            background: rgba(0, 229, 199, 0.08);
+            color: #00e5c7;
+            border-left: 2px solid #00e5c7;
+        }
+        .nav-item {
+            border-left: 2px solid transparent;
+            transition: all 0.15s ease;
+        }
+        .nav-item:hover:not(.nav-active) {
+            background: rgba(255, 255, 255, 0.03);
+            color: #d1d5db;
+        }
+
+        /* Table row hover */
+        .table-row-hover:hover { background: rgba(0, 229, 199, 0.03); }
+    </style>
+</head>
+<body class="h-full">
+<div class="flex h-full">
+
+    <!-- Sidebar -->
+    <nav class="w-56 flex-shrink-0 bg-surface-900 border-r border-gray-800/60 flex flex-col">
+        <!-- Brand -->
+        <div class="px-4 py-5 border-b border-gray-800/60">
+            <div class="flex items-center gap-2.5 mb-1">
+                <div class="w-7 h-7 rounded bg-accent-400/10 flex items-center justify-center">
+                    <svg class="w-4 h-4 text-accent-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z"/></svg>
+                </div>
+                <div>
+                    <span class="font-heading font-semibold text-sm text-white uppercase tracking-[0.15em]">Cullis</span>
+                    <span class="font-heading text-[10px] text-accent-400 uppercase tracking-[0.1em] ml-1">MCP</span>
+                </div>
+            </div>
+            <p class="text-[10px] text-gray-600 uppercase tracking-wider mt-1">Enterprise Proxy</p>
+        </div>
+
+        <!-- Navigation -->
+        <div class="flex-1 px-2 py-3 space-y-0.5">
+            <a href="/proxy/setup"
+               class="flex items-center gap-2.5 px-3 py-2 rounded text-sm nav-item {% if active == 'setup' %}nav-active{% else %}text-gray-500{% endif %}">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                Setup
+            </a>
+            <a href="/proxy/agents"
+               class="flex items-center gap-2.5 px-3 py-2 rounded text-sm nav-item {% if active == 'agents' %}nav-active{% else %}text-gray-500{% endif %}">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
+                Agents
+                <span hx-get="/proxy/badge/agents" hx-trigger="load, every 10s" hx-swap="innerHTML" class="ml-auto"></span>
+            </a>
+            <a href="/proxy/tools"
+               class="flex items-center gap-2.5 px-3 py-2 rounded text-sm nav-item {% if active == 'tools' %}nav-active{% else %}text-gray-500{% endif %}">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 4a2 2 0 114 0v1a1 1 0 001 1h3a1 1 0 011 1v3a1 1 0 01-1 1h-1a2 2 0 100 4h1a1 1 0 011 1v3a1 1 0 01-1 1h-3a1 1 0 01-1-1v-1a2 2 0 10-4 0v1a1 1 0 01-1 1H7a1 1 0 01-1-1v-3a1 1 0 00-1-1H4a2 2 0 110-4h1a1 1 0 001-1V7a1 1 0 011-1h3a1 1 0 001-1V4z"/></svg>
+                Tools
+            </a>
+            <a href="/proxy/pki"
+               class="flex items-center gap-2.5 px-3 py-2 rounded text-sm nav-item {% if active == 'pki' %}nav-active{% else %}text-gray-500{% endif %}">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M2.166 4.999A11.954 11.954 0 0010 1.944 11.954 11.954 0 0017.834 5c.11.65.166 1.32.166 2.001 0 5.225-3.34 9.67-8 11.317C5.34 16.67 2 12.225 2 7c0-.682.057-1.35.166-2.001zm11.541 3.708a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd" fill="currentColor" stroke="none"/></svg>
+                PKI
+            </a>
+            <a href="/proxy/vault"
+               class="flex items-center gap-2.5 px-3 py-2 rounded text-sm nav-item {% if active == 'vault' %}nav-active{% else %}text-gray-500{% endif %}">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
+                Vault
+            </a>
+            <a href="/proxy/policies"
+               class="flex items-center gap-2.5 px-3 py-2 rounded text-sm nav-item {% if active == 'policies' %}nav-active{% else %}text-gray-500{% endif %}">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+                Policies
+            </a>
+            <a href="/proxy/audit"
+               class="flex items-center gap-2.5 px-3 py-2 rounded text-sm nav-item {% if active == 'audit' %}nav-active{% else %}text-gray-500{% endif %}">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
+                Audit Log
+                <span hx-get="/proxy/badge/audit" hx-trigger="load, every 10s" hx-swap="innerHTML" class="ml-auto"></span>
+            </a>
+        </div>
+
+        <!-- Footer status -->
+        <div class="px-4 py-3 border-t border-gray-800/60 space-y-2">
+            <div class="flex items-center gap-2">
+                <span class="w-1.5 h-1.5 rounded-full bg-accent-400 pulse-dot"></span>
+                <span class="text-[10px] text-gray-600 uppercase tracking-wider">Proxy Active</span>
+            </div>
+            <a href="/proxy/logout"
+               class="flex items-center gap-2 px-2 py-1.5 rounded text-xs text-gray-500 hover:text-gray-300 hover:bg-gray-800/50 transition-colors">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg>
+                Logout
+            </a>
+        </div>
+    </nav>
+
+    <!-- Main content -->
+    <div class="flex-1 flex flex-col overflow-hidden">
+        <!-- Top bar -->
+        <header class="flex items-center justify-between px-6 py-3 border-b border-gray-800/60 bg-surface-950">
+            <div class="flex items-center gap-3">
+                <h1 class="font-heading text-sm font-semibold text-white uppercase tracking-wider">{% block header_title %}MCP Proxy{% endblock %}</h1>
+            </div>
+            <div class="flex items-center gap-3">
+                <span class="text-[10px] text-gray-600 uppercase tracking-wider">Admin</span>
+                <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-accent-400/10 text-accent-400 text-[10px] font-medium uppercase tracking-wider">
+                    <span class="w-1.5 h-1.5 rounded-full bg-accent-400 pulse-dot"></span>
+                    Online
+                </span>
+            </div>
+        </header>
+
+        <!-- Org status banner (HTMX auto-polling) -->
+        <div id="org-status-banner"
+             hx-get="/proxy/org-status"
+             hx-trigger="load, every 10s"
+             hx-swap="innerHTML"></div>
+
+        <main class="flex-1 overflow-y-auto p-6">
+            {% block content %}{% endblock %}
+        </main>
+    </div>
+</div>
+
+<!-- Toast container -->
+<div id="toast-container" class="toast-container"></div>
+
+<script>
+function showToast(message, type) {
+    var container = document.getElementById('toast-container');
+    var toast = document.createElement('div');
+    var colors = type === 'success'
+        ? 'bg-emerald-900/90 border-emerald-700/50 text-emerald-300'
+        : 'bg-red-900/90 border-red-700/50 text-red-300';
+    toast.className = 'toast-enter mb-2 px-4 py-3 rounded border backdrop-blur-sm text-sm ' + colors;
+    toast.textContent = message;
+    container.appendChild(toast);
+    setTimeout(function() { toast.remove(); }, 4000);
+}
+
+function copyToClipboard(text) {
+    navigator.clipboard.writeText(text).then(function() {
+        showToast('Copied to clipboard', 'success');
+    });
+}
+</script>
+</body>
+</html>

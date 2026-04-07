@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Invite Token Created{% endblock %}
+{% block content %}
+<div class="max-w-2xl">
+    <a href="/dashboard/orgs" class="text-sm text-gray-500 hover:text-gray-300 mb-4 inline-block">&larr; Back to Organizations</a>
+    <h2 class="text-2xl font-bold text-white mb-6">Invite Token Generated</h2>
+
+    <div class="mb-6 p-4 bg-emerald-500/10 border border-emerald-500/30 rounded-md">
+        <p class="text-sm text-emerald-400 mb-2">Token created successfully. Copy it now — it will not be shown again.</p>
+        <div class="flex items-center gap-2">
+            <code id="invite-token" class="flex-1 bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm text-white font-mono select-all break-all">{{ invite_token }}</code>
+            <button onclick="navigator.clipboard.writeText(document.getElementById('invite-token').textContent).then(()=>{this.textContent='Copied!';setTimeout(()=>{this.textContent='Copy'},1500)})"
+                    class="px-3 py-2 bg-brand-600 hover:bg-brand-700 text-white text-sm rounded-md whitespace-nowrap">Copy</button>
+        </div>
+    </div>
+
+    {% if invite_label %}
+    <p class="text-sm text-gray-400 mb-2">Label: <span class="text-white">{{ invite_label }}</span></p>
+    {% endif %}
+    <p class="text-sm text-gray-400 mb-4">ID: <code class="text-gray-500 text-xs">{{ invite_id }}</code></p>
+
+    <div class="p-4 bg-yellow-500/10 border border-yellow-500/30 rounded-md">
+        <p class="text-sm text-yellow-400">Send this token to the organization that needs to join. They must include it in their <code class="text-yellow-300">/onboarding/join</code> request as the <code class="text-yellow-300">invite_token</code> field.</p>
+    </div>
+
+    <div class="mt-6">
+        <a href="/dashboard/orgs" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded-md">Done</a>
+    </div>
+</div>
+{% endblock %}

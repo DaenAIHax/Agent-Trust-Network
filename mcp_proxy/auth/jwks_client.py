@@ -1,0 +1,143 @@
+"""
+Async JWKS client — fetches and caches public keys from the broker's JWKS endpoint.
+
+Supports:
+  - Remote JWKS URL (normal operation)
+  - Local override file (air-gapped deployments)
+  - Automatic cache refresh on key-id miss (with rate limiting)
+"""
+import base64
+import json
+import logging
+import time
+
+import httpx
+from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey, RSAPublicNumbers
+
+_log = logging.getLogger("mcp_proxy")
+
+# Minimum interval between forced re-fetches (prevents abuse)
+_MIN_REFETCH_INTERVAL = 60  # seconds
+
+
+def _b64url_decode(s: str) -> bytes:
+    """Base64url-decode with padding restoration."""
+    padding = 4 - len(s) % 4
+    if padding != 4:
+        s += "=" * padding
+    return base64.urlsafe_b64decode(s)
+
+
+def _jwk_to_rsa_public_key(jwk: dict) -> RSAPublicKey:
+    """Convert a JWK dict (kty=RSA) to a cryptography RSAPublicKey."""
+    if jwk.get("kty") != "RSA":
+        raise ValueError(f"Expected kty=RSA, got {jwk.get('kty')!r}")
+    n = int.from_bytes(_b64url_decode(jwk["n"]), "big")
+    e = int.from_bytes(_b64url_decode(jwk["e"]), "big")
+    return RSAPublicNumbers(e=e, n=n).public_key()
+
+
+class JWKSClient:
+    """Async JWKS fetcher with in-memory cache.
+
+    Args:
+        jwks_url: Remote JWKS endpoint URL.
+        override_path: Local JSON file path (air-gapped fallback).
+        refresh_interval: Maximum cache age in seconds before background refresh.
+    """
+
+    def __init__(
+        self,
+        jwks_url: str = "",
+        override_path: str = "",
+        refresh_interval: int = 3600,
+    ) -> None:
+        self._jwks_url = jwks_url
+        self._override_path = override_path
+        self._refresh_interval = refresh_interval
+        self._cache: dict[str, RSAPublicKey] = {}  # kid -> RSAPublicKey
+        self._last_fetch: float = 0
+        self._http: httpx.AsyncClient | None = None
+
+    async def _get_http(self) -> httpx.AsyncClient:
+        """Lazy-init httpx client."""
+        if self._http is None or self._http.is_closed:
+            self._http = httpx.AsyncClient(
+                timeout=httpx.Timeout(10.0),
+                follow_redirects=True,
+            )
+        return self._http
+
+    async def fetch(self) -> dict[str, RSAPublicKey]:
+        """Fetch the JWKS and update the cache. Returns the full key map."""
+        keys: dict[str, RSAPublicKey] = {}
+
+        if self._override_path:
+            # Air-gapped: load from local file
+            _log.info("Loading JWKS from local file: %s", self._override_path)
+            with open(self._override_path) as f:
+                jwks_data = json.load(f)
+        elif self._jwks_url:
+            # Normal: fetch from remote
+            _log.info("Fetching JWKS from: %s", self._jwks_url)
+            client = await self._get_http()
+            resp = await client.get(self._jwks_url)
+            resp.raise_for_status()
+            jwks_data = resp.json()
+        else:
+            _log.debug("No JWKS URL or override path configured — skipping fetch")
+            return self._cache
+
+        # Parse JWK set
+        for jwk in jwks_data.get("keys", []):
+            kid = jwk.get("kid")
+            kty = jwk.get("kty")
+            if not kid:
+                _log.warning("Skipping JWK without kid: %s", jwk.get("alg"))
+                continue
+            if kty != "RSA":
+                _log.debug("Skipping non-RSA key: kid=%s kty=%s", kid, kty)
+                continue
+            try:
+                keys[kid] = _jwk_to_rsa_public_key(jwk)
+            except Exception as exc:
+                _log.warning("Failed to parse JWK kid=%s: %s", kid, exc)
+
+        self._cache = keys
+        self._last_fetch = time.time()
+        _log.info("JWKS cache updated: %d key(s)", len(keys))
+        return keys
+
+    async def get_public_key(self, kid: str) -> RSAPublicKey:
+        """Look up a public key by kid, re-fetching if necessary.
+
+        Raises:
+            KeyError: If the kid is not found even after a fresh fetch.
+        """
+        # Try cache first
+        if kid in self._cache:
+            return self._cache[kid]
+
+        # Cache miss — re-fetch if cache is old enough
+        age = time.time() - self._last_fetch
+        if age >= _MIN_REFETCH_INTERVAL:
+            _log.info("JWKS cache miss for kid=%s, re-fetching (cache age=%.0fs)", kid, age)
+            await self.fetch()
+            if kid in self._cache:
+                return self._cache[kid]
+
+        raise KeyError(f"Unknown key ID: {kid!r}")
+
+    @property
+    def cache_age(self) -> float:
+        """Seconds since last fetch, or inf if never fetched."""
+        if self._last_fetch == 0:
+            return float("inf")
+        return time.time() - self._last_fetch
+
+    async def close(self) -> None:
+        """Close the httpx client."""
+        if self._http and not self._http.is_closed:
+            await self._http.aclose()
+            self._http = None
+        _log.debug("JWKS client closed")

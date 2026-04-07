@@ -54,6 +54,7 @@ AGENT_NAME=$(ask "Agent name (e.g. procurement-agent)")
 CAPABILITIES=$(ask "Agent capabilities (comma-separated)" "order.read,order.write")
 TRUST_DOMAIN=$(ask "Trust domain" "atn.local")
 CONTACT_EMAIL=$(ask "Contact email" "")
+INVITE_TOKEN=$(ask "Invite token (from network admin)")
 
 AGENT_ID="${ORG_ID}::${AGENT_NAME}"
 OUT_DIR="./atn-${ORG_ID}"
@@ -117,7 +118,8 @@ HTTP_CODE=$(curl -s -o /tmp/atn_response.json -w "%{http_code}" \
     "display_name": "${ORG_DISPLAY}",
     "secret": "${ORG_SECRET}",
     "ca_certificate": $(echo "$CA_PEM" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))'),
-    "contact_email": "${CONTACT_EMAIL}"
+    "contact_email": "${CONTACT_EMAIL}",
+    "invite_token": "${INVITE_TOKEN}"
 }
 EOF
 )")

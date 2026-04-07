@@ -1,0 +1,160 @@
+{% extends "base.html" %}
+{% block title %}{{ agent.display_name }}{% endblock %}
+{% block header_title %}Agent Detail{% endblock %}
+{% block content %}
+<div class="max-w-4xl">
+
+    <!-- Back link -->
+    <a href="/proxy/agents" class="inline-flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-300 transition-colors mb-6">
+        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+        Back to Agents
+    </a>
+
+    <!-- New API Key reveal (shown only after rotation) -->
+    {% if new_api_key %}
+    <div class="mb-6 p-5 bg-amber-900/10 border border-amber-600/30 rounded-lg">
+        <div class="flex items-start gap-3">
+            <svg class="w-5 h-5 text-amber-500 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z"/></svg>
+            <div class="flex-1">
+                <p class="text-sm font-semibold text-amber-400 mb-1">New API Key — Save This Now</p>
+                <p class="text-xs text-amber-500/70 mb-3">This key will only be shown once. The old key is now invalid.</p>
+                <div class="flex items-center gap-2">
+                    <code class="flex-1 bg-surface-950 border border-gray-700/60 rounded px-3 py-2 text-xs text-accent-400 font-mono select-all break-all">{{ new_api_key }}</code>
+                    <button onclick="copyToClipboard('{{ new_api_key }}')"
+                            class="px-3 py-2 border border-gray-700 rounded text-xs text-gray-400 hover:text-white hover:bg-gray-800 transition-colors flex-shrink-0">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3"/></svg>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Agent info card -->
+    <div class="bg-surface-900/80 border border-gray-800/50 rounded-lg p-6 card-glow backdrop-blur-sm mb-6">
+        <div class="flex items-start justify-between mb-6">
+            <div>
+                <h2 class="text-lg font-semibold text-white">{{ agent.display_name }}</h2>
+                <p class="text-xs font-mono text-gray-500 mt-1">{{ agent.agent_id }}</p>
+            </div>
+            {% if agent.is_active %}
+            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-medium bg-emerald-500/10 text-emerald-400 uppercase tracking-wider">
+                <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 pulse-dot"></span>Active
+            </span>
+            {% else %}
+            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-medium bg-gray-500/10 text-gray-500 uppercase tracking-wider">
+                <span class="w-1.5 h-1.5 rounded-full bg-gray-600"></span>Inactive
+            </span>
+            {% endif %}
+        </div>
+
+        <div class="grid grid-cols-3 gap-6">
+            <div>
+                <p class="text-[10px] text-gray-600 uppercase tracking-wider mb-1">Created</p>
+                <p class="text-sm text-gray-300 font-mono">{{ agent.created_at[:19] }}</p>
+            </div>
+            <div>
+                <p class="text-[10px] text-gray-600 uppercase tracking-wider mb-1">Capabilities</p>
+                <div class="flex flex-wrap gap-1">
+                    {% for cap in agent.capabilities %}
+                    <span class="px-1.5 py-0.5 rounded text-[10px] font-mono bg-info-400/10 text-info-400">{{ cap }}</span>
+                    {% endfor %}
+                    {% if not agent.capabilities %}
+                    <span class="text-xs text-gray-600">none</span>
+                    {% endif %}
+                </div>
+            </div>
+            <div>
+                <p class="text-[10px] text-gray-600 uppercase tracking-wider mb-1">API Key Hash</p>
+                <p class="text-xs text-gray-500 font-mono truncate" title="{{ agent.api_key_hash }}">{{ agent.api_key_hash[:20] }}...</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- API Key management -->
+    <div class="bg-surface-900/80 border border-gray-800/50 rounded-lg p-6 card-glow backdrop-blur-sm mb-6">
+        <h3 class="text-sm font-semibold text-white uppercase tracking-wider mb-4">API Key Management</h3>
+        <p class="text-xs text-gray-500 mb-4">Rotating the key immediately invalidates the current key. The agent must be updated with the new key.</p>
+        <form method="post" action="/proxy/agents/{{ agent.agent_id }}/rotate-key"
+              onsubmit="return confirm('Rotate API key? The current key will stop working immediately.')">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit"
+                    class="px-4 py-2 text-xs font-medium uppercase tracking-wider border border-amber-600/40 text-amber-400 rounded hover:bg-amber-900/20 transition-colors">
+                <svg class="w-3.5 h-3.5 inline mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                Rotate Key
+            </button>
+        </form>
+    </div>
+
+    <!-- Recent audit entries -->
+    <div class="bg-surface-900/80 border border-gray-800/50 rounded-lg overflow-hidden backdrop-blur-sm mb-6">
+        <div class="px-6 py-4 border-b border-gray-800/60">
+            <h3 class="text-sm font-semibold text-white uppercase tracking-wider">Recent Activity</h3>
+        </div>
+        <table class="w-full">
+            <thead>
+                <tr class="border-b border-gray-800/40">
+                    <th class="px-5 py-2.5 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Timestamp</th>
+                    <th class="px-5 py-2.5 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Action</th>
+                    <th class="px-5 py-2.5 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Tool</th>
+                    <th class="px-5 py-2.5 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Status</th>
+                    <th class="px-5 py-2.5 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Detail</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-800/40">
+                {% for entry in audit_entries %}
+                <tr class="table-row-hover transition-colors">
+                    <td class="px-5 py-3 text-xs text-gray-500 font-mono whitespace-nowrap">{{ entry.timestamp[:19] }}</td>
+                    <td class="px-5 py-3 text-xs text-gray-300">{{ entry.action }}</td>
+                    <td class="px-5 py-3 text-xs text-gray-400 font-mono">{{ entry.tool_name or '-' }}</td>
+                    <td class="px-5 py-3">
+                        {% if entry.status == 'success' %}
+                        <span class="text-[10px] text-emerald-400 uppercase tracking-wider">OK</span>
+                        {% elif entry.status == 'denied' %}
+                        <span class="text-[10px] text-red-400 uppercase tracking-wider">Denied</span>
+                        {% elif entry.status == 'error' %}
+                        <span class="text-[10px] text-red-400 uppercase tracking-wider">Error</span>
+                        {% else %}
+                        <span class="text-[10px] text-yellow-400 uppercase tracking-wider">{{ entry.status }}</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-5 py-3 text-xs text-gray-600 max-w-[200px] truncate" title="{{ entry.detail or '' }}">{{ entry.detail or '-' }}</td>
+                </tr>
+                {% endfor %}
+                {% if not audit_entries %}
+                <tr><td colspan="5" class="px-5 py-8 text-center text-xs text-gray-600">No recent activity</td></tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Danger zone -->
+    <div class="bg-red-900/5 border border-red-900/20 rounded-lg p-6">
+        <h3 class="text-sm font-semibold text-red-400 uppercase tracking-wider mb-2">Danger Zone</h3>
+        {% if agent.is_active %}
+        <div class="mb-4">
+            <p class="text-xs text-gray-500 mb-3">Deactivating an agent revokes its API key and prevents all future requests.</p>
+            <form method="post" action="/proxy/agents/{{ agent.agent_id }}/deactivate"
+                  onsubmit="return confirm('Deactivate this agent? It will no longer be able to authenticate.')">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button type="submit"
+                        class="px-4 py-2 text-xs font-medium uppercase tracking-wider bg-yellow-600/20 border border-yellow-600/30 text-yellow-400 rounded hover:bg-yellow-600/30 transition-colors">
+                    Deactivate Agent
+                </button>
+            </form>
+        </div>
+        {% endif %}
+        <div>
+            <p class="text-xs text-gray-500 mb-3">Permanently delete this agent, its certificate, and all associated data. This cannot be undone.</p>
+            <form method="post" action="/proxy/agents/{{ agent.agent_id }}/delete"
+                  onsubmit="return confirm('PERMANENTLY DELETE this agent? All data, certificates and keys will be lost. This cannot be undone.')">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button type="submit"
+                        class="px-4 py-2 text-xs font-medium uppercase tracking-wider bg-red-600/20 border border-red-600/30 text-red-400 rounded hover:bg-red-600/30 transition-colors">
+                    Delete Agent
+                </button>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}
