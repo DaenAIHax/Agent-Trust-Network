@@ -32,6 +32,14 @@ for arg in "$@"; do
   [[ "$arg" == "--no-build" ]] && NO_BUILD=1
 done
 
+# ── 0. Ensure .env exists with secure secrets ────────────────────────────────
+if [[ ! -f "$SCRIPT_DIR/.env" ]]; then
+    log "No .env found — generating with secure defaults..."
+    bash "$SCRIPT_DIR/scripts/generate-env.sh" --defaults --force
+else
+    ok ".env already exists"
+fi
+
 # ── 1. PKI ───────────────────────────────────────────────────────────────────
 log "Generating broker PKI..."
 $PYTHON generate_certs.py

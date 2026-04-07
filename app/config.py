@@ -110,9 +110,14 @@ def validate_config(settings: "Settings") -> None:
                 "ADMIN_SECRET is still the insecure default in production.")
             raise SystemExit(1)
 
-    # ── Warning checks (all environments) ──────────────────────────────────
+    # ── Fatal checks (all environments) ─────────────────────────────────────
     if not is_production and settings.admin_secret == _INSECURE_DEFAULT_SECRET:
-        _startup_logger.warning("ADMIN_SECRET is the insecure default — acceptable in dev only.")
+        _startup_logger.critical(
+            "ADMIN_SECRET is the insecure default '%s'. "
+            "Run ./scripts/generate-env.sh to generate secure secrets, "
+            "or set ADMIN_SECRET in .env.",
+            _INSECURE_DEFAULT_SECRET)
+        raise SystemExit(1)
 
     if not settings.redis_url:
         _startup_logger.warning("REDIS_URL not set — falling back to in-memory stores.")

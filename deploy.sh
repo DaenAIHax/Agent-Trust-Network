@@ -126,93 +126,10 @@ fi
 # ═══════════════════════════════════════════════════════════════════════════════
 step "Environment configuration (.env)"
 
-generate_secret() {
-    openssl rand -base64 32 | tr -d '/+=' | head -c 32
-}
-
-if [[ -f "$SCRIPT_DIR/.env" ]]; then
-    warn ".env already exists"
-    if ! ask_yn "Overwrite .env with fresh secrets?"; then
-        ok "Keeping existing .env"
-    else
-        _GENERATE_ENV=1
-    fi
+if [[ "$MODE" == "production" ]]; then
+    DOMAIN="${DOMAIN}" bash "$SCRIPT_DIR/scripts/generate-env.sh" --prod
 else
-    _GENERATE_ENV=1
-fi
-
-if [[ "${_GENERATE_ENV:-0}" == "1" ]]; then
-    # Generate secrets
-    ADMIN_SECRET="$(generate_secret)"
-    COOKIE_SIGNING_KEY="$(generate_secret)"
-    PG_PASSWORD="$(generate_secret)"
-
-    # Generate broker signing key (RSA 4096)
-    BROKER_KEY_DIR="$SCRIPT_DIR/.keys"
-    mkdir -p "$BROKER_KEY_DIR"
-    if [[ ! -f "$BROKER_KEY_DIR/broker-signing.pem" ]]; then
-        openssl genrsa -out "$BROKER_KEY_DIR/broker-signing.pem" 4096 2>/dev/null
-        chmod 600 "$BROKER_KEY_DIR/broker-signing.pem"
-        ok "Generated RSA 4096 broker signing key"
-    else
-        ok "Broker signing key already exists"
-    fi
-
-    # Determine URLs
-    if [[ "$MODE" == "production" ]]; then
-        BROKER_URL="https://${DOMAIN}"
-        ALLOWED_ORIGINS="https://${DOMAIN}"
-        ENV_VALUE="production"
-    else
-        # Detect LAN IP for multi-VM demos
-        _DETECTED_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || true)
-        if [[ -n "$_DETECTED_IP" && "$_DETECTED_IP" != "127.0.0.1" ]]; then
-            echo ""
-            echo "  Detected LAN IP: ${_DETECTED_IP}"
-            echo "  Agents on other machines need BROKER_PUBLIC_URL to match their BROKER_URL."
-            echo ""
-            echo "  1) https://localhost:8443  (local only — agents on this machine)"
-            echo "  2) http://${_DETECTED_IP}:8000   (LAN — agents on other VMs, no TLS)"
-            echo "  3) https://${_DETECTED_IP}:8443  (LAN — agents on other VMs, self-signed TLS)"
-            read -rp "  Choose BROKER_PUBLIC_URL [1/2/3]: " _url_choice
-            case "$_url_choice" in
-                2) BROKER_URL="http://${_DETECTED_IP}:8000" ;;
-                3) BROKER_URL="https://${_DETECTED_IP}:8443" ;;
-                *) BROKER_URL="https://localhost:8443" ;;
-            esac
-        else
-            BROKER_URL="https://localhost:8443"
-        fi
-        ALLOWED_ORIGINS="*"
-        ENV_VALUE="development"
-        ok "BROKER_PUBLIC_URL=${BROKER_URL}"
-    fi
-
-    # Copy .env.example and fill in values
-    cp "$SCRIPT_DIR/.env.example" "$SCRIPT_DIR/.env"
-
-    # Replace values in .env
-    sed -i "s|^ADMIN_SECRET=.*|ADMIN_SECRET=${ADMIN_SECRET}|" "$SCRIPT_DIR/.env"
-    sed -i "s|^DASHBOARD_SIGNING_KEY=.*|DASHBOARD_SIGNING_KEY=${COOKIE_SIGNING_KEY}|" "$SCRIPT_DIR/.env"
-    sed -i "s|^ALLOWED_ORIGINS=.*|ALLOWED_ORIGINS=${ALLOWED_ORIGINS}|" "$SCRIPT_DIR/.env"
-    sed -i "s|^DATABASE_URL=.*|DATABASE_URL=postgresql+asyncpg://atn:${PG_PASSWORD}@postgres:5432/agent_trust|" "$SCRIPT_DIR/.env"
-    sed -i "s|^BROKER_PUBLIC_URL=.*|BROKER_PUBLIC_URL=${BROKER_URL}|" "$SCRIPT_DIR/.env"
-
-    # Add production-only variables
-    if [[ "$MODE" == "production" ]]; then
-        # Add POSTGRES_PASSWORD for docker-compose.prod.yml
-        echo "" >> "$SCRIPT_DIR/.env"
-        echo "# ─── Production ───────────────────────────────────────────────────────────" >> "$SCRIPT_DIR/.env"
-        echo "ENVIRONMENT=production" >> "$SCRIPT_DIR/.env"
-        echo "POSTGRES_PASSWORD=${PG_PASSWORD}" >> "$SCRIPT_DIR/.env"
-        echo "TRUST_DOMAIN=${DOMAIN}" >> "$SCRIPT_DIR/.env"
-    else
-        echo "" >> "$SCRIPT_DIR/.env"
-        echo "# ─── Environment ────────────────────────────────────────────────────────────" >> "$SCRIPT_DIR/.env"
-        echo "ENVIRONMENT=development" >> "$SCRIPT_DIR/.env"
-    fi
-
-    ok "Generated .env with fresh secrets"
+    bash "$SCRIPT_DIR/scripts/generate-env.sh"
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════════

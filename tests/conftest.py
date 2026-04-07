@@ -1,5 +1,6 @@
 import os
 os.environ.setdefault("OTEL_ENABLED", "false")
+os.environ.setdefault("ADMIN_SECRET", "test-secret-not-default")
 os.environ["SKIP_ALEMBIC"] = "1"
 
 import pytest
@@ -25,7 +26,7 @@ from app.broker.notifications import Notification as _Notification  # noqa — r
 from app.rate_limit.limiter import rate_limiter
 
 # Admin headers for endpoints that now require admin auth
-ADMIN_HEADERS = {"x-admin-secret": "change-me-in-production"}
+ADMIN_HEADERS = {"x-admin-secret": "test-secret-not-default"}
 
 TEST_DB_URL = "sqlite+aiosqlite:///:memory:"
 
@@ -45,7 +46,7 @@ async def override_get_db():
 
 app.dependency_overrides[get_db] = override_get_db
 
-# Override admin secret check for tests — the test admin secret is "change-me-in-production"
+# Override admin secret check for tests — the test admin secret is "test-secret-not-default"
 # (the default from Settings). Tests that need to verify admin auth explicitly
 # pass the correct header.
 from app.registry.org_router import _require_admin as _org_require_admin
