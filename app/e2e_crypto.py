@@ -5,14 +5,51 @@ Schema:
   sender:    sign(plaintext) -> encrypt({payload, inner_sig}) with recipient pubkey -> sign(ciphertext)
   broker:    verify outer signature on ciphertext (transport integrity), forward opaque blob
   recipient: decrypt -> verify inner signature on plaintext (non-repudiation)
+
+Supports both RSA and EC keys:
+  RSA: AES-256-GCM + RSA-OAEP-SHA256 key wrapping
+  EC:  AES-256-GCM + ECDH ephemeral key agreement + HKDF key derivation
 """
 import base64
 import json
 import os
 
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import padding as asym_padding
+from cryptography.hazmat.primitives.asymmetric import ec, padding as asym_padding, rsa
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+
+
+def _encrypt_aes_key_rsa(pubkey, aes_key: bytes) -> dict:
+    """Wrap AES key with RSA-OAEP."""
+    encrypted_key = pubkey.encrypt(
+        aes_key,
+        asym_padding.OAEP(
+            mgf=asym_padding.MGF1(algorithm=hashes.SHA256()),
+            algorithm=hashes.SHA256(),
+            label=None,
+        ),
+    )
+    return {"encrypted_key": base64.urlsafe_b64encode(encrypted_key).decode()}
+
+
+def _encrypt_aes_key_ec(pubkey, aes_key: bytes) -> dict:
+    """Wrap AES key with ECDH + HKDF."""
+    ephemeral_key = ec.generate_private_key(pubkey.curve)
+    shared_secret = ephemeral_key.exchange(ec.ECDH(), pubkey)
+    derived_key = HKDF(
+        algorithm=hashes.SHA256(), length=32,
+        salt=None, info=b"cullis-e2e-v1",
+    ).derive(shared_secret)
+    # XOR the AES key with the derived key
+    encrypted_key = bytes(a ^ b for a, b in zip(aes_key, derived_key))
+    ephemeral_pub_bytes = ephemeral_key.public_key().public_bytes(
+        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    return {
+        "encrypted_key": base64.urlsafe_b64encode(encrypted_key).decode(),
+        "ephemeral_pubkey": base64.urlsafe_b64encode(ephemeral_pub_bytes).decode(),
+    }
 
 
 def encrypt_for_agent(
@@ -26,12 +63,10 @@ def encrypt_for_agent(
     """
     Cifra payload e firma interna con la chiave pubblica del destinatario.
 
-    Schema ibrido: AES-256-GCM per i dati, RSA-OAEP-SHA256 per la chiave AES.
-    L'AAD (Additional Authenticated Data) lega il ciphertext al contesto di sessione,
-    impedendo che un blob cifrato valido venga reindirizzato a un'altra sessione o mittente.
+    Schema ibrido: AES-256-GCM per i dati, RSA-OAEP o ECDH per la chiave AES.
+    L'AAD (Additional Authenticated Data) lega il ciphertext al contesto di sessione.
 
-    Ritorna: {ciphertext: base64, encrypted_key: base64, iv: base64}
-    Il tag GCM è incluso nel ciphertext (ultimi 16 byte).
+    Ritorna: {ciphertext: base64, encrypted_key: base64, iv: base64, [ephemeral_pubkey: base64]}
     """
     pubkey = serialization.load_pem_public_key(recipient_pubkey_pem.encode())
 
@@ -48,10 +83,28 @@ def encrypt_for_agent(
         aad = f"{session_id}|{sender_agent_id}|{client_seq}".encode()
     else:
         aad = f"{session_id}|{sender_agent_id}".encode()
-    ciphertext = aesgcm.encrypt(iv, plaintext, aad)  # include GCM tag (16 byte)
+    ciphertext = aesgcm.encrypt(iv, plaintext, aad)
 
-    encrypted_key = pubkey.encrypt(
-        aes_key,
+    if isinstance(pubkey, rsa.RSAPublicKey):
+        key_data = _encrypt_aes_key_rsa(pubkey, aes_key)
+    elif isinstance(pubkey, ec.EllipticCurvePublicKey):
+        key_data = _encrypt_aes_key_ec(pubkey, aes_key)
+    else:
+        raise ValueError(f"Unsupported key type: {type(pubkey).__name__}")
+
+    result = {
+        "ciphertext": base64.urlsafe_b64encode(ciphertext).decode(),
+        "iv": base64.urlsafe_b64encode(iv).decode(),
+    }
+    result.update(key_data)
+    return result
+
+
+def _decrypt_aes_key_rsa(privkey, cipher_blob: dict) -> bytes:
+    """Unwrap AES key with RSA-OAEP."""
+    encrypted_key = base64.urlsafe_b64decode(cipher_blob["encrypted_key"])
+    return privkey.decrypt(
+        encrypted_key,
         asym_padding.OAEP(
             mgf=asym_padding.MGF1(algorithm=hashes.SHA256()),
             algorithm=hashes.SHA256(),
@@ -59,11 +112,18 @@ def encrypt_for_agent(
         ),
     )
 
-    return {
-        "ciphertext": base64.urlsafe_b64encode(ciphertext).decode(),
-        "encrypted_key": base64.urlsafe_b64encode(encrypted_key).decode(),
-        "iv": base64.urlsafe_b64encode(iv).decode(),
-    }
+
+def _decrypt_aes_key_ec(privkey, cipher_blob: dict) -> bytes:
+    """Unwrap AES key with ECDH + HKDF."""
+    encrypted_key = base64.urlsafe_b64decode(cipher_blob["encrypted_key"])
+    ephemeral_pub_pem = base64.urlsafe_b64decode(cipher_blob["ephemeral_pubkey"])
+    ephemeral_pub = serialization.load_pem_public_key(ephemeral_pub_pem)
+    shared_secret = privkey.exchange(ec.ECDH(), ephemeral_pub)
+    derived_key = HKDF(
+        algorithm=hashes.SHA256(), length=32,
+        salt=None, info=b"cullis-e2e-v1",
+    ).derive(shared_secret)
+    return bytes(a ^ b for a, b in zip(encrypted_key, derived_key))
 
 
 def decrypt_from_agent(
@@ -76,29 +136,21 @@ def decrypt_from_agent(
     """
     Decifra un blob cifrato. Ritorna (payload_dict, inner_signature).
 
-    session_id e sender_agent_id devono corrispondere a quelli usati in encrypt_for_agent:
-    vengono usati come AAD per verificare l'integrità del contesto di sessione.
-
-    Raises:
-        KeyError: se cipher_blob non ha i campi attesi
-        ValueError: se la decifrazione fallisce (chiave sbagliata, blob corrotto o AAD mismatch)
+    Supporta sia RSA-OAEP che ECDH per l'unwrap della chiave AES.
     """
     privkey = serialization.load_pem_private_key(
         recipient_privkey_pem.encode(), password=None
     )
 
-    encrypted_key = base64.urlsafe_b64decode(cipher_blob["encrypted_key"])
     iv = base64.urlsafe_b64decode(cipher_blob["iv"])
     ciphertext = base64.urlsafe_b64decode(cipher_blob["ciphertext"])
 
-    aes_key = privkey.decrypt(
-        encrypted_key,
-        asym_padding.OAEP(
-            mgf=asym_padding.MGF1(algorithm=hashes.SHA256()),
-            algorithm=hashes.SHA256(),
-            label=None,
-        ),
-    )
+    if isinstance(privkey, rsa.RSAPrivateKey):
+        aes_key = _decrypt_aes_key_rsa(privkey, cipher_blob)
+    elif isinstance(privkey, ec.EllipticCurvePrivateKey):
+        aes_key = _decrypt_aes_key_ec(privkey, cipher_blob)
+    else:
+        raise ValueError(f"Unsupported key type: {type(privkey).__name__}")
 
     aesgcm = AESGCM(aes_key)
     if client_seq is not None:
@@ -144,12 +196,17 @@ def verify_inner_signature(
     else:
         canonical = f"{session_id}|{sender_agent_id}|{nonce}|{timestamp}|{payload_str}".encode("utf-8")
 
-    pss_padding = asym_pad.PSS(
-        mgf=asym_pad.MGF1(hashes.SHA256()),
-        salt_length=asym_pad.PSS.MAX_LENGTH,
-    )
     try:
-        pub_key.verify(sig, canonical, pss_padding, hashes.SHA256())
+        if isinstance(pub_key, rsa.RSAPublicKey):
+            pss_padding = asym_pad.PSS(
+                mgf=asym_pad.MGF1(hashes.SHA256()),
+                salt_length=asym_pad.PSS.MAX_LENGTH,
+            )
+            pub_key.verify(sig, canonical, pss_padding, hashes.SHA256())
+        elif isinstance(pub_key, ec.EllipticCurvePublicKey):
+            pub_key.verify(sig, canonical, ec.ECDSA(hashes.SHA256()))
+        else:
+            raise ValueError(f"Unsupported key type: {type(pub_key).__name__}")
         return True
     except InvalidSignature:
         raise ValueError("Inner signature verification failed — message may have been tampered with")

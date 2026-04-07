@@ -83,7 +83,11 @@ app = FastAPI(
 
 @app.exception_handler(Exception)
 async def generic_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    logger.error("Unhandled error on %s %s: %s", request.method, request.url.path, exc, exc_info=True)
+    import traceback
+    tb = traceback.format_exception(type(exc), exc, exc.__traceback__)
+    logger.error("Unhandled error on %s %s: %s\n%s", request.method, request.url.path, exc, "".join(tb))
+    print(f"[500] {request.method} {request.url.path}: {exc}", flush=True)
+    print("".join(tb), flush=True)
     return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
 _cors_origins = [o.strip() for o in settings.allowed_origins.split(",") if o.strip()]

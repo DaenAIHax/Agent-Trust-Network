@@ -104,6 +104,7 @@ async def list_registered_agents(
                 agent_id=a.agent_id,
                 org_id=a.org_id,
                 display_name=a.display_name,
+                description=a.description or "",
                 capabilities=a.capabilities,
                 is_active=a.is_active,
                 registered_at=a.registered_at,
@@ -123,6 +124,7 @@ async def search_agents_endpoint(
     agent_uri: str | None = Query(None, description="Direct lookup by SPIFFE URI"),
     org_id: str | None = Query(None, description="Filter by organization"),
     pattern: str | None = Query(None, description="Glob pattern on agent_id (e.g. italmetal::*)"),
+    q: str | None = Query(None, description="Free-text search across name, description, agent_id, org_id"),
     include_own_org: bool = Query(False, description="Include agents from your own org"),
     current_agent: TokenPayload = Depends(get_current_agent),
     db: AsyncSession = Depends(get_db),
@@ -139,7 +141,7 @@ async def search_agents_endpoint(
 
     Direct lookups (agent_id, agent_uri) always include own org regardless of flag.
     """
-    if not any([capability, agent_id, agent_uri, org_id, pattern]):
+    if not any([capability, agent_id, agent_uri, org_id, pattern, q]):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="At least one search parameter is required",
@@ -157,6 +159,7 @@ async def search_agents_endpoint(
         agent_uri=agent_uri,
         org_id=org_id,
         pattern=pattern,
+        q=q,
         exclude_org_id=exclude,
         trust_domain=settings.trust_domain,
     )
@@ -166,6 +169,7 @@ async def search_agents_endpoint(
                 agent_id=a.agent_id,
                 org_id=a.org_id,
                 display_name=a.display_name,
+                description=a.description or "",
                 capabilities=a.capabilities,
                 is_active=a.is_active,
                 registered_at=a.registered_at,

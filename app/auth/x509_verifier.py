@@ -111,17 +111,29 @@ async def _verify_client_assertion_inner(assertion, db, _span, _t0):
 
     with tracer.start_as_current_span("auth.x509_chain_verify"):
         try:
-            org_ca.public_key().verify(
-                agent_cert.signature,
-                agent_cert.tbs_certificate_bytes,
-                padding.PKCS1v15(),
-                agent_cert.signature_hash_algorithm,
-            )
+            ca_pub = org_ca.public_key()
+            if isinstance(ca_pub, rsa.RSAPublicKey):
+                ca_pub.verify(
+                    agent_cert.signature,
+                    agent_cert.tbs_certificate_bytes,
+                    padding.PKCS1v15(),
+                    agent_cert.signature_hash_algorithm,
+                )
+            elif isinstance(ca_pub, ec.EllipticCurvePublicKey):
+                ca_pub.verify(
+                    agent_cert.signature,
+                    agent_cert.tbs_certificate_bytes,
+                    ec.ECDSA(agent_cert.signature_hash_algorithm),
+                )
+            else:
+                raise ValueError(f"Unsupported CA key type: {type(ca_pub).__name__}")
         except InvalidSignature:
             raise HTTPException(
                 status.HTTP_401_UNAUTHORIZED,
                 detail="Agent certificate not signed by the registered org CA",
             )
+        except HTTPException:
+            raise
         except Exception:
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Certificate chain verification failed")
 
@@ -180,7 +192,7 @@ async def _verify_client_assertion_inner(assertion, db, _span, _t0):
         payload = jwt.decode(
             assertion,
             pub_key_pem,
-            algorithms=["RS256"],
+            algorithms=["RS256", "ES256"],
             audience=_AUDIENCE,
             options={"verify_aud": True, "verify_exp": True},
         )

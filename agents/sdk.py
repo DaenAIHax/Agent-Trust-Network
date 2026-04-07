@@ -261,8 +261,19 @@ class BrokerClient:
                 "exp": int((now + datetime.timedelta(minutes=5)).timestamp()),
                 "jti": str(uuid.uuid4()),
             }
+            # Detect key type to pick the right JWT algorithm
+            from cryptography.hazmat.primitives.serialization import load_pem_private_key
+            _priv = load_pem_private_key(key_pem.encode() if isinstance(key_pem, str) else key_pem, password=None)
+            from cryptography.hazmat.primitives.asymmetric import ec, rsa
+            if isinstance(_priv, ec.EllipticCurvePrivateKey):
+                jwt_alg = "ES256"
+            elif isinstance(_priv, rsa.RSAPrivateKey):
+                jwt_alg = "RS256"
+            else:
+                raise ValueError(f"Unsupported key type: {type(_priv).__name__}")
+
             assertion = jose_jwt.encode(
-                payload, key_pem, algorithm="RS256", headers={"x5c": x5c}
+                payload, key_pem, algorithm=jwt_alg, headers={"x5c": x5c}
             )
 
             # Generate ephemeral DPoP key for this session
@@ -312,9 +323,22 @@ class BrokerClient:
         self._pubkey_cache[agent_id] = (pubkey_pem, time.time())
         return pubkey_pem
 
-    def discover(self, capabilities: list[str]) -> list[dict]:
+    def discover(self, capabilities: list[str] | None = None,
+                 org_id: str | None = None, pattern: str | None = None,
+                 q: str | None = None) -> list[dict]:
         path = "/v1/registry/agents/search"
-        resp = self._authed_request("GET", path, params=[("capability", c) for c in capabilities])
+        params = []
+        if capabilities:
+            params.extend([("capability", c) for c in capabilities])
+        if org_id:
+            params.append(("org_id", org_id))
+        if pattern:
+            params.append(("pattern", pattern))
+        if q:
+            params.append(("q", q))
+        if not params:
+            params.append(("pattern", "*"))  # list all agents
+        resp = self._authed_request("GET", path, params=params)
         resp.raise_for_status()
         return resp.json().get("agents", [])
 
@@ -720,16 +744,22 @@ def run_initiator(broker: BrokerClient, agent_id: str, max_turns: int,
 # Runner: RESPONDER
 # ─────────────────────────────────────────────
 
+_SESSION_TIMEOUT = int(os.environ.get("SESSION_TIMEOUT", "300"))  # 5 minutes default
+
+
 def _responder_handle_session(broker: BrokerClient, agent_id: str,
                                session_id: str, max_turns: int,
                                poll_interval: int, system_prompt: str) -> None:
     """Gestisce una singola sessione dall'inizio alla fine."""
     conversation: list[dict] = []
     turns = 0
+    session_start = time.monotonic()
+    last_activity = time.monotonic()
 
     queued   = broker.poll(session_id, after=-1)
     last_seq = max((m["seq"] for m in queued), default=-1)
     for msg in queued:
+        last_activity = time.monotonic()
         received_text = msg["payload"].get("text", json.dumps(msg["payload"]))
         ok, turns = _process_received_message(
             broker, agent_id, session_id,
@@ -742,6 +772,18 @@ def _responder_handle_session(broker: BrokerClient, agent_id: str,
 
     while True:
         time.sleep(poll_interval)
+
+        # Session timeout
+        elapsed = time.monotonic() - session_start
+        idle = time.monotonic() - last_activity
+        if elapsed > _SESSION_TIMEOUT or idle > _SESSION_TIMEOUT:
+            log(agent_id, f"Sessione {session_id} scaduta ({int(elapsed)}s) — chiudo.", YELLOW)
+            try:
+                broker.close_session(session_id)
+            except Exception:
+                pass
+            return
+
         sessions = broker.list_sessions()
         current  = next((s for s in sessions if s["session_id"] == session_id), None)
         if current is None or current["status"] == "closed":
@@ -751,6 +793,7 @@ def _responder_handle_session(broker: BrokerClient, agent_id: str,
         messages = broker.poll(session_id, after=last_seq, poll_interval=poll_interval)
         for msg in messages:
             last_seq = msg["seq"]
+            last_activity = time.monotonic()
             received_text = msg["payload"].get("text", json.dumps(msg["payload"]))
             ok, turns = _process_received_message(
                 broker, agent_id, session_id,
@@ -775,13 +818,15 @@ def run_responder(broker: BrokerClient, agent_id: str, max_turns: int,
     """Loop infinito: accetta sessioni, gestisce la conversazione, riparte."""
     log(agent_id, "Online — in attesa di sessioni in arrivo (Ctrl+C per fermare).", CYAN)
 
+    # Close stale active sessions from previous runs
     active    = broker.list_sessions(status_filter="active")
     my_active = [s for s in active if s["target_agent_id"] == agent_id]
-    if my_active:
-        session_id = my_active[0]["session_id"]
-        log(agent_id, f"Ripristino sessione attiva: {session_id}", YELLOW)
-        _responder_handle_session(broker, agent_id, session_id,
-                                  max_turns, poll_interval, system_prompt)
+    for s in my_active:
+        try:
+            broker.close_session(s["session_id"])
+            log(agent_id, f"Chiusa sessione precedente: {s['session_id']}", YELLOW)
+        except Exception:
+            pass
 
     while True:
         try:

@@ -1473,17 +1473,22 @@ async def agent_register_submit(request: Request, db: AsyncSession = Depends(get
     org_id      = form_data.get("org_id", "").strip()
     agent_name  = form_data.get("agent_name", "").strip()
     display_name = form_data.get("display_name", "").strip()
+    description  = form_data.get("description", "").strip()
     capabilities_raw = form_data.get("capabilities", "").strip()
     # Build full agent_id from org + name
     agent_id = f"{org_id}::{agent_name}" if org_id and agent_name else ""
     if not display_name:
         display_name = agent_name.replace("-", " ").replace("_", " ").title()
 
+    cert_pem = form_data.get("cert_pem", "").strip()
+
     form = {
         "org_id": org_id,
         "agent_name": agent_name,
         "display_name": display_name,
+        "description": description,
         "capabilities": capabilities_raw,
+        "cert_pem": cert_pem,
     }
 
     result = await db.execute(
@@ -1533,7 +1538,7 @@ async def agent_register_submit(request: Request, db: AsyncSession = Depends(get
     await register_agent(
         db, agent_id=agent_id, org_id=org_id,
         display_name=display_name, capabilities=caps,
-        metadata={},
+        metadata={}, description=description,
     )
     await log_event(db, "registry.agent_registered", "ok",
                     agent_id=agent_id, org_id=org_id,
@@ -1547,9 +1552,165 @@ async def agent_register_submit(request: Request, db: AsyncSession = Depends(get
         binding = await create_binding(db, org_id, agent_id, scope=caps)
         await approve_binding(db, binding.id, approved_by="dashboard-admin")
 
+    # If a certificate was provided, validate and pin it
+    cert_msg = ""
+    if cert_pem:
+        if "-----BEGIN CERTIFICATE-----" not in cert_pem:
+            cert_msg = " Certificate ignored: invalid PEM format."
+        else:
+            try:
+                from cryptography.x509 import load_pem_x509_certificate
+                from cryptography.x509.oid import NameOID
+                cert_obj = load_pem_x509_certificate(cert_pem.encode())
+                cn_attrs = cert_obj.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+                if not cn_attrs or cn_attrs[0].value != agent_id:
+                    cert_msg = f" Certificate ignored: CN '{cn_attrs[0].value if cn_attrs else '(none)'}' does not match agent ID."
+                else:
+                    # Verify against org CA if available
+                    org = await get_org_by_id(db, org_id)
+                    ca_ok = True
+                    if org and org.ca_certificate:
+                        try:
+                            from cryptography.hazmat.primitives.asymmetric import padding
+                            ca_cert = load_pem_x509_certificate(org.ca_certificate.encode())
+                            ca_cert.public_key().verify(
+                                cert_obj.signature, cert_obj.tbs_certificate_bytes,
+                                padding.PKCS1v15(), cert_obj.signature_hash_algorithm,
+                            )
+                        except Exception:
+                            ca_ok = False
+                            cert_msg = " Certificate ignored: not signed by organization CA."
+                    if ca_ok:
+                        await rotate_agent_cert(db, agent_id, cert_pem)
+                        await log_event(db, "registry.agent_cert_uploaded", "ok",
+                                        agent_id=agent_id, org_id=org_id,
+                                        details={"source": "dashboard", "method": "register"})
+                        cert_msg = " Certificate pinned."
+            except Exception:
+                cert_msg = " Certificate ignored: could not parse PEM."
+
     return templates.TemplateResponse("agent_register.html",
         _ctx(request, session, active="agents", form={}, orgs=orgs, error=None,
-             success=f"Agent '{agent_id}' registered. Binding approved."))
+             success=f"Agent '{agent_id}' registered. Binding approved.{cert_msg}"))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Manage Agent (unified settings page)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/agents/{agent_id:path}/manage", response_class=HTMLResponse)
+async def agent_manage_form(request: Request, agent_id: str, db: AsyncSession = Depends(get_db)):
+    session = require_login(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    agent = (await db.execute(
+        select(AgentRecord).where(AgentRecord.agent_id == agent_id)
+    )).scalar_one_or_none()
+    if not agent:
+        return RedirectResponse(url="/dashboard/agents", status_code=303)
+    if not session.is_admin and agent.org_id != session.org_id:
+        return RedirectResponse(url="/dashboard/agents", status_code=303)
+    binding = await get_binding_by_org_agent(db, agent.org_id, agent_id)
+    ws_connected = ws_manager.is_connected(agent_id)
+    return templates.TemplateResponse("agent_manage.html",
+        _ctx(request, session, active="agents",
+             agent=agent, binding=binding, ws_connected=ws_connected,
+             error=None, success=None))
+
+
+@router.post("/agents/{agent_id:path}/manage", response_class=HTMLResponse)
+async def agent_manage_submit(request: Request, agent_id: str, db: AsyncSession = Depends(get_db)):
+    session = require_login(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    if not await verify_csrf(request, session):
+        raise HTTPException(status_code=403, detail="Invalid CSRF token")
+    agent = (await db.execute(
+        select(AgentRecord).where(AgentRecord.agent_id == agent_id)
+    )).scalar_one_or_none()
+    if not agent:
+        return RedirectResponse(url="/dashboard/agents", status_code=303)
+    if not session.is_admin and agent.org_id != session.org_id:
+        return RedirectResponse(url="/dashboard/agents", status_code=303)
+
+    form_data = await request.form()
+    action = form_data.get("action", "")
+    binding = await get_binding_by_org_agent(db, agent.org_id, agent_id)
+    ws_connected = ws_manager.is_connected(agent_id)
+
+    def _render(error=None, success=None):
+        return templates.TemplateResponse("agent_manage.html",
+            _ctx(request, session, active="agents",
+                 agent=agent, binding=binding, ws_connected=ws_connected,
+                 error=error, success=success))
+
+    if action == "update_profile":
+        display_name = form_data.get("display_name", "").strip()
+        description = form_data.get("description", "").strip()
+        capabilities_raw = form_data.get("capabilities", "").strip()
+        caps = [c.strip() for c in capabilities_raw.split(",") if c.strip()] if capabilities_raw else []
+
+        if not display_name:
+            return _render(error="Display name is required.")
+
+        for cap in caps:
+            if len(cap) > 64 or not re.match(r"^[a-zA-Z0-9._:\-]+$", cap):
+                return _render(error=f"Invalid capability '{cap}'.")
+
+        agent.display_name = display_name
+        agent.description = description
+        agent.capabilities_json = _json.dumps(caps)
+
+        # Update binding scope to match capabilities
+        if binding:
+            binding.scope_json = _json.dumps(caps)
+
+        await db.commit()
+        await log_event(db, "registry.agent_updated", "ok",
+                        agent_id=agent_id, org_id=agent.org_id,
+                        details={"source": "dashboard", "fields": ["display_name", "description", "capabilities"]})
+        return _render(success="Agent profile updated.")
+
+    elif action == "upload_cert":
+        cert_pem = form_data.get("cert_pem", "").strip()
+        if not cert_pem or "-----BEGIN CERTIFICATE-----" not in cert_pem:
+            return _render(error="Invalid certificate. Paste a valid PEM certificate.")
+        try:
+            from cryptography.x509 import load_pem_x509_certificate
+            from cryptography.x509.oid import NameOID
+            cert = load_pem_x509_certificate(cert_pem.encode())
+        except Exception:
+            return _render(error="Could not parse the certificate.")
+        cn_attrs = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+        if not cn_attrs or cn_attrs[0].value != agent_id:
+            return _render(error=f"Certificate CN does not match agent ID '{agent_id}'.")
+        # Verify against org CA if available
+        org = await get_org_by_id(db, agent.org_id)
+        if org and org.ca_certificate:
+            try:
+                from cryptography.hazmat.primitives.asymmetric import padding as _pad, ec as _ec
+                ca_cert = load_pem_x509_certificate(org.ca_certificate.encode())
+                ca_pub = ca_cert.public_key()
+                from cryptography.hazmat.primitives.asymmetric import rsa as _rsa
+                if isinstance(ca_pub, _rsa.RSAPublicKey):
+                    ca_pub.verify(cert.signature, cert.tbs_certificate_bytes,
+                                  _pad.PKCS1v15(), cert.signature_hash_algorithm)
+                elif isinstance(ca_pub, _ec.EllipticCurvePublicKey):
+                    ca_pub.verify(cert.signature, cert.tbs_certificate_bytes,
+                                  _ec.ECDSA(cert.signature_hash_algorithm))
+            except Exception:
+                return _render(error="Certificate not signed by organization CA.")
+        new_thumbprint = await rotate_agent_cert(db, agent_id, cert_pem)
+        await log_event(db, "registry.agent_cert_uploaded", "ok",
+                        agent_id=agent_id, org_id=agent.org_id,
+                        details={"source": "dashboard"})
+        # Refresh agent
+        agent = (await db.execute(
+            select(AgentRecord).where(AgentRecord.agent_id == agent_id)
+        )).scalar_one_or_none()
+        return _render(success=f"Certificate uploaded. Thumbprint: {new_thumbprint[:16]}...")
+
+    return _render(error="Unknown action.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1652,6 +1813,24 @@ async def agent_detail(request: Request, agent_id: str,
              broker_url=broker_url))
 
 
+@router.get("/agents/{agent_id:path}/upload-cert", response_class=HTMLResponse)
+async def agent_upload_cert_form(request: Request, agent_id: str,
+                                  db: AsyncSession = Depends(get_db)):
+    """Show the standalone certificate upload form."""
+    session = require_login(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    agent = (await db.execute(
+        select(AgentRecord).where(AgentRecord.agent_id == agent_id)
+    )).scalar_one_or_none()
+    if not agent:
+        return RedirectResponse(url="/dashboard/agents", status_code=303)
+    if not session.is_admin and agent.org_id != session.org_id:
+        return RedirectResponse(url="/dashboard/agents", status_code=303)
+    return templates.TemplateResponse("cert_upload.html",
+        _ctx(request, session, active="agents", agent=agent, error=None, success=None))
+
+
 @router.post("/agents/{agent_id:path}/upload-cert", response_class=HTMLResponse)
 async def agent_upload_cert(request: Request, agent_id: str,
                             db: AsyncSession = Depends(get_db)):
@@ -1673,38 +1852,27 @@ async def agent_upload_cert(request: Request, agent_id: str,
     form_data = await request.form()
     cert_pem = form_data.get("cert_pem", "").strip()
 
-    # Helper to re-render the detail page with an error
-    async def _render_error(error_msg):
-        binding = await get_binding_by_org_agent(db, agent.org_id, agent_id)
-        ws_connected = ws_manager.is_connected(agent_id)
-        cert_expiry = None
-        from app.db.audit import AuditLog
-        audit_events = (await db.execute(
-            select(AuditLog).where(AuditLog.agent_id == agent_id)
-            .order_by(AuditLog.id.desc()).limit(10)
-        )).scalars().all()
-        broker_url = _broker_url_from_request(request)
-        return templates.TemplateResponse("agent_detail.html",
+    # Helper to re-render the upload page with an error
+    def _render_error(error_msg):
+        return templates.TemplateResponse("cert_upload.html",
             _ctx(request, session, active="agents",
-                 agent=agent, binding=binding, ws_connected=ws_connected,
-                 cert_expiry=cert_expiry, audit_events=audit_events,
-                 broker_url=broker_url, error=error_msg))
+                 agent=agent, error=error_msg, success=None))
 
     if not cert_pem or "-----BEGIN CERTIFICATE-----" not in cert_pem:
-        return await _render_error("Invalid certificate. Paste a valid PEM certificate.")
+        return _render_error("Invalid certificate. Paste a valid PEM certificate.")
 
     # Parse and validate the certificate
     try:
         from cryptography.x509 import load_pem_x509_certificate
         cert = load_pem_x509_certificate(cert_pem.encode())
     except Exception:
-        return await _render_error("Could not parse the certificate. Ensure it is valid PEM format.")
+        return _render_error("Could not parse the certificate. Ensure it is valid PEM format.")
 
     # Verify CN matches agent_id
     from cryptography.x509.oid import NameOID
     cn_attrs = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
     if not cn_attrs or cn_attrs[0].value != agent_id:
-        return await _render_error(
+        return _render_error(
             f"Certificate CN '{cn_attrs[0].value if cn_attrs else '(none)'}' "
             f"does not match agent ID '{agent_id}'.")
 
@@ -1722,20 +1890,25 @@ async def agent_upload_cert(request: Request, agent_id: str,
                 cert.signature_hash_algorithm,
             )
         except Exception:
-            return await _render_error(
+            return _render_error(
                 "Certificate signature verification failed. "
                 "The certificate must be signed by your organization's CA.")
 
     # Pin the certificate
     from app.registry.store import rotate_agent_cert
-    await rotate_agent_cert(db, agent_id, cert_pem)
+    new_thumbprint = await rotate_agent_cert(db, agent_id, cert_pem)
 
     await log_event(db, "registry.agent_cert_uploaded", "ok",
                     agent_id=agent_id, org_id=agent.org_id,
                     details={"source": "dashboard", "method": "upload"})
 
-    return RedirectResponse(
-        url=f"/dashboard/agents/{agent_id}", status_code=303)
+    # Re-read the agent to show updated thumbprint
+    agent = (await db.execute(
+        select(AgentRecord).where(AgentRecord.agent_id == agent_id)
+    )).scalar_one_or_none()
+    return templates.TemplateResponse("cert_upload.html",
+        _ctx(request, session, active="agents", agent=agent, error=None,
+             success=f"Certificate uploaded. Thumbprint: {new_thumbprint[:16]}..."))
 
 
 @router.post("/agents/{agent_id:path}/credentials")
@@ -2058,27 +2231,23 @@ async def cert_rotate_submit(request: Request, agent_id: str, db: AsyncSession =
                  error=f"Certificate CN does not match agent '{agent_id}'.",
                  success=None))
 
-    # Verify signed by org CA
+    # Verify signed by org CA (if CA is configured)
     org = await get_org_by_id(db, agent.org_id)
-    if not org or not org.ca_certificate:
-        return templates.TemplateResponse("cert_rotate.html",
-            _ctx(request, session, active="agents", agent=agent,
-                 error="Organization CA not configured.", success=None))
-
-    try:
-        org_ca = crypto_x509.load_pem_x509_certificate(org.ca_certificate.encode())
-        org_ca.public_key().verify(
-            cert.signature, cert.tbs_certificate_bytes,
-            padding.PKCS1v15(), cert.signature_hash_algorithm,
-        )
-    except InvalidSignature:
-        return templates.TemplateResponse("cert_rotate.html",
-            _ctx(request, session, active="agents", agent=agent,
-                 error="Certificate is not signed by the organization CA.", success=None))
-    except Exception:
-        return templates.TemplateResponse("cert_rotate.html",
-            _ctx(request, session, active="agents", agent=agent,
-                 error="Certificate verification failed. Please check the certificate is valid and signed by the organization CA.", success=None))
+    if org and org.ca_certificate:
+        try:
+            org_ca = crypto_x509.load_pem_x509_certificate(org.ca_certificate.encode())
+            org_ca.public_key().verify(
+                cert.signature, cert.tbs_certificate_bytes,
+                padding.PKCS1v15(), cert.signature_hash_algorithm,
+            )
+        except InvalidSignature:
+            return templates.TemplateResponse("cert_rotate.html",
+                _ctx(request, session, active="agents", agent=agent,
+                     error="Certificate is not signed by the organization CA.", success=None))
+        except Exception:
+            return templates.TemplateResponse("cert_rotate.html",
+                _ctx(request, session, active="agents", agent=agent,
+                     error="Certificate verification failed. Please check the certificate is valid and signed by the organization CA.", success=None))
 
     old_thumbprint = agent.cert_thumbprint
     new_thumbprint = await rotate_agent_cert(db, agent_id, cert_pem)

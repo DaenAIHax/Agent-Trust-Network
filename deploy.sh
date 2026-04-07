@@ -164,9 +164,28 @@ if [[ "${_GENERATE_ENV:-0}" == "1" ]]; then
         ALLOWED_ORIGINS="https://${DOMAIN}"
         ENV_VALUE="production"
     else
-        BROKER_URL="https://localhost:8443"
+        # Detect LAN IP for multi-VM demos
+        _DETECTED_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || true)
+        if [[ -n "$_DETECTED_IP" && "$_DETECTED_IP" != "127.0.0.1" ]]; then
+            echo ""
+            echo "  Detected LAN IP: ${_DETECTED_IP}"
+            echo "  Agents on other machines need BROKER_PUBLIC_URL to match their BROKER_URL."
+            echo ""
+            echo "  1) https://localhost:8443  (local only — agents on this machine)"
+            echo "  2) http://${_DETECTED_IP}:8000   (LAN — agents on other VMs, no TLS)"
+            echo "  3) https://${_DETECTED_IP}:8443  (LAN — agents on other VMs, self-signed TLS)"
+            read -rp "  Choose BROKER_PUBLIC_URL [1/2/3]: " _url_choice
+            case "$_url_choice" in
+                2) BROKER_URL="http://${_DETECTED_IP}:8000" ;;
+                3) BROKER_URL="https://${_DETECTED_IP}:8443" ;;
+                *) BROKER_URL="https://localhost:8443" ;;
+            esac
+        else
+            BROKER_URL="https://localhost:8443"
+        fi
         ALLOWED_ORIGINS="*"
         ENV_VALUE="development"
+        ok "BROKER_PUBLIC_URL=${BROKER_URL}"
     fi
 
     # Copy .env.example and fill in values
@@ -534,6 +553,49 @@ if [[ "$USE_LETSENCRYPT" == "y" ]]; then
         warn "You can retry manually:"
         echo -e "  ${GRAY}${COMPOSE} ${COMPOSE_FILES} run --rm certbot certonly --webroot --webroot-path=/var/www/certbot -d ${DOMAIN}${RESET}"
     fi
+fi
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 7b. Load broker CA key into Vault
+# ═══════════════════════════════════════════════════════════════════════════════
+step "Loading broker key into Vault"
+
+VAULT_ADDR="${VAULT_ADDR:-http://localhost:8200}"
+VAULT_TOKEN="${VAULT_TOKEN:-dev-root-token}"
+VAULT_SECRET_PATH="${VAULT_SECRET_PATH:-secret/data/broker}"
+
+echo "  Waiting for Vault to be ready..."
+_VAULT_ATTEMPTS=0
+until curl -sf "${VAULT_ADDR}/v1/sys/health" > /dev/null 2>&1; do
+    _VAULT_ATTEMPTS=$((_VAULT_ATTEMPTS + 1))
+    if [[ $_VAULT_ATTEMPTS -ge 20 ]]; then
+        die "Vault did not start after 40s — check logs: $COMPOSE logs vault"
+    fi
+    sleep 2
+done
+ok "Vault is ready"
+
+if [[ -f "$CERTS_DIR/broker-ca-key.pem" && -f "$CERTS_DIR/broker-ca.pem" ]]; then
+    BROKER_KEY_PEM=$(cat "$CERTS_DIR/broker-ca-key.pem" | awk '{printf "%s\\n", $0}')
+    BROKER_CERT_PEM=$(cat "$CERTS_DIR/broker-ca.pem" | awk '{printf "%s\\n", $0}')
+    VAULT_PAYLOAD=$(printf '{"data":{"private_key_pem":"%s","ca_cert_pem":"%s"}}' \
+        "$BROKER_KEY_PEM" "$BROKER_CERT_PEM")
+
+    HTTP_STATUS=$(curl -sf -o /dev/null -w "%{http_code}" \
+        -X POST "${VAULT_ADDR}/v1/${VAULT_SECRET_PATH}" \
+        -H "X-Vault-Token: ${VAULT_TOKEN}" \
+        -H "Content-Type: application/json" \
+        -d "$VAULT_PAYLOAD" 2>&1)
+
+    if [[ "$HTTP_STATUS" == "200" || "$HTTP_STATUS" == "204" ]]; then
+        ok "Broker CA key stored in Vault at ${VAULT_SECRET_PATH}"
+    else
+        err "Failed to store broker key in Vault (HTTP ${HTTP_STATUS})"
+        warn "You can load it manually: bash setup.sh --no-build"
+    fi
+else
+    warn "Broker CA key not found at $CERTS_DIR/broker-ca-key.pem — skipping Vault load"
+    warn "Run setup.sh or generate certs first"
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════════

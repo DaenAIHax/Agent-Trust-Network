@@ -37,10 +37,22 @@
             <p class="text-xs text-gray-600 mt-1">Human-readable name for the dashboard. Auto-generated if left empty.</p>
         </div>
         <div>
+            <label class="block text-sm font-medium text-gray-300 mb-1">Description</label>
+            <textarea name="description" rows="2" placeholder="e.g. Sales agent for semiconductor chips and electronic components"
+                      class="w-full bg-gray-900 border border-gray-700 rounded-md px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-brand-500">{{ form.description or '' }}</textarea>
+            <p class="text-xs text-gray-600 mt-1">What this agent does. Other agents use this to find you on the network.</p>
+        </div>
+        <div>
             <label class="block text-sm font-medium text-gray-300 mb-1">Capabilities</label>
             <input type="text" name="capabilities" placeholder="order.read, order.write" value="{{ form.capabilities or '' }}"
                    class="w-full bg-gray-900 border border-gray-700 rounded-md px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-brand-500">
             <p class="text-xs text-gray-600 mt-1">Comma-separated. These define what the agent can do in sessions.</p>
+        </div>
+        <div>
+            <label class="block text-sm font-medium text-gray-300 mb-1">Certificate (PEM) — optional</label>
+            <textarea name="cert_pem" rows="8" placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
+                      class="w-full bg-gray-900 border border-gray-700 rounded-md px-3 py-2 text-sm text-white font-mono placeholder-gray-600 focus:outline-none focus:border-brand-500">{{ form.cert_pem or '' }}</textarea>
+            <p class="text-xs text-gray-600 mt-1">Optional. Paste an agent certificate signed by your organization CA. You can also upload it later.</p>
         </div>
         <button type="submit"
                 class="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white text-sm rounded-md">

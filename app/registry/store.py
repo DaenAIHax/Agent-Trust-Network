@@ -30,6 +30,7 @@ class AgentRecord(Base):
     agent_id = Column(String(256), primary_key=True, index=True)
     org_id = Column(String(128), nullable=False, index=True)
     display_name = Column(String(256), nullable=False)
+    description = Column(Text, nullable=True, default="")
     secret_hash = Column(String(256), nullable=True)
     capabilities_json = Column(Text, default="[]")
     metadata_json = Column(Text, default="{}")
@@ -53,11 +54,13 @@ class AgentRecord(Base):
 
 async def register_agent(db: AsyncSession, agent_id: str, org_id: str, display_name: str,
                           capabilities: list[str], metadata: dict,
-                          secret: str | None = None) -> AgentRecord:
+                          secret: str | None = None,
+                          description: str = "") -> AgentRecord:
     record = AgentRecord(
         agent_id=agent_id,
         org_id=org_id,
         display_name=display_name,
+        description=description,
         secret_hash=_hash_secret(secret) if secret else None,
         capabilities_json=json.dumps(capabilities),
         metadata_json=json.dumps(metadata),
@@ -185,6 +188,7 @@ async def search_agents(
     agent_uri: str | None = None,
     org_id: str | None = None,
     pattern: str | None = None,
+    q: str | None = None,
     exclude_org_id: str | None = None,
     trust_domain: str = "atn.local",
 ) -> list["AgentRecord"]:
@@ -242,6 +246,16 @@ async def search_agents(
             agent_caps = set(a.capabilities)
             return all(c in agent_caps for c in capabilities)
         agents = [a for a in agents if _has_all(a)]
+
+    # Free-text search across display_name, description, agent_id, org_id
+    if q:
+        q_lower = q.lower()
+        def _text_match(a: AgentRecord) -> bool:
+            return (q_lower in a.agent_id.lower()
+                    or q_lower in a.display_name.lower()
+                    or q_lower in a.org_id.lower()
+                    or (a.description and q_lower in a.description.lower()))
+        agents = [a for a in agents if _text_match(a)]
 
     # Exclude own org (unless direct lookup)
     if exclude_org_id:

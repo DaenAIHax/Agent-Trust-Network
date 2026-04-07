@@ -12,6 +12,7 @@ class AgentRegisterRequest(BaseModel):
     display_name: str = Field(..., max_length=256)
     secret: str | None = Field(None, description="Optional shared secret — not used with x509 authentication")
     capabilities: list[str] = Field(default_factory=list, max_length=50, description="e.g. ['kyc.read', 'kyc.write']")
+    description: str = Field("", max_length=1024, description="What this agent does — used for discovery")
     metadata: dict = Field(default_factory=dict)
 
     @field_validator("metadata")
@@ -27,6 +28,7 @@ class AgentResponse(BaseModel):
     agent_id: str
     org_id: str
     display_name: str
+    description: str = ""
     capabilities: list[str]
     is_active: bool
     registered_at: datetime

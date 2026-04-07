@@ -95,31 +95,35 @@ async def _create_session_inner(body, current_agent, store, db, span):
                             detail="Target has no approved binding")
 
     # Verify scope: requested capabilities must be in both parties' bindings
-    initiator_scope = set(current_agent.scope)
-    target_scope = set(target_binding.scope)
-    for cap in body.requested_capabilities:
-        if cap not in initiator_scope:
-            await log_event(db, "broker.session_request", "denied",
-                            agent_id=current_agent.agent_id, org_id=current_agent.org,
-                            details={"cap": cap, "reason": "capability not in initiator scope"})
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
-                                detail=f"Capability '{cap}' not authorized in your scope")
-        if cap not in target_scope:
-            await log_event(db, "broker.session_request", "denied",
-                            agent_id=current_agent.agent_id, org_id=current_agent.org,
-                            details={"cap": cap, "reason": "capability not in target scope"})
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
-                                detail=f"Capability '{cap}' not authorized in the target's scope")
+    # Skip scope checks when policy enforcement is disabled (demo mode)
+    from app.config import get_settings
+    settings = get_settings()
+    if settings.policy_enforcement:
+        initiator_scope = set(current_agent.scope)
+        target_scope = set(target_binding.scope)
+        for cap in body.requested_capabilities:
+            if cap not in initiator_scope:
+                await log_event(db, "broker.session_request", "denied",
+                                agent_id=current_agent.agent_id, org_id=current_agent.org,
+                                details={"cap": cap, "reason": "capability not in initiator scope"})
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                    detail=f"Capability '{cap}' not authorized in your scope")
+            if cap not in target_scope:
+                await log_event(db, "broker.session_request", "denied",
+                                agent_id=current_agent.agent_id, org_id=current_agent.org,
+                                details={"cap": cap, "reason": "capability not in target scope"})
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                    detail=f"Capability '{cap}' not authorized in the target's scope")
 
-    # Verify target actually advertises the requested capabilities
-    target_caps = set(target.capabilities)
-    for cap in body.requested_capabilities:
-        if cap not in target_caps:
-            await log_event(db, "broker.session_request", "denied",
-                            agent_id=current_agent.agent_id, org_id=current_agent.org,
-                            details={"cap": cap, "reason": "target does not advertise capability"})
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                                detail=f"Target does not advertise capability '{cap}'")
+        # Verify target actually advertises the requested capabilities
+        target_caps = set(target.capabilities)
+        for cap in body.requested_capabilities:
+            if cap not in target_caps:
+                await log_event(db, "broker.session_request", "denied",
+                                agent_id=current_agent.agent_id, org_id=current_agent.org,
+                                details={"cap": cap, "reason": "target does not advertise capability"})
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                    detail=f"Target does not advertise capability '{cap}'")
 
     # An agent cannot open a session with itself
     if current_agent.agent_id == body.target_agent_id:

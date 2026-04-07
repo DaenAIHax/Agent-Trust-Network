@@ -113,6 +113,7 @@ services:
       # Policy backend — use OPA instead of webhooks for enterprise lab
       POLICY_BACKEND: ${POLICY_BACKEND:-webhook}
       OPA_URL: ${OPA_URL:-}
+      POLICY_ENFORCEMENT: ${POLICY_ENFORCEMENT:-true}
       # OpenTelemetry
       OTEL_ENABLED: "true"
       OTEL_SERVICE_NAME: "cullis-broker"
