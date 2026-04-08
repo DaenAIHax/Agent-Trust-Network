@@ -154,6 +154,7 @@ class TestJoinRequestValidation:
                 display_name="Acme Corp",
                 secret="s3cret",
                 ca_certificate="fake",
+                invite_token="test-invite-token",
             )
 
     def test_org_id_special_chars_rejected(self):
@@ -165,6 +166,7 @@ class TestJoinRequestValidation:
                 display_name="Acme",
                 secret="s",
                 ca_certificate="fake",
+                invite_token="test-invite-token",
             )
 
     def test_org_id_too_long_rejected(self):
@@ -176,6 +178,7 @@ class TestJoinRequestValidation:
                 display_name="Acme",
                 secret="s",
                 ca_certificate="fake",
+                invite_token="test-invite-token",
             )
 
     def test_display_name_too_long_rejected(self):
@@ -187,6 +190,7 @@ class TestJoinRequestValidation:
                 display_name="A" * 257,
                 secret="s",
                 ca_certificate="fake",
+                invite_token="test-invite-token",
             )
 
     def test_secret_too_long_rejected(self):
@@ -198,6 +202,7 @@ class TestJoinRequestValidation:
                 display_name="Acme",
                 secret="s" * 257,
                 ca_certificate="fake",
+                invite_token="test-invite-token",
             )
 
 
