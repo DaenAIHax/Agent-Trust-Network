@@ -281,6 +281,15 @@ async def verify_dpop_proof(
 
     # ── 10. htu ───────────────────────────────────────────────────────────────
     if _normalize_htu(claims.get("htu", "")) != _normalize_htu(htu):
+        # Log both URLs to make this debuggable in production. Without
+        # the actual values, "htu mismatch" is impossible to diagnose
+        # when it happens behind a reverse proxy or with a misconfigured
+        # BROKER_PUBLIC_URL — see imp/plan.md item 4 bonus 1.
+        _log.warning(
+            "DPoP htu mismatch: proof_htu=%r expected_htu=%r — "
+            "check BROKER_PUBLIC_URL and reverse proxy headers",
+            claims.get("htu", ""), htu,
+        )
         raise HTTPException(status.HTTP_401_UNAUTHORIZED,
                             "Invalid DPoP proof: htu mismatch")
 
@@ -313,6 +322,8 @@ async def verify_dpop_proof(
     store = get_dpop_jti_store()
     is_new = await store.consume_jti(jti)
     if not is_new:
+        from app.telemetry_metrics import DPOP_JTI_REPLAY_COUNTER
+        DPOP_JTI_REPLAY_COUNTER.add(1)
         raise HTTPException(status.HTTP_401_UNAUTHORIZED,
                             "DPoP proof replay detected")
 

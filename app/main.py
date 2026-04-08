@@ -1,8 +1,24 @@
+import asyncio
 import logging
+import signal
 from contextlib import asynccontextmanager
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+
+
+# ── Graceful shutdown coordination ───────────────────────────────────────────
+# Set when SIGTERM/SIGINT arrives. While set:
+#   - /readyz returns 503 (load balancer stops sending new traffic)
+#   - the lifespan exits and triggers cleanup
+# This is module-level so the signal handler can flip it without needing
+# access to the FastAPI app instance.
+_shutdown_event: asyncio.Event | None = None
+
+
+def _is_draining() -> bool:
+    """True once the broker has received a shutdown signal."""
+    return _shutdown_event is not None and _shutdown_event.is_set()
 
 
 class _QuietBadgeFilter(logging.Filter):
@@ -43,6 +59,42 @@ logging.getLogger("uvicorn.access").addFilter(_QuietBadgeFilter())
 logger = logging.getLogger("agent_trust")
 
 
+_DRAIN_GRACE_SECONDS = 5
+
+
+async def _drain_watcher() -> None:
+    """
+    Background task: when SIGTERM/SIGINT arrives, immediately notify every
+    WebSocket client with close code 1012 ("service restart") so they can
+    reconnect to another instance during the drain window.
+
+    Without this watcher, clients only learn the broker is going away when
+    the lifespan post-yield path runs — which is up to ~30 seconds after
+    the signal, depending on uvicorn's graceful_timeout. By that point the
+    process is about to die and clients have no time to reconnect cleanly.
+
+    The watcher runs in parallel with normal request handling. It exits as
+    soon as `notify_shutdown_to_clients()` returns; the lifespan post-yield
+    path still runs the full `ws_manager.shutdown()` for cleanup, but the
+    notify call there is a no-op (idempotent).
+    """
+    if _shutdown_event is None:
+        return
+    try:
+        await _shutdown_event.wait()
+    except asyncio.CancelledError:
+        return
+
+    logger.warning(
+        "Drain watcher: shutdown signal received — notifying WebSocket clients",
+    )
+    from app.broker.ws_manager import ws_manager
+    try:
+        await ws_manager.notify_shutdown_to_clients()
+    except Exception as exc:
+        logger.error("Drain watcher: notify_shutdown_to_clients failed: %s", exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from app.config import validate_config
@@ -63,10 +115,90 @@ async def lifespan(app: FastAPI):
         restored = await restore_sessions(db, session_store)
         if restored:
             logger.info("Restored %d session(s) from DB", restored)
+
+    # ── Install SIGTERM/SIGINT handlers for graceful shutdown ────────────────
+    # The handler flips _shutdown_event so:
+    #   1. /readyz starts returning 503 (load balancer notice)
+    #   2. _drain_watcher unblocks and immediately closes all WebSockets
+    #      with code 1012 so clients can reconnect elsewhere
+    #   3. uvicorn's own shutdown sequence still calls our cleanup post-yield
+    global _shutdown_event
+    _shutdown_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    def _signal_handler(signum: int) -> None:
+        sig_name = signal.Signals(signum).name
+        logger.warning(
+            "Received %s — entering drain mode (/readyz now returns 503)",
+            sig_name,
+        )
+        if _shutdown_event is not None:
+            _shutdown_event.set()
+
+    def _signal_handler_threadsafe(signum: int, _frame=None) -> None:
+        # signal.signal callbacks run in the main thread but outside the
+        # event loop. Schedule the event set on the loop instead of touching
+        # asyncio internals from sync context.
+        try:
+            loop.call_soon_threadsafe(_signal_handler, signum)
+        except RuntimeError:
+            pass  # loop already closed
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(sig, _signal_handler, sig)
+        except (NotImplementedError, ValueError, RuntimeError):
+            # add_signal_handler raises:
+            #   - NotImplementedError on Windows
+            #   - ValueError for unknown signals
+            #   - RuntimeError ("set_wakeup_fd only works in main thread")
+            #     when the loop is running outside the main thread, e.g.
+            #     under pytest-asyncio or uvicorn worker spawns.
+            # Try the synchronous signal.signal fallback, which itself
+            # fails with the same RuntimeError off the main thread. In
+            # that case there is no signal-driven shutdown — the caller
+            # must trigger via _shutdown_event directly. This is fine
+            # for tests, where the lifespan is exited via httpx teardown.
+            try:
+                signal.signal(sig, _signal_handler_threadsafe)
+            except (RuntimeError, ValueError) as exc:
+                logger.debug(
+                    "Cannot install signal handler for %s: %s "
+                    "(graceful shutdown via signal disabled)",
+                    sig, exc,
+                )
+
+    # Spawn the drain watcher. It blocks on _shutdown_event and runs the
+    # WebSocket notification path the moment a signal arrives.
+    drain_task = asyncio.create_task(_drain_watcher(), name="cullis-drain-watcher")
+
     yield
+
+    # ── Drain phase ──────────────────────────────────────────────────────────
+    # If a signal was received, give the load balancer a few seconds to
+    # notice the 503 from /readyz and stop routing new traffic before we
+    # tear down DB / Redis connections. The WS notification has already
+    # happened (drain_task ran the moment the event was set).
+    if _shutdown_event is not None and _shutdown_event.is_set():
+        logger.info(
+            "Draining for %ds before tearing down connections",
+            _DRAIN_GRACE_SECONDS,
+        )
+        await asyncio.sleep(_DRAIN_GRACE_SECONDS)
+
+    # Cancel the drain watcher if it never fired (clean shutdown via reload
+    # or test teardown that does not send a signal).
+    if not drain_task.done():
+        drain_task.cancel()
+        try:
+            await drain_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
     await ws_manager.shutdown()
     await close_redis()
     shutdown_telemetry()
+    logger.info("Cullis broker shutdown complete")
 
 
 app = FastAPI(
@@ -184,10 +316,21 @@ async def healthz():
 
 @app.get("/readyz", tags=["infra"])
 async def readyz():
-    """Readiness probe — all critical dependencies reachable."""
+    """Readiness probe — all critical dependencies reachable.
+
+    Returns 503 immediately if the broker is in drain mode (received
+    SIGTERM/SIGINT). The load balancer should stop sending new traffic
+    while in-flight requests complete.
+    """
     from fastapi.responses import JSONResponse
     from sqlalchemy import text
     from app.db.database import AsyncSessionLocal
+
+    if _is_draining():
+        return JSONResponse(
+            {"status": "draining", "checks": {}},
+            status_code=503,
+        )
 
     checks: dict[str, str] = {}
 
@@ -224,6 +367,27 @@ async def readyz():
         return JSONResponse({"status": "not_ready", "checks": checks}, status_code=503)
 
     return {"status": "ready", "checks": checks}
+
+
+@app.get("/metrics", tags=["infra"], include_in_schema=False)
+async def prometheus_metrics():
+    """
+    Prometheus scrape endpoint. Active only when PROMETHEUS_ENABLED=true.
+
+    Exposes the same instruments emitted via OTLP, formatted in the
+    Prometheus text exposition format. Use this when running an in-cluster
+    Prometheus instance instead of (or alongside) the OTel collector.
+    """
+    from fastapi.responses import Response
+    if not settings.prometheus_enabled:
+        return Response("Prometheus exporter disabled\n", status_code=404,
+                        media_type="text/plain")
+    try:
+        from prometheus_client import generate_latest, CONTENT_TYPE_LATEST, REGISTRY
+        return Response(generate_latest(REGISTRY), media_type=CONTENT_TYPE_LATEST)
+    except ImportError:
+        return Response("prometheus_client not installed\n", status_code=503,
+                        media_type="text/plain")
 
 
 @app.get("/.well-known/jwks.json", tags=["infra"])

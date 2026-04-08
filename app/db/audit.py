@@ -142,6 +142,9 @@ async def verify_chain(db: AsyncSession) -> tuple[bool, int, int]:
 
     Returns (is_valid, total_checked, first_broken_id).
     first_broken_id is 0 if the chain is intact.
+
+    Increments AUDIT_CHAIN_VERIFY_FAILED_COUNTER on the first broken entry —
+    this metric drives the AuditChainBroken alert (severity: critical).
     """
     result = await db.execute(
         select(AuditLog).order_by(AuditLog.id.asc())
@@ -158,6 +161,8 @@ async def verify_chain(db: AsyncSession) -> tuple[bool, int, int]:
             continue
 
         if entry.previous_hash != expected_previous:
+            from app.telemetry_metrics import AUDIT_CHAIN_VERIFY_FAILED_COUNTER
+            AUDIT_CHAIN_VERIFY_FAILED_COUNTER.add(1, {"reason": "previous_hash_mismatch"})
             return (False, i, entry.id)
 
         ts = entry.timestamp
@@ -169,6 +174,8 @@ async def verify_chain(db: AsyncSession) -> tuple[bool, int, int]:
             entry.result, entry.details, entry.previous_hash,
         )
         if entry.entry_hash != expected_hash:
+            from app.telemetry_metrics import AUDIT_CHAIN_VERIFY_FAILED_COUNTER
+            AUDIT_CHAIN_VERIFY_FAILED_COUNTER.add(1, {"reason": "entry_hash_mismatch"})
             return (False, i, entry.id)
 
         expected_previous = entry.entry_hash

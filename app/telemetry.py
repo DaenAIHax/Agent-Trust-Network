@@ -67,7 +67,24 @@ def init_telemetry() -> None:
             metric_exporter,
             export_interval_millis=settings.otel_metrics_export_interval_ms,
         )
-        meter_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
+        readers = [metric_reader]
+
+        # Optional in-process Prometheus reader. When enabled, the broker
+        # serves a /metrics endpoint that Prometheus can scrape directly,
+        # in addition to the OTLP push to Jaeger.
+        if settings.prometheus_enabled:
+            try:
+                from opentelemetry.exporter.prometheus import PrometheusMetricReader
+                prom_reader = PrometheusMetricReader()
+                readers.append(prom_reader)
+                _log.info("Prometheus /metrics endpoint enabled")
+            except ImportError:
+                _log.warning(
+                    "PROMETHEUS_ENABLED=true but opentelemetry-exporter-prometheus "
+                    "is not installed — /metrics endpoint disabled"
+                )
+
+        meter_provider = MeterProvider(resource=resource, metric_readers=readers)
         metrics.set_meter_provider(meter_provider)
         meter = metrics.get_meter("agent_trust")
 

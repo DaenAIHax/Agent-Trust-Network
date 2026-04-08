@@ -59,3 +59,53 @@ PDP_WEBHOOK_LATENCY_HISTOGRAM = meter.create_histogram(
     description="PDP webhook call latency",
     unit="ms",
 )
+
+# ── Security signal counters ─────────────────────────────────────────────────
+# These metrics drive the Prometheus alert rules in
+# enterprise-kit/monitoring/cullis-alerts.yml. Every increment is a potential
+# attack signal — incidents start with one of these going non-zero.
+
+CERT_PINNING_MISMATCH_COUNTER = meter.create_counter(
+    name="atn.cert_pinning.mismatch",
+    description=(
+        "Login attempts where the presented x509 cert thumbprint differs "
+        "from the pinned thumbprint. Non-zero = possible compromise or "
+        "uncoordinated cert rotation."
+    ),
+    unit="1",
+)
+AUDIT_CHAIN_VERIFY_FAILED_COUNTER = meter.create_counter(
+    name="atn.audit_chain.verify_failed",
+    description=(
+        "Audit log hash chain verification failures. Non-zero = tampering "
+        "with the append-only audit log."
+    ),
+    unit="1",
+)
+DPOP_JTI_REPLAY_COUNTER = meter.create_counter(
+    name="atn.dpop.jti_replay_attempt",
+    description="DPoP proof replay attempts (JTI already seen).",
+    unit="1",
+)
+REVOKED_TOKEN_USE_COUNTER = meter.create_counter(
+    name="atn.revoked_token.use_attempt",
+    description="Attempts to use a revoked JWT access token.",
+    unit="1",
+)
+KMS_SEAL_STATUS_COUNTER = meter.create_counter(
+    name="atn.kms.seal_check_failed",
+    description=(
+        "KMS/Vault seal-check failures (sealed or unreachable). The broker "
+        "remains operational via cached keys but cannot rotate or write new "
+        "secrets."
+    ),
+    unit="1",
+)
+POLICY_DUAL_ORG_MISMATCH_COUNTER = meter.create_counter(
+    name="atn.policy.dual_org_mismatch",
+    description=(
+        "Sessions where one org's PDP allowed and the other denied. Signals "
+        "policy desynchronization between federated organizations."
+    ),
+    unit="1",
+)

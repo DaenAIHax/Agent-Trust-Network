@@ -54,6 +54,11 @@ class Settings(BaseSettings):
     otel_metrics_export_interval_ms: int = 10000
     otel_exporter_insecure: bool = False
 
+    # Prometheus /metrics endpoint — when true, the broker exposes metrics
+    # at /metrics for Prometheus scrape, in addition to the OTLP push.
+    # Required by the alert rules in enterprise-kit/monitoring/.
+    prometheus_enabled: bool = False
+
     # Logging — "text" (default) or "json" (structured for SIEM)
     log_format: str = "text"
 
@@ -121,6 +126,21 @@ def validate_config(settings: "Settings") -> None:
 
     if not settings.redis_url:
         _startup_logger.warning("REDIS_URL not set — falling back to in-memory stores.")
+
+    # Catch a common foot-gun: a developer's local .env sets BROKER_PUBLIC_URL
+    # for the docker-compose nginx proxy (e.g. https://localhost:8443) and
+    # then runs unit tests, which causes every authenticated test to fail
+    # with "Invalid DPoP proof: htu mismatch". The conftest neutralizes this
+    # via env override, but a non-test dev process will still see odd auth
+    # failures if the URL does not match how clients actually reach the
+    # broker. See imp/plan.md item 4 bonus 2.
+    if not is_production and settings.broker_public_url:
+        _startup_logger.warning(
+            "BROKER_PUBLIC_URL is set to %r in development mode. "
+            "Verify clients reach the broker via this exact URL — any "
+            "mismatch will cause `Invalid DPoP proof: htu mismatch` 401s.",
+            settings.broker_public_url,
+        )
 
     if settings.vault_token == _INSECURE_VAULT_TOKEN:
         _startup_logger.warning("VAULT_TOKEN is the default dev token '%s'.", _INSECURE_VAULT_TOKEN)

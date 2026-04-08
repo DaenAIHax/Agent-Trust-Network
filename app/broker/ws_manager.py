@@ -36,6 +36,10 @@ class ConnectionManager:
         self._redis = None
         self._pubsub = None
         self._listener_task: asyncio.Task | None = None
+        # Set after notify_shutdown_to_clients() has been called once.
+        # Prevents both the drain watcher and the lifespan post-yield path
+        # from sending close frames twice if the timing overlaps.
+        self._notified_shutdown = False
 
     async def init_redis(self) -> None:
         """
@@ -86,19 +90,39 @@ class ConnectionManager:
             if self._listener_task is None or self._listener_task.done():
                 self._listener_task = asyncio.create_task(self._redis_listener())
 
-    async def disconnect(self, agent_id: str, org_id: str | None = None) -> None:
+    async def disconnect(
+        self,
+        agent_id: str,
+        org_id: str | None = None,
+        code: int = 1000,
+        reason: str = "",
+    ) -> None:
         """
         Remove the connection and unsubscribe from Redis channel.
+
+        WebSocket close codes (RFC 6455):
+          1000 = Normal closure (default — agent disconnect, errors)
+          1001 = Going away (server stopping)
+          1012 = Service restart (rolling update — client should reconnect)
         """
         async with self._lock:
-            await self._disconnect_unlocked(agent_id, org_id=org_id)
+            await self._disconnect_unlocked(agent_id, org_id=org_id, code=code, reason=reason)
 
         # Unsubscribe from Redis channel (outside lock — I/O bound)
         if self._pubsub is not None:
             channel = f"{_REDIS_CHANNEL_PREFIX}{agent_id}"
-            await self._pubsub.unsubscribe(channel)
+            try:
+                await self._pubsub.unsubscribe(channel)
+            except Exception:
+                pass  # pubsub may already be closing during shutdown
 
-    async def _disconnect_unlocked(self, agent_id: str, org_id: str | None = None) -> None:
+    async def _disconnect_unlocked(
+        self,
+        agent_id: str,
+        org_id: str | None = None,
+        code: int = 1000,
+        reason: str = "",
+    ) -> None:
         """Inner disconnect — caller must hold self._lock."""
         stored_org = self._agent_org.pop(agent_id, None)
         effective_org = org_id or stored_org
@@ -108,10 +132,13 @@ class ConnectionManager:
         ws = self._connections.pop(agent_id, None)
         if ws is not None:
             try:
-                await ws.close()
+                await ws.close(code=code, reason=reason)
             except Exception as exc:
                 logger.debug("Error closing WebSocket for agent %s: %s", agent_id, exc)
-            logger.info("Agent %s disconnected from WebSocket", agent_id)
+            logger.info(
+                "Agent %s disconnected from WebSocket (code=%d reason=%s)",
+                agent_id, code, reason or "-",
+            )
 
     async def send_to_agent(self, agent_id: str, data: dict) -> None:
         """
@@ -190,21 +217,72 @@ class ConnectionManager:
         except Exception as exc:
             logger.error("Redis Pub/Sub listener crashed: %s", exc)
 
+    async def notify_shutdown_to_clients(self) -> int:
+        """
+        Send a Close frame (code 1012, "service restart") to every connected
+        agent. Idempotent — calling twice is a no-op the second time.
+
+        This is split out from shutdown() so the drain watcher can call it
+        AS SOON AS SIGTERM arrives, giving clients the maximum possible
+        window to reconnect to another instance during the drain period.
+        The full shutdown() then runs at the end of the lifespan to clean
+        up Redis pubsub and the listener task.
+
+        Returns the number of connections that were notified (0 if already
+        called).
+        """
+        if self._notified_shutdown:
+            return 0
+        self._notified_shutdown = True
+
+        notified = 0
+        for agent_id in list(self._connections):
+            try:
+                await self.disconnect(
+                    agent_id, code=1012, reason="server restarting",
+                )
+                notified += 1
+            except Exception as exc:
+                logger.debug("Error during graceful disconnect of %s: %s",
+                             agent_id, exc)
+        if notified:
+            logger.warning(
+                "Notified %d WebSocket client(s) of server restart (code 1012)",
+                notified,
+            )
+        return notified
+
     async def shutdown(self) -> None:
-        """Graceful shutdown: cancel the listener and close pubsub."""
+        """
+        Final cleanup after the lifespan exits.
+
+        Order matters:
+          1. notify_shutdown_to_clients() — close any client WebSockets that
+             are still attached. If the drain watcher already ran, this is
+             a no-op (idempotent flag).
+          2. Cancel the Redis listener task.
+          3. Close the pubsub connection.
+
+        Each step swallows its own exceptions so a failure in one phase
+        does not prevent the others from running. Best-effort drain.
+        """
+        # 1. Make sure every WS has received the close frame.
+        await self.notify_shutdown_to_clients()
+
+        # 2. Cancel the Redis listener after WS sockets are closed.
         if self._listener_task is not None:
             self._listener_task.cancel()
             try:
                 await self._listener_task
-            except asyncio.CancelledError:
+            except (asyncio.CancelledError, Exception):
                 pass
 
+        # 3. Close pubsub last.
         if self._pubsub is not None:
-            await self._pubsub.aclose()
-
-        # Close all WebSocket connections
-        for agent_id in list(self._connections):
-            await self.disconnect(agent_id)
+            try:
+                await self._pubsub.aclose()
+            except Exception as exc:
+                logger.debug("Error closing Redis pubsub: %s", exc)
 
 
 # Singleton

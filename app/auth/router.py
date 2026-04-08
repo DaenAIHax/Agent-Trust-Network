@@ -90,7 +90,9 @@ async def issue_token(
         # ── Certificate thumbprint pinning (anti Rogue CA) ───────────────────
         pinned_ok = await update_agent_cert(db, agent_id, cert_pem, cert_thumbprint)
         if not pinned_ok:
+            from app.telemetry_metrics import CERT_PINNING_MISMATCH_COUNTER
             AUTH_DENY_COUNTER.add(1, {"reason": "cert_thumbprint_mismatch"})
+            CERT_PINNING_MISMATCH_COUNTER.add(1, {"org_id": org_id})
             await log_event(
                 db, "auth.token_request", "denied",
                 agent_id=agent_id, org_id=org_id,

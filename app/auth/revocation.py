@@ -32,11 +32,16 @@ async def check_cert_not_revoked(db: AsyncSession, serial_hex: str) -> None:
     """
     Verify that the certificate has not been revoked.
     Raises HTTPException 401 if present in revoked_certs.
+
+    Increments REVOKED_TOKEN_USE_COUNTER on hit — drives the
+    RevokedTokenReuseAttempt alert.
     """
     result = await db.execute(
         select(RevokedCert).where(RevokedCert.serial_hex == serial_hex)
     )
     if result.scalar_one_or_none() is not None:
+        from app.telemetry_metrics import REVOKED_TOKEN_USE_COUNTER
+        REVOKED_TOKEN_USE_COUNTER.add(1, {"kind": "cert_revoked"})
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Certificate has been revoked",
