@@ -67,11 +67,15 @@ Areas where contributions are especially welcome:
 
 ## Security Issues
 
-**Do not open a public issue for security vulnerabilities.** Please see [SECURITY.md](SECURITY.md) for responsible disclosure instructions.
+**Do not open a public issue for security vulnerabilities.** Email
+[security@cullis.io](mailto:security@cullis.io) directly, or use GitHub's
+private vulnerability reporting. See [SECURITY.md](SECURITY.md) for the full
+disclosure policy.
 
 ## Questions?
 
-Open a [GitHub Discussion](https://github.com/cullis-security/cullis/discussions) in the Q&A category.
+- General questions: email [hello@cullis.io](mailto:hello@cullis.io) or open a [GitHub Discussion](https://github.com/cullis-security/cullis/discussions) in the Q&A category.
+- Security questions: [security@cullis.io](mailto:security@cullis.io) (do not post in public).
 
 ## License
 

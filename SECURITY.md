@@ -8,7 +8,17 @@ If you discover a security vulnerability in Cullis, please report it responsibly
 
 ### How to Report
 
-Use [GitHub's private vulnerability reporting](https://github.com/cullis-security/cullis/security/advisories/new) to submit your report. This ensures the report remains confidential until a fix is available.
+**Email: [security@cullis.io](mailto:security@cullis.io)** — preferred channel.
+
+This mailbox is monitored continuously by the maintainers. Please include
+"SECURITY" or a CVE-style identifier in the subject line to make sure your
+report is triaged quickly.
+
+Alternative channel: [GitHub's private vulnerability reporting](https://github.com/cullis-security/cullis/security/advisories/new) if you cannot send email.
+
+Both channels keep the report confidential until a fix is available. We do
+**not** want public GitHub issues, X/Twitter posts, or blog posts about
+vulnerabilities before a coordinated disclosure window has passed.
 
 ### What to Include
 

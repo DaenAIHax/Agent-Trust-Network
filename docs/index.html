@@ -53,7 +53,27 @@
   },
   "license": "https://www.apache.org/licenses/LICENSE-2.0",
   "codeRepository": "https://github.com/cullis-security/cullis",
-  "programmingLanguage": ["Python", "TypeScript"]
+  "programmingLanguage": ["Python", "TypeScript"],
+  "publisher": {
+    "@type": "Organization",
+    "name": "Cullis Security",
+    "url": "https://cullis.io",
+    "email": "hello@cullis.io",
+    "contactPoint": [
+      {
+        "@type": "ContactPoint",
+        "email": "hello@cullis.io",
+        "contactType": "general inquiries",
+        "availableLanguage": ["en", "it"]
+      },
+      {
+        "@type": "ContactPoint",
+        "email": "security@cullis.io",
+        "contactType": "security disclosure",
+        "availableLanguage": ["en", "it"]
+      }
+    ]
+  }
 }
 </script>
 
@@ -2984,7 +3004,9 @@ footer {
         <div class="footer-col">
           <h4>Security</h4>
           <ul>
+            <li><a href="mailto:security@cullis.io">security@cullis.io</a></li>
             <li><a href="https://github.com/cullis-security/cullis/blob/main/SECURITY.md" target="_blank" rel="noopener">Security Policy</a></li>
+            <li><a href="/.well-known/security.txt" rel="noopener">security.txt</a></li>
             <li><a href="https://github.com/cullis-security/cullis/blob/main/enterprise-kit/BYOCA.md" target="_blank" rel="noopener">Bring Your Own CA</a></li>
             <li><a href="https://github.com/cullis-security/cullis/blob/main/LICENSE" target="_blank" rel="noopener">Apache 2.0 License</a></li>
           </ul>

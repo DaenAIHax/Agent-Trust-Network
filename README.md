@@ -267,6 +267,15 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, PR workflow, and c
 
 Security vulnerabilities: see [SECURITY.md](SECURITY.md) for private reporting guidelines.
 
+## Contact
+
+| | |
+|---|---|
+| General questions, partnerships, demos | **[hello@cullis.io](mailto:hello@cullis.io)** |
+| Security vulnerabilities (private)     | **[security@cullis.io](mailto:security@cullis.io)** &middot; see [SECURITY.md](SECURITY.md) |
+| Bug reports, feature requests          | [GitHub Issues](https://github.com/cullis-security/cullis/issues) |
+| Discussion, questions, ideas           | [GitHub Discussions](https://github.com/cullis-security/cullis/discussions) |
+
 ## License
 
 [Apache License 2.0](LICENSE)

@@ -1,8 +1,14 @@
 blank_issues_enabled: false
 contact_links:
-  - name: Security Vulnerability
+  - name: Security Vulnerability — email (preferred)
+    url: mailto:security@cullis.io
+    about: Email security@cullis.io for confidential security disclosures. Continuously monitored by the maintainers.
+  - name: Security Vulnerability — GitHub (alternative)
     url: https://github.com/cullis-security/cullis/security/advisories/new
-    about: Report security vulnerabilities privately. Do not open a public issue.
+    about: Use GitHub's private advisory system if you cannot send email.
+  - name: General questions — email
+    url: mailto:hello@cullis.io
+    about: Email hello@cullis.io for partnerships, demos, or anything that does not fit a public issue.
   - name: Questions & Discussion
     url: https://github.com/cullis-security/cullis/discussions
     about: Ask questions or discuss ideas in GitHub Discussions.
