@@ -1,67 +1,84 @@
 {% extends "base.html" %}
 {% block title %}Organizations{% endblock %}
+{% block header_title %}Organizations{% endblock %}
 {% block content %}
 <div id="page-content" data-sse-page="orgs" class="max-w-6xl">
+
+    <!-- Header -->
     <div class="flex items-center justify-between mb-6">
-        <h2 class="text-2xl font-bold text-white">Organizations</h2>
-        <div class="flex items-center gap-3">
-            <span class="text-sm text-gray-500">{{ orgs | length }} registered</span>
-            <a href="/dashboard/orgs/onboard" class="px-3 py-1.5 bg-brand-600 hover:bg-brand-700 text-white text-sm rounded-md">+ Onboard Org</a>
+        <div>
+            <h2 class="text-lg font-semibold text-white uppercase tracking-wider">Organizations</h2>
+            <p class="text-xs text-gray-600 mt-0.5">{{ orgs | length }} registered</p>
         </div>
+        <a href="/dashboard/orgs/onboard"
+           class="px-4 py-2 text-xs font-semibold rounded transition-all"
+           style="font-family: 'Chakra Petch', sans-serif; background: #00e5c7; color: #0a0f1a; letter-spacing: 0.05em; text-transform: uppercase;"
+           onmouseover="this.style.background='#fff'; this.style.boxShadow='0 0 20px rgba(0,229,199,0.15)'"
+           onmouseout="this.style.background='#00e5c7'; this.style.boxShadow='none'">
+            + Onboard Org
+        </a>
     </div>
 
     {# ── Invite Tokens ────────────────────────────────────────────────── #}
-    <div class="mb-8 bg-gray-900 border border-gray-800 rounded-lg p-5">
+    <div class="mb-8 bg-surface-900/80 border border-gray-800/60 rounded-lg p-5 backdrop-blur-sm card-glow">
         <div class="flex items-center justify-between mb-4">
-            <h3 class="text-lg font-semibold text-white">Invite Tokens</h3>
+            <div>
+                <h3 class="text-sm font-semibold text-white uppercase tracking-wider">Invite Tokens</h3>
+                <p class="text-[10px] text-gray-600 mt-1">One-time tokens required to join via <code class="text-gray-500 font-mono">/onboarding/join</code></p>
+            </div>
             <form method="post" action="/dashboard/invites/generate" class="flex items-center gap-2">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                 <input type="text" name="label" placeholder="Label (e.g. Acme Corp)" maxlength="256"
-                       class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-brand-500">
-                <select name="ttl_hours" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-white">
+                       class="bg-surface-950 border border-gray-700/60 rounded px-2.5 py-1.5 text-xs text-white placeholder-gray-600">
+                <select name="ttl_hours" class="bg-surface-950 border border-gray-700/60 rounded px-2.5 py-1.5 text-xs text-white">
                     <option value="24">24h</option>
                     <option value="72" selected>3 days</option>
                     <option value="168">7 days</option>
                     <option value="720">30 days</option>
                 </select>
-                <button type="submit" class="px-3 py-1 bg-brand-600 hover:bg-brand-700 text-white text-sm rounded-md">Generate</button>
+                <button type="submit"
+                        class="px-3 py-1.5 text-[10px] font-semibold rounded transition-all"
+                        style="font-family: 'Chakra Petch', sans-serif; background: #00e5c7; color: #0a0f1a; letter-spacing: 0.05em; text-transform: uppercase;"
+                        onmouseover="this.style.background='#fff'"
+                        onmouseout="this.style.background='#00e5c7'">
+                    Generate
+                </button>
             </form>
         </div>
-        <p class="text-xs text-gray-500 mb-3">One-time tokens required for organizations to join the network via <code class="text-gray-600">/onboarding/join</code>.</p>
 
         {% if invites %}
         <table class="w-full">
             <thead>
-                <tr class="border-b border-gray-800">
-                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Label</th>
-                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Created</th>
-                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Expires</th>
-                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
-                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
+                <tr class="border-b border-gray-800/60">
+                    <th class="px-3 py-2 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Label</th>
+                    <th class="px-3 py-2 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Created</th>
+                    <th class="px-3 py-2 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Expires</th>
+                    <th class="px-3 py-2 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Status</th>
+                    <th class="px-3 py-2 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Actions</th>
                 </tr>
             </thead>
-            <tbody class="divide-y divide-gray-800">
+            <tbody class="divide-y divide-gray-800/40">
                 {% for inv in invites %}
-                <tr class="hover:bg-gray-800/50">
-                    <td class="px-3 py-2 text-sm text-white">{{ inv.label or '(no label)' }}</td>
-                    <td class="px-3 py-2 text-xs text-gray-400">{{ inv.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
-                    <td class="px-3 py-2 text-xs text-gray-400">{{ inv.expires_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                <tr class="table-row-hover transition-colors">
+                    <td class="px-3 py-2 text-xs text-white">{{ inv.label or '(no label)' }}</td>
+                    <td class="px-3 py-2 text-[10px] text-gray-500 font-mono">{{ inv.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                    <td class="px-3 py-2 text-[10px] text-gray-500 font-mono">{{ inv.expires_at.strftime('%Y-%m-%d %H:%M') }}</td>
                     <td class="px-3 py-2">
                         {% if inv.revoked %}
-                        <span class="px-2 py-0.5 rounded-full text-xs bg-red-500/10 text-red-400">Revoked</span>
+                        <span class="px-2 py-0.5 rounded-full text-[10px] bg-red-500/10 text-red-400 uppercase tracking-wider">Revoked</span>
                         {% elif inv.used %}
-                        <span class="px-2 py-0.5 rounded-full text-xs bg-emerald-500/10 text-emerald-400">Used by {{ inv.used_by_org_id }}</span>
+                        <span class="px-2 py-0.5 rounded-full text-[10px] bg-emerald-500/10 text-emerald-400 uppercase tracking-wider">Used by {{ inv.used_by_org_id }}</span>
                         {% elif inv.expired %}
-                        <span class="px-2 py-0.5 rounded-full text-xs bg-gray-500/10 text-gray-400">Expired</span>
+                        <span class="px-2 py-0.5 rounded-full text-[10px] bg-gray-500/10 text-gray-500 uppercase tracking-wider">Expired</span>
                         {% else %}
-                        <span class="px-2 py-0.5 rounded-full text-xs bg-yellow-500/10 text-yellow-400">Active</span>
+                        <span class="px-2 py-0.5 rounded-full text-[10px] bg-yellow-500/10 text-yellow-400 uppercase tracking-wider">Active</span>
                         {% endif %}
                     </td>
                     <td class="px-3 py-2">
                         {% if not inv.used and not inv.revoked and not inv.expired %}
                         <form method="post" action="/dashboard/invites/{{ inv.id }}/revoke" class="inline">
                             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                            <button class="px-2 py-0.5 text-xs bg-red-600 hover:bg-red-700 text-white rounded">Revoke</button>
+                            <button class="px-2 py-0.5 text-[10px] uppercase tracking-wider border border-red-500/40 text-red-400 rounded hover:bg-red-500/10 transition-colors">Revoke</button>
                         </form>
                         {% endif %}
                     </td>
@@ -70,110 +87,113 @@
             </tbody>
         </table>
         {% else %}
-        <p class="text-sm text-gray-600">No invite tokens generated yet.</p>
+        <p class="text-xs text-gray-600">No invite tokens generated yet.</p>
         {% endif %}
     </div>
 
-    <div class="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
+    <!-- Org list -->
+    <div class="bg-surface-900/80 border border-gray-800/60 rounded-lg overflow-hidden backdrop-blur-sm">
         <table class="w-full">
             <thead>
-                <tr class="border-b border-gray-800">
-                    <th class="px-5 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Organization</th>
-                    <th class="px-5 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                    <th class="px-5 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Agents</th>
-                    <th class="px-5 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">PDP Webhook</th>
-                    <th class="px-5 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">CA Cert</th>
-                    <th class="px-5 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">SSO</th>
-                    <th class="px-5 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                <tr class="border-b border-gray-800/60">
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Organization</th>
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Status</th>
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Agents</th>
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">PDP Webhook</th>
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">CA Cert</th>
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">SSO</th>
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Actions</th>
                 </tr>
             </thead>
-            <tbody class="divide-y divide-gray-800">
+            <tbody class="divide-y divide-gray-800/40">
                 {% for org in orgs %}
-                <tr class="hover:bg-gray-800/50">
+                <tr class="table-row-hover transition-colors">
                     <td class="px-5 py-4">
-                        <p class="text-sm font-medium text-white">{{ org.org_id }}</p>
-                        <p class="text-xs text-gray-600">{{ org.display_name }}</p>
+                        <p class="text-sm text-white font-mono">{{ org.org_id }}</p>
+                        <p class="text-[10px] text-gray-600 mt-0.5">{{ org.display_name }}</p>
                     </td>
                     <td class="px-5 py-4">
                         {% if org.status == 'active' %}
-                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400">
-                            <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>Active
+                        <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium bg-emerald-500/10 text-emerald-400 uppercase tracking-wider">
+                            <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 pulse-dot"></span>Active
                         </span>
                         {% elif org.status == 'pending' %}
-                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-yellow-500/10 text-yellow-400">
+                        <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium bg-yellow-500/10 text-yellow-400 uppercase tracking-wider">
                             <span class="w-1.5 h-1.5 rounded-full bg-yellow-500"></span>Pending
                         </span>
                         {% elif org.status == 'suspended' %}
-                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-orange-500/10 text-orange-400">
+                        <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium bg-orange-500/10 text-orange-400 uppercase tracking-wider">
                             <span class="w-1.5 h-1.5 rounded-full bg-orange-500"></span>Suspended
                         </span>
                         {% else %}
-                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-red-500/10 text-red-400">
+                        <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium bg-red-500/10 text-red-400 uppercase tracking-wider">
                             <span class="w-1.5 h-1.5 rounded-full bg-red-500"></span>{{ org.status }}
                         </span>
                         {% endif %}
                     </td>
-                    <td class="px-5 py-4 text-sm text-gray-400">{{ org.agent_count }}</td>
+                    <td class="px-5 py-4 text-xs text-gray-400 font-mono">{{ org.agent_count }}</td>
                     <td class="px-5 py-4">
                         {% if org.webhook_url %}
-                        <span class="text-xs text-gray-400 font-mono truncate block max-w-[200px]" title="{{ org.webhook_url }}">{{ org.webhook_url }}</span>
+                        <span class="text-[10px] text-gray-400 font-mono truncate block max-w-[200px]" title="{{ org.webhook_url }}">{{ org.webhook_url }}</span>
                         {% else %}
-                        <span class="text-xs text-red-400">Not configured</span>
+                        <span class="text-[10px] text-red-400 uppercase tracking-wider">Not configured</span>
                         {% endif %}
                     </td>
                     <td class="px-5 py-4">
                         {% if org.ca_certificate %}
-                        <span class="text-xs text-emerald-400">Uploaded</span>
+                        <span class="text-[10px] text-emerald-400 uppercase tracking-wider">Uploaded</span>
                         {% else %}
                         <a href="/dashboard/orgs/{{ org.org_id }}/upload-ca"
-                           class="px-2 py-1 text-xs bg-brand-600 hover:bg-brand-700 text-white rounded">Upload CA</a>
+                           class="px-2.5 py-1 text-[10px] uppercase tracking-wider border border-accent-400/30 text-accent-400 rounded hover:bg-accent-400/10 transition-colors">Upload CA</a>
                         {% endif %}
                     </td>
                     <td class="px-5 py-4">
                         {% if org.oidc_enabled %}
-                        <span class="text-xs text-emerald-400">Configured</span>
+                        <span class="text-[10px] text-emerald-400 uppercase tracking-wider">Configured</span>
                         {% else %}
-                        <span class="text-xs text-gray-600">Off</span>
+                        <span class="text-[10px] text-gray-600 uppercase tracking-wider">Off</span>
                         {% endif %}
                     </td>
-                    <td class="px-5 py-4">
+                    <td class="px-5 py-4 space-x-1">
                         {% if org.status == 'pending' %}
                         <form method="post" action="/dashboard/orgs/{{ org.org_id }}/approve" class="inline">
                             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                            <button class="px-2 py-1 text-xs bg-emerald-600 hover:bg-emerald-700 text-white rounded">Approve</button>
+                            <button class="px-2 py-0.5 text-[10px] uppercase tracking-wider border border-emerald-500/40 text-emerald-400 rounded hover:bg-emerald-500/10 transition-colors">Approve</button>
                         </form>
-                        <form method="post" action="/dashboard/orgs/{{ org.org_id }}/reject" class="inline ml-1">
+                        <form method="post" action="/dashboard/orgs/{{ org.org_id }}/reject" class="inline">
                             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                            <button class="px-2 py-1 text-xs bg-red-600 hover:bg-red-700 text-white rounded">Reject</button>
+                            <button class="px-2 py-0.5 text-[10px] uppercase tracking-wider border border-red-500/40 text-red-400 rounded hover:bg-red-500/10 transition-colors">Reject</button>
                         </form>
                         {% elif org.status == 'active' %}
                         <form method="post" action="/dashboard/orgs/{{ org.org_id }}/unlock-ca" class="inline">
                             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                            <button class="px-2 py-1 text-xs bg-yellow-600 hover:bg-yellow-700 text-white rounded"
+                            <button class="px-2 py-0.5 text-[10px] uppercase tracking-wider border border-yellow-500/40 text-yellow-400 rounded hover:bg-yellow-500/10 transition-colors"
                                     onclick="return confirm('Unlock CA certificate for {{ org.org_id }}?')">Unlock CA</button>
                         </form>
-                        <form method="post" action="/dashboard/orgs/{{ org.org_id }}/suspend" class="inline ml-1">
+                        <form method="post" action="/dashboard/orgs/{{ org.org_id }}/suspend" class="inline">
                             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                            <button class="px-2 py-1 text-xs bg-orange-600 hover:bg-orange-700 text-white rounded"
+                            <button class="px-2 py-0.5 text-[10px] uppercase tracking-wider border border-orange-500/40 text-orange-400 rounded hover:bg-orange-500/10 transition-colors"
                                     onclick="return confirm('Suspend organization {{ org.org_id }}? All agents will be unable to authenticate.')">Suspend</button>
                         </form>
                         {% elif org.status == 'suspended' %}
                         <form method="post" action="/dashboard/orgs/{{ org.org_id }}/approve" class="inline">
                             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                            <button class="px-2 py-1 text-xs bg-emerald-600 hover:bg-emerald-700 text-white rounded">Reactivate</button>
+                            <button class="px-2 py-0.5 text-[10px] uppercase tracking-wider border border-emerald-500/40 text-emerald-400 rounded hover:bg-emerald-500/10 transition-colors">Reactivate</button>
                         </form>
                         {% endif %}
-                        <form method="post" action="/dashboard/orgs/{{ org.org_id }}/delete" class="inline ml-1"
+                        <form method="post" action="/dashboard/orgs/{{ org.org_id }}/delete" class="inline"
                               onsubmit="return confirm('Delete organization {{ org.org_id }} and ALL its agents? This cannot be undone.')">
                             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                             <button type="submit"
-                                    class="px-2 py-1 text-xs bg-red-600 hover:bg-red-700 text-white rounded">Delete</button>
+                                    class="px-2 py-0.5 text-[10px] uppercase tracking-wider border border-red-500/40 text-red-400 rounded hover:bg-red-500/10 transition-colors">Delete</button>
                         </form>
                     </td>
                 </tr>
                 {% endfor %}
                 {% if not orgs %}
-                <tr><td colspan="7" class="px-5 py-8 text-center text-sm text-gray-600">No organizations registered</td></tr>
+                <tr><td colspan="7" class="px-5 py-16 text-center">
+                    <p class="text-sm text-gray-600">No organizations registered</p>
+                </td></tr>
                 {% endif %}
             </tbody>
         </table>
