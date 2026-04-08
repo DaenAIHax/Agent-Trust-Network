@@ -1487,6 +1487,244 @@ nav .container {
 .terminal-body .comment { color: var(--text-tertiary); }
 .terminal-body .output { color: var(--text-secondary); }
 
+/* ── QUICKSTART — flow-line, three-act layout ──────────────────────────
+   Editorial / blueprint vibe, not a generic card stack. A vertical teal
+   "vein" connects three numbered acts. Each act has a giant Instrument
+   Serif numeral as a watermark on the left, an eyebrow + display title
+   on the right, then the command block (with its own copy button) and
+   a refined italic note underneath. The whole thing should feel like
+   a one-page broadsheet the audience reads top-to-bottom. */
+
+.cmd-flow {
+  position: relative;
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 0.5rem 0 0 0;
+}
+
+/* The vein. A 1px teal line that runs the height of the section,
+   slightly inset from the left so the giant numerals can hang over it.
+   Fades at the very top and bottom so it feels infinite, not boxed. */
+.cmd-flow::before {
+  content: "";
+  position: absolute;
+  left: 70px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    rgba(0, 229, 199, 0.35) 8%,
+    rgba(0, 229, 199, 0.35) 92%,
+    transparent 100%
+  );
+  pointer-events: none;
+}
+
+.cmd-act {
+  position: relative;
+  padding: 2.2rem 0 2.2rem 8.5rem;
+  /* room on the left for the giant numeral + the vein node */
+}
+
+.cmd-act + .cmd-act {
+  margin-top: 0.4rem;
+}
+
+/* The node on the vein — small teal disc, positioned exactly on the
+   vertical line. Pulses softly when the act is hovered. */
+.cmd-act::before {
+  content: "";
+  position: absolute;
+  left: 64px;
+  top: 2.6rem;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #050508;
+  border: 1px solid rgba(0, 229, 199, 0.5);
+  box-shadow: 0 0 0 4px #050508, 0 0 12px rgba(0, 229, 199, 0.25);
+  transition: border-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease;
+}
+
+.cmd-act:hover::before {
+  border-color: var(--accent-cyan);
+  box-shadow: 0 0 0 4px #050508, 0 0 18px rgba(0, 229, 199, 0.55);
+  transform: scale(1.15);
+}
+
+/* The watermark numeral — Instrument Serif italic, very large, very
+   transparent. Sits to the LEFT of the vein and bleeds toward it. */
+.cmd-act__num {
+  position: absolute;
+  left: -18px;
+  top: 0;
+  font-family: 'Instrument Serif', serif;
+  font-style: italic;
+  font-size: 7.5rem;
+  line-height: 1;
+  color: rgba(0, 229, 199, 0.14);
+  letter-spacing: -0.04em;
+  pointer-events: none;
+  user-select: none;
+  transition: color 0.45s ease, transform 0.45s ease;
+}
+.cmd-act:hover .cmd-act__num {
+  color: rgba(0, 229, 199, 0.32);
+  transform: translateX(-3px);
+}
+
+/* The eyebrow above each act title — sets up the "phase" framing. */
+.cmd-act__eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  font-weight: 500;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.7rem;
+  margin-bottom: 0.65rem;
+}
+.cmd-act__eyebrow::before {
+  content: "";
+  display: inline-block;
+  width: 18px;
+  height: 1px;
+  background: var(--accent-cyan);
+}
+
+/* The display title — Instrument Serif, italic accent on a key word. */
+.cmd-act__title {
+  font-family: 'Instrument Serif', serif;
+  font-size: clamp(1.65rem, 2.3vw, 2.05rem);
+  line-height: 1.15;
+  font-weight: 400;
+  color: var(--text-primary);
+  margin: 0 0 1rem 0;
+  letter-spacing: -0.01em;
+}
+.cmd-act__title em {
+  font-style: italic;
+  color: var(--accent-cyan);
+}
+
+/* The command block — single-line shell command with its own copy
+   button. Designed to look like a typed command, NOT a fake terminal
+   with fake output. Border + monospace, plus a subtle teal underline
+   on the left edge to tie it back to the vein. */
+.cmd-act__cmd {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.02) 0%,
+    rgba(255, 255, 255, 0.01) 100%
+  );
+  border: 1px solid var(--border-subtle);
+  border-left: 2px solid rgba(0, 229, 199, 0.45);
+  padding: 0.85rem 1rem 0.85rem 1.05rem;
+  font-family: var(--font-mono);
+  font-size: 0.92rem;
+  overflow-x: auto;
+  transition: border-color 0.25s ease, background 0.25s ease;
+}
+.cmd-act__cmd:hover {
+  border-color: rgba(0, 229, 199, 0.25);
+  border-left-color: var(--accent-cyan);
+  background: linear-gradient(
+    180deg,
+    rgba(0, 229, 199, 0.04) 0%,
+    rgba(0, 229, 199, 0.01) 100%
+  );
+}
+.cmd-act__cmd .prompt {
+  color: var(--accent-cyan);
+  flex-shrink: 0;
+  font-weight: 500;
+  user-select: none;
+}
+.cmd-act__cmd .cmd {
+  color: var(--text-primary);
+  flex: 1;
+  white-space: nowrap;
+}
+.cmd-act__cmd .terminal-copy {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+/* The italic descriptive note — set in Instrument Serif at small size
+   so it reads like a magazine caption rather than another bullet list. */
+.cmd-act__note {
+  margin: 0.95rem 0 0 0;
+  font-family: 'Instrument Serif', serif;
+  font-size: 1.05rem;
+  font-style: italic;
+  line-height: 1.55;
+  color: var(--text-secondary);
+  max-width: 56ch;
+}
+.cmd-act__note code {
+  font-family: var(--font-mono);
+  font-style: normal;
+  font-size: 0.85em;
+  color: var(--accent-cyan);
+  background: rgba(0, 229, 199, 0.08);
+  padding: 0.05em 0.4em;
+  border-radius: 2px;
+}
+
+/* Footer with the two doc links — pushed below the vein with extra
+   space so it reads as "what next" rather than "step 4". */
+.cmd-flow__footer {
+  margin: 2.6rem 0 0 8.5rem;
+  padding-top: 1.4rem;
+  border-top: 1px solid var(--border-subtle);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  color: var(--text-tertiary);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1.6rem;
+}
+.cmd-flow__footer a {
+  color: var(--text-primary);
+  text-decoration: none;
+  border-bottom: 1px solid rgba(0, 229, 199, 0.4);
+  padding-bottom: 1px;
+  transition: color 0.2s ease, border-color 0.2s ease;
+}
+.cmd-flow__footer a:hover {
+  color: var(--accent-cyan);
+  border-bottom-color: var(--accent-cyan);
+}
+
+/* ── Mobile: collapse the left gutter, drop the vein, scale numerals ── */
+@media (max-width: 720px) {
+  .cmd-flow::before { display: none; }
+  .cmd-act {
+    padding: 2rem 0 2rem 0;
+    border-top: 1px solid var(--border-subtle);
+  }
+  .cmd-act:first-child { border-top: none; }
+  .cmd-act::before { display: none; }
+  .cmd-act__num {
+    position: static;
+    display: block;
+    font-size: 4.5rem;
+    margin-bottom: 0.4rem;
+    color: rgba(0, 229, 199, 0.22);
+  }
+  .cmd-act__cmd { font-size: 0.85rem; }
+  .cmd-flow__footer { margin-left: 0; }
+}
+
 /* Screen-reader-only labels (WCAG 1.4.1 — do not rely on color alone) */
 .sr-only {
   position: absolute;
@@ -2455,37 +2693,95 @@ footer {
 <section id="quickstart">
   <div class="container">
     <div class="section-label reveal">Quick Start</div>
-    <h2 class="section-title reveal">Running in 60 seconds</h2>
+    <h2 class="section-title reveal">Three commands. <em>One round trip.</em></h2>
     <p class="section-desc reveal">
-      Deploy the broker and proxy on your own infrastructure. Generate an invite token, register your org, create agents.
+      Boot the full Cullis architecture on your laptop &mdash; broker, two MCP
+      proxies, two organizations, two agents &mdash; route one end-to-end
+      encrypted message between them, then tear it all down. About a minute,
+      from clone to clean slate.
     </p>
-    <div class="terminal reveal">
-      <div class="terminal-bar">
-        <div class="terminal-dot"></div>
-        <div class="terminal-dot"></div>
-        <div class="terminal-dot"></div>
-        <span class="terminal-title">terminal</span>
-        <button type="button" class="terminal-copy" onclick="copyTerminal(this)" aria-label="Copy commands to clipboard">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
-          <span class="label">Copy</span>
-        </button>
+
+    <div class="cmd-flow reveal">
+
+      <article class="cmd-act" aria-labelledby="qs-act-1">
+        <span class="cmd-act__num" aria-hidden="true">01</span>
+        <div class="cmd-act__eyebrow">Phase one &middot; Boot</div>
+        <h3 class="cmd-act__title" id="qs-act-1">Spin up <em>broker, two proxies, two agents</em>.</h3>
+        <div class="cmd-act__cmd">
+          <span class="prompt" aria-hidden="true">$</span>
+          <span class="cmd">./deploy_demo.sh up</span>
+          <button type="button"
+                  class="terminal-copy"
+                  data-copy="./deploy_demo.sh up"
+                  onclick="copyTerminal(this)"
+                  aria-label="Copy: ./deploy_demo.sh up">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+            <span class="label">Copy</span>
+          </button>
+        </div>
+        <p class="cmd-act__note">
+          Builds five containers, registers two organizations, mints one agent
+          in each (<code>alpha::sender</code> and <code>beta::checker</code>),
+          and leaves a background daemon listening. Prints every dashboard URL
+          you can poke at in a browser.
+        </p>
+      </article>
+
+      <article class="cmd-act" aria-labelledby="qs-act-2">
+        <span class="cmd-act__num" aria-hidden="true">02</span>
+        <div class="cmd-act__eyebrow">Phase two &middot; Send</div>
+        <h3 class="cmd-act__title" id="qs-act-2">Route a check across <em>two organizations</em>.</h3>
+        <div class="cmd-act__cmd">
+          <span class="prompt" aria-hidden="true">$</span>
+          <span class="cmd">python scripts/demo/sender.py</span>
+          <button type="button"
+                  class="terminal-copy"
+                  data-copy="python scripts/demo/sender.py"
+                  onclick="copyTerminal(this)"
+                  aria-label="Copy: python scripts/demo/sender.py">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+            <span class="label">Copy</span>
+          </button>
+        </div>
+        <p class="cmd-act__note">
+          Seventy lines of Python &mdash; no LLM, no Anthropic key. Opens a
+          session to <code>beta::checker</code>, sends
+          <code>{"check": "ok"}</code> end-to-end encrypted through the broker,
+          and exits. Round trip under one second. The checker daemon prints the
+          decrypted payload on its own log.
+        </p>
+      </article>
+
+      <article class="cmd-act" aria-labelledby="qs-act-3">
+        <span class="cmd-act__num" aria-hidden="true">03</span>
+        <div class="cmd-act__eyebrow">Phase three &middot; Reset</div>
+        <h3 class="cmd-act__title" id="qs-act-3">Clean slate. <em>Run again.</em></h3>
+        <div class="cmd-act__cmd">
+          <span class="prompt" aria-hidden="true">$</span>
+          <span class="cmd">./deploy_demo.sh nuke</span>
+          <button type="button"
+                  class="terminal-copy"
+                  data-copy="./deploy_demo.sh nuke"
+                  onclick="copyTerminal(this)"
+                  aria-label="Copy: ./deploy_demo.sh nuke">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+            <span class="label">Copy</span>
+          </button>
+        </div>
+        <p class="cmd-act__note">
+          Stops every container, removes the postgres and proxy volumes, kills
+          the checker daemon, clears the demo state file. The next
+          <code>up</code> starts from absolute zero.
+        </p>
+      </article>
+
+      <div class="cmd-flow__footer">
+        <span>Next stop &rarr;</span>
+        <a href="https://github.com/DaenAIHax/cullis/blob/main/scripts/demo/README.md">Full demo guide</a>
+        <a href="https://github.com/DaenAIHax/cullis/blob/main/README.md">Production deployment</a>
+        <a href="#compare">How Cullis compares</a>
       </div>
-      <div class="terminal-body" id="quickstart-code" role="group" aria-label="Cullis installation commands" data-copy="git clone https://github.com/DaenAIHax/cullis
-cd cullis
-./deploy.sh --dev
-docker compose -f docker-compose.proxy.yml up -d">
-<span class="sr-only">Prompt:</span><span class="prompt">$</span> <span class="cmd">git clone https://github.com/DaenAIHax/cullis</span>
-<span class="sr-only">Prompt:</span><span class="prompt">$</span> <span class="cmd">cd cullis</span>
-<span class="sr-only">Prompt:</span><span class="prompt">$</span> <span class="cmd">./deploy.sh --dev</span>
-<span class="sr-only">Output:</span><span class="output">  &#x2713;  Broker ready at http://localhost:8000</span>
-<span class="output"></span>
-<span class="sr-only">Comment:</span><span class="comment"># Deploy the MCP Proxy</span>
-<span class="sr-only">Prompt:</span><span class="prompt">$</span> <span class="cmd">docker compose -f docker-compose.proxy.yml up -d</span>
-<span class="sr-only">Output:</span><span class="output">  &#x2713;  Proxy ready at http://localhost:9100</span>
-<span class="output"></span>
-<span class="sr-only">Comment:</span><span class="comment"># Open proxy dashboard, enter broker URL + invite token</span>
-<span class="sr-only">Comment:</span><span class="comment"># Register org &rarr; create agents &rarr; done</span>
-      </div>
+
     </div>
   </div>
 </section>
@@ -2720,9 +3016,16 @@ document.querySelectorAll('.reveal').forEach(el => obs.observe(el));
 
 // Copy terminal to clipboard
 function copyTerminal(btn) {
-  const code = document.getElementById('quickstart-code');
-  if (!code) return;
-  const text = code.getAttribute('data-copy') || code.innerText;
+  // Per-button copy: each command card carries its own data-copy on the
+  // button itself, so we can have multiple independent copy buttons in
+  // the same Quickstart section. Falls back to the legacy id-based path
+  // (`#quickstart-code[data-copy]`) so any older block still works.
+  let text = btn.getAttribute('data-copy');
+  if (!text) {
+    const code = document.getElementById('quickstart-code');
+    if (code) text = code.getAttribute('data-copy') || code.innerText;
+  }
+  if (!text) return;
   const label = btn.querySelector('.label');
   const orig = label ? label.textContent : 'Copy';
   navigator.clipboard.writeText(text).then(() => {
