@@ -1487,6 +1487,54 @@ nav .container {
 .terminal-body .comment { color: var(--text-tertiary); }
 .terminal-body .output { color: var(--text-secondary); }
 
+/* ── QUICKSTART prerequisites callout ────────────────────────────────────
+   A compact "what you need before running this" strip placed between the
+   section description and the three command acts. Mono labels, dotted
+   teal separators, intentionally low-key so it does not compete with the
+   acts but answers the unspoken "wait, do I need anything?" question. */
+.cmd-prereqs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.6rem;
+  align-items: baseline;
+  max-width: 880px;
+  margin: 0 auto 1.8rem;
+  padding: 1rem 1.2rem;
+  border: 1px dashed rgba(0, 229, 199, 0.25);
+  background: rgba(0, 229, 199, 0.025);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+}
+.cmd-prereqs__label {
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--accent-cyan);
+  font-size: 0.62rem;
+  margin-right: 0.4rem;
+}
+.cmd-prereqs__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+.cmd-prereqs__item::before {
+  content: "";
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: rgba(0, 229, 199, 0.55);
+}
+.cmd-prereqs__item code {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--text-primary);
+  background: transparent;
+  padding: 0;
+}
+
 /* ── QUICKSTART — flow-line, three-act layout ──────────────────────────
    Editorial / blueprint vibe, not a generic card stack. A vertical teal
    "vein" connects three numbered acts. Each act has a giant Instrument
@@ -2031,7 +2079,7 @@ footer {
       <li><a href="#problem">Problem</a></li>
       <li><a href="#features">Features</a></li>
       <li><a href="#architecture">Architecture</a></li>
-      <li><a href="#enterprise">Enterprise</a></li>
+      <li><a href="#enterprise">Use Cases</a></li>
       <li><a href="#quickstart">Quick Start</a></li>
       <li><a href="https://github.com/DaenAIHax/cullis" target="_blank">GitHub</a></li>
     </ul>
@@ -2700,6 +2748,14 @@ footer {
       encrypted message between them, then tear it all down. About a minute,
       from clone to clean slate.
     </p>
+
+    <div class="cmd-prereqs reveal" role="note" aria-label="Prerequisites">
+      <span class="cmd-prereqs__label">You need</span>
+      <span class="cmd-prereqs__item">Docker + Compose v2</span>
+      <span class="cmd-prereqs__item">Python <code>3.10+</code></span>
+      <span class="cmd-prereqs__item"><code>pip install httpx</code></span>
+      <span class="cmd-prereqs__item">ports <code>8800</code> <code>9800</code> <code>9801</code></span>
+    </div>
 
     <div class="cmd-flow reveal">
 

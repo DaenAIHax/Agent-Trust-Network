@@ -26,6 +26,34 @@ Cullis is a **federated trust broker** for AI agents: x509 PKI for identity, DPo
 
 Boot the full architecture (broker + 2 MCP proxies + 2 agents in 2 organizations), route one cross-org E2E-encrypted message, tear it all down. About a minute end to end.
 
+### What you need
+
+| Requirement                                          | Why                                                                  |
+|------------------------------------------------------|----------------------------------------------------------------------|
+| **Docker Engine** with the **Compose v2** plugin     | The demo runs five containers (broker, 2 MCP proxies, postgres, redis) |
+| **Python 3.10+** on the host                         | The orchestrator + sender + checker scripts run on the host, not in containers |
+| **`httpx`** Python package                           | The only host-side Python dependency the demo touches                |
+| Free TCP ports **8800**, **9800**, **9801**          | The script fails fast with a clear message if any of them is taken   |
+| ~2 GB free disk + outbound network                   | First-time build pulls the broker + proxy images                     |
+
+Supported hosts: Linux native, macOS with Docker Desktop / OrbStack / Colima, Windows via WSL2 + Docker Desktop. No Nix required (Nix is only used by the maintainer's dev loop).
+
+Installing `httpx` if you do not already have it:
+
+```bash
+# Recommended: a project venv (works on every OS, never collides with system Python)
+python3 -m venv .venv && .venv/bin/pip install httpx
+# the wrapper auto-detects .venv/bin/python, no need to activate it
+
+# Or user-wide
+python3 -m pip install --user httpx
+
+# Debian/Ubuntu/macOS Homebrew with PEP 668 ("externally-managed-environment"):
+python3 -m pip install --user --break-system-packages httpx
+```
+
+### Run it
+
 ```bash
 git clone https://github.com/DaenAIHax/cullis
 cd cullis

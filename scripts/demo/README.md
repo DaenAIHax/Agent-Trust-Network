@@ -31,13 +31,54 @@ Demo agents (created automatically by `up`):
 
 ## Prerequisites
 
-- **Docker** with the compose plugin (`docker compose version` works)
-- **Python 3.10+** with `httpx` installed. The repo `.venv` already has
-  it; otherwise: `pip install httpx`
-- **Free TCP ports**: `8800`, `9800`, `9801`. The script fails fast with
-  a clear message if any of them is taken.
+The demo deliberately keeps the host-side dependencies minimal. Everything
+heavy (FastAPI, SQLAlchemy, cryptography, the broker itself) runs inside
+the Docker containers, not on your machine.
 
-The first `up` builds three Docker images (~1 min on a clean host); subsequent runs reuse the cache.
+- **Docker Engine + Compose v2 plugin** — `docker compose version` must work.
+  The demo starts 5 containers: broker, two MCP proxies, postgres, redis.
+- **Python 3.10+** on the host — only because the orchestrator
+  (`orchestrate.py`), the `sender.py` agent, and the `checker.py` daemon
+  run on your laptop, not in containers.
+- **`httpx`** — the **only** host-side Python dependency the demo touches.
+  All four scripts (`orchestrate`, `sender`, `checker`, plus the wrapper's
+  `import httpx` check) need it. Nothing else from `requirements.txt`.
+- **Free TCP ports**: `8800`, `9800`, `9801`. The wrapper fails fast with
+  a clear message and the name of the conflicting container if any of them
+  is taken. The 88xx/98xx range is intentional so the demo never collides
+  with a developer's `docker compose up` (8000/9100) or with the e2e test
+  stack (18000/19100).
+- **~2 GB free disk + outbound network** for the first-time image build.
+
+### Installing `httpx`
+
+The wrapper auto-detects a `.venv/bin/python` in the repo root, so a
+project venv is the easiest path:
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install httpx
+```
+
+If you would rather not create a venv:
+
+```bash
+# user-wide
+python3 -m pip install --user httpx
+
+# Debian/Ubuntu/macOS Homebrew with PEP 668:
+python3 -m pip install --user --break-system-packages httpx
+```
+
+### Supported operating systems
+
+- **Linux** — works natively, this is the primary target.
+- **macOS** — works with Docker Desktop, OrbStack, or Colima. Python 3 is
+  already installed on recent macOS versions; just install `httpx`.
+- **Windows** — use WSL2 + Docker Desktop with the WSL integration enabled.
+  The bash wrapper does not run from native PowerShell.
+
+The first `up` builds three Docker images (~1 min on a clean host);
+subsequent runs reuse the layer cache and warm starts complete in ~15 s.
 
 ## Quick start
 
