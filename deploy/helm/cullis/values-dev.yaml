@@ -1,0 +1,60 @@
+# Dev values override — single-node Postgres/Redis/Vault inside the cluster.
+# Use on kind, minikube or k3d, NEVER on a real production cluster.
+#
+#   helm install cullis ./deploy/helm/cullis -f values-dev.yaml
+
+broker:
+  environment: development
+  logFormat: text
+  replicaCount: 1
+  prometheusEnabled: true
+  resources:
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+
+secrets:
+  adminSecret: "dev-admin-secret-change-me"
+  vaultToken: "dev-root-token"
+
+postgres:
+  internal: true
+  storageSize: 2Gi
+
+redis:
+  internal: true
+  storageSize: 1Gi
+
+vault:
+  internal: true
+  kmsBackend: vault
+  devRootToken: "dev-root-token"
+
+jaeger:
+  enabled: true
+
+ingress:
+  enabled: true
+  className: nginx
+  host: cullis.127.0.0.1.nip.io
+  tls:
+    enabled: false
+    certManagerIssuer: ""
+
+monitoring:
+  prometheusRule:
+    enabled: false
+  serviceMonitor:
+    enabled: false
+
+networkPolicy:
+  enabled: false
+
+autoscaling:
+  enabled: false
+
+podDisruptionBudget:
+  enabled: false
