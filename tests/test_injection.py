@@ -164,7 +164,7 @@ class TestLLMJudge:
         assert result.source == "fail_closed"
 
 
-# Nota: i test di integrazione broker (test_injection_blocked_via_endpoint,
-# test_clean_message_passes_endpoint) sono stati rimossi perché con E2E encryption
-# il broker non può più vedere il contenuto dei messaggi per effettuare injection detection.
-# L'injection detection verrà reimplementata lato client (sdk.py) in una fase successiva.
+# Note: the broker integration tests (test_injection_blocked_via_endpoint,
+# test_clean_message_passes_endpoint) were removed because with E2E encryption
+# the broker can no longer see message contents to run injection detection.
+# Injection detection will be re-implemented client-side (sdk.py) in a later phase.
