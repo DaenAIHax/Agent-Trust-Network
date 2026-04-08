@@ -742,6 +742,47 @@ async def setup_test_connection(request: Request):
 # Agents
 # ─────────────────────────────────────────────────────────────────────────────
 
+async def _refresh_org_status_from_broker() -> str:
+    """Synchronously ask the broker for the current org status and update
+    the cached value in proxy_config.
+
+    The cached value can drift behind reality in two situations:
+      1. The broker admin approves the org while the proxy was not polling
+         (no dashboard tab open).
+      2. The bootstrap script (setup_proxy_org.py) writes status='pending'
+         and never updates it after the broker admin approves.
+
+    Returns the latest known status string ('pending', 'active', 'rejected',
+    or '' if unknown / not configured). On any error, returns the cached
+    value unchanged so the page render still works offline.
+    """
+    from mcp_proxy.db import get_config, set_config
+
+    cached = await get_config("org_status") or ""
+
+    org_id = await get_config("org_id")
+    broker_url = await get_config("broker_url")
+    org_secret = await get_config("org_secret")
+    if not org_id or not broker_url or not org_secret:
+        return cached
+
+    try:
+        async with httpx.AsyncClient(verify=False, timeout=3.0) as http:
+            resp = await http.get(
+                f"{broker_url}/v1/registry/orgs/me",
+                headers={"X-Org-Id": org_id, "X-Org-Secret": org_secret},
+            )
+            if resp.is_success:
+                fresh = (resp.json() or {}).get("status", "")
+                if fresh and fresh != cached:
+                    await set_config("org_status", fresh)
+                return fresh or cached
+    except Exception as exc:
+        _log.debug("org_status refresh failed: %s", exc)
+
+    return cached
+
+
 @router.get("/agents", response_class=HTMLResponse)
 async def agents_page(request: Request):
     session = require_login(request)
@@ -749,8 +790,11 @@ async def agents_page(request: Request):
         return session
 
     from mcp_proxy.db import list_agents, get_config
+    # Refresh the cached broker status BEFORE rendering, so the static
+    # 'Approval Pending' banner in the template is never lying about a
+    # state that the broker has already moved past.
+    org_status = await _refresh_org_status_from_broker()
     agents = await list_agents()
-    org_status = await get_config("org_status") or ""
     has_ca = bool(await get_config("org_ca_cert"))
 
     return templates.TemplateResponse("agents.html", _ctx(
