@@ -45,6 +45,12 @@ _WEBHOOK_TIMEOUT = 5.0  # seconds
 _MAX_RESPONSE_BODY = 4096  # bytes — limit PDP response parsing
 
 
+def _allow_private_webhooks() -> bool:
+    """Demo/e2e escape hatch — controlled by POLICY_WEBHOOK_ALLOW_PRIVATE_IPS."""
+    from app.config import get_settings
+    return get_settings().policy_webhook_allow_private_ips
+
+
 def _validate_response_ip(resp: httpx.Response) -> None:
     """
     Post-request SSRF check: verify that the server IP in the response
@@ -54,6 +60,8 @@ def _validate_response_ip(resp: httpx.Response) -> None:
     httpx does not expose the remote IP in all transports; when unavailable,
     we rely on the pre-request DNS validation as a best-effort defense.
     """
+    if _allow_private_webhooks():
+        return
     # httpx stores network info in response.extensions when using httpcore
     network_stream = resp.extensions.get("network_stream")
     if network_stream is not None:
@@ -72,14 +80,20 @@ def _validate_and_resolve_webhook_url(url: str) -> str:
     Validate that a webhook URL does not point to internal/private networks (SSRF protection).
     Returns the first safe resolved IP address to pin the connection to, preventing DNS rebinding.
     Raises ValueError if the URL is unsafe.
+
+    When POLICY_WEBHOOK_ALLOW_PRIVATE_IPS=true (demo/e2e mode) the private-IP
+    bans are skipped — the resolved IP is still pinned, so DNS rebinding
+    protection still applies, but webhooks pointing at docker compose service
+    names or RFC1918 addresses are accepted.
     """
+    allow_private = _allow_private_webhooks()
     parsed = urlparse(url)
     hostname = parsed.hostname
     if not hostname:
         raise ValueError("Webhook URL has no hostname")
 
-    # Block common internal hostnames
-    if hostname in ("localhost", "127.0.0.1", "::1", "0.0.0.0"):
+    # Block common internal hostnames (production only)
+    if not allow_private and hostname in ("localhost", "127.0.0.1", "::1", "0.0.0.0"):
         raise ValueError(f"Webhook URL points to loopback address: {hostname}")
 
     # Resolve hostname and check all resulting IPs
@@ -91,7 +105,9 @@ def _validate_and_resolve_webhook_url(url: str) -> str:
     safe_ip: str | None = None
     for _family, _type, _proto, _canonname, sockaddr in addr_infos:
         ip = ipaddress.ip_address(sockaddr[0])
-        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+        if not allow_private and (
+            ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
+        ):
             raise ValueError(f"Webhook URL resolves to private/reserved IP: {ip}")
         if safe_ip is None:
             safe_ip = str(ip)

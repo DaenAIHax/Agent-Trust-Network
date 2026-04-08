@@ -11,6 +11,7 @@ The `not e2e` marker filter in pytest.ini skips them otherwise.
 import os
 import pathlib
 import shutil
+import stat
 import subprocess
 import time
 from typing import Iterator
@@ -23,6 +24,12 @@ _HERE = pathlib.Path(__file__).resolve().parent
 _REPO_ROOT = _HERE.parent.parent
 _COMPOSE_FILE = _HERE / "docker-compose.e2e.yml"
 _PROJECT_NAME = "cullis-e2e"
+
+# Fixtures directory bind-mounted into the broker container as /app/certs.
+# Must be writable by the container's `appuser` because the broker writes
+# .admin_secret_hash here on first boot when KMS_BACKEND=local.
+_FIXTURES_DIR = _HERE / ".fixtures"
+_BROKER_CERTS_FIXTURE = _FIXTURES_DIR / "broker_certs"
 
 # Endpoints exposed on the host (matching the port mapping in the compose file)
 BROKER_URL = "http://localhost:18000"
@@ -76,6 +83,67 @@ def _compose(args: list[str], *, check: bool = True, timeout: int = 300) -> subp
     )
 
 
+def _ensure_broker_certs_fixture() -> None:
+    """
+    Make sure tests/e2e/.fixtures/broker_certs/ contains a broker CA that
+    the container's `appuser` can read AND that the directory is writable
+    so the lifespan can persist .admin_secret_hash.
+
+    Strategy:
+      1. Run generate_certs.py once at the repo root (idempotent — skips if
+         dev certs already exist) to make sure the source certs exist.
+      2. Copy broker-ca.pem + broker-ca-key.pem into the fixture dir with
+         world-readable mode (0o644) so the container user can read them.
+      3. Make the fixture dir world-writable (0o777) so appuser can create
+         the .admin_secret_hash file inside it.
+
+    The fixture is idempotent: if the files already exist with the right
+    perms, this is a no-op fast path.
+    """
+    src_key = _REPO_ROOT / "certs" / "broker-ca-key.pem"
+    src_cert = _REPO_ROOT / "certs" / "broker-ca.pem"
+
+    if not src_key.exists() or not src_cert.exists():
+        generate_script = _REPO_ROOT / "generate_certs.py"
+        if not generate_script.exists():
+            pytest.skip(
+                "Cannot prepare broker certs fixture: certs/broker-ca.pem is "
+                "missing and generate_certs.py is not available"
+            )
+        print("[e2e] Generating broker CA via generate_certs.py...")
+        subprocess.run(
+            ["python", str(generate_script)],
+            cwd=str(_REPO_ROOT),
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if not src_key.exists() or not src_cert.exists():
+            pytest.fail(
+                "generate_certs.py ran but did not produce the expected files"
+            )
+
+    _BROKER_CERTS_FIXTURE.mkdir(parents=True, exist_ok=True)
+    # World-writable so the container's appuser can create .admin_secret_hash.
+    # This is a test fixture under tests/e2e/.fixtures (gitignored), not a
+    # production secret store, so 0o777 is acceptable.
+    os.chmod(_BROKER_CERTS_FIXTURE, 0o777)
+
+    for src in (src_key, src_cert):
+        dst = _BROKER_CERTS_FIXTURE / src.name
+        # Always refresh — generate_certs.py is idempotent and the source
+        # may have rotated. shutil.copy preserves contents, not perms.
+        shutil.copyfile(src, dst)
+        os.chmod(dst, 0o644)
+
+    # Clean any stale .admin_secret_hash from a previous run so the lifespan
+    # bootstraps fresh against the current ADMIN_SECRET in the compose file.
+    stale_hash = _BROKER_CERTS_FIXTURE / ".admin_secret_hash"
+    if stale_hash.exists():
+        stale_hash.unlink()
+
+
 def _wait_for_url(url: str, label: str, timeout: int = _HEALTH_TIMEOUT_SECONDS) -> None:
     """Poll a URL until it returns 200, or fail the test after `timeout` seconds."""
     deadline = time.monotonic() + timeout
@@ -126,6 +194,13 @@ def e2e_stack() -> Iterator[dict]:
 
     # Clean up any leftover stack from a previous interrupted run
     _compose(["down", "-v", "--remove-orphans"], check=False, timeout=120)
+
+    # Prepare the broker CA fixture that gets bind-mounted into the broker
+    # container as /app/certs (KMS_BACKEND=local). Without this the broker
+    # /readyz check fails because get_broker_public_key_pem() cannot find
+    # the CA cert on disk.
+    print("[e2e] Preparing broker certs fixture...")
+    _ensure_broker_certs_fixture()
 
     print(f"\n[e2e] Booting stack via {_COMPOSE_FILE.name}...")
     try:

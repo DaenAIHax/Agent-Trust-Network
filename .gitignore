@@ -15,9 +15,25 @@ __pycache__/
 # Test cache
 .pytest_cache/
 
-# Local-only: notes, drafts, demo scripts, CLI tools
+# E2E test fixtures (broker CA copy, writable for container appuser)
+tests/e2e/.fixtures/
+
+# Demo runtime state — broker CA fixture, agent credentials, checker daemon
+# pid + log. The actual demo source (scripts/demo/*.py, README, compose) is
+# tracked; only the generated state is ignored.
+scripts/demo/.fixtures/
+scripts/demo/.state.json
+scripts/demo/.checker.pid
+scripts/demo/.checker.log
+
+# Accidental copy of the repo created by `git clone` inside the working
+# tree (e.g. when copy-pasting the README quickstart). Never commit it.
+cullis/
+
+# Local-only: notes, drafts, root demo dir, CLI tools.
+# `/demo/` is anchored to the repo root so it does NOT match `scripts/demo/`.
 imp/
-demo/
+/demo/
 drafts/
 admin.py
 bootstrap.py

@@ -38,7 +38,7 @@ from tests.e2e.helpers.broker_admin import (
     approve_org,
     generate_invite_token,
 )
-from tests.e2e.helpers.proxy_setup import provision_org_and_agent
+from tests.e2e.helpers.proxy_setup import register_org, create_agent
 from tests.e2e.helpers.e2e_messaging import (
     discover_agents,
     open_session,
@@ -76,35 +76,48 @@ async def test_full_two_org_message_exchange(e2e_stack):
     )
     assert invite_alpha and invite_alpha != invite_beta
 
-    # ── Step 2: proxy-alpha registers org "alpha" + creates agent "buyer" ──
-    alpha = provision_org_and_agent(
+    capabilities = ["procurement.read", "procurement.write"]
+
+    # ── Step 2: register both orgs (status=pending) ────────────────────────
+    register_org(
         proxy_service_name="proxy-alpha",
         broker_url=BROKER_INTERNAL_URL,
         invite_token=invite_alpha,
         org_id="alpha",
         display_name="Alpha Org",
-        agent_name="buyer",
-        capabilities=["procurement.read", "procurement.write"],
     )
-    assert alpha.org_id == "alpha"
-    assert alpha.api_key.startswith("sk_")
-    assert "::" in alpha.agent_id  # convention: org::name
-
-    # ── Step 3: proxy-beta registers org "beta" + creates agent "seller" ───
-    beta = provision_org_and_agent(
+    register_org(
         proxy_service_name="proxy-beta",
         broker_url=BROKER_INTERNAL_URL,
         invite_token=invite_beta,
         org_id="beta",
         display_name="Beta Org",
-        agent_name="seller",
-        capabilities=["procurement.read", "procurement.write"],
     )
-    assert beta.org_id == "beta"
 
-    # ── Step 4: network admin approves both orgs ────────────────────────────
+    # ── Step 3: network admin approves both orgs ────────────────────────────
+    # The broker rejects any agent registration calls while the org is in
+    # `pending` state, so this MUST happen before create_agent().
     await approve_org(broker_host_url, admin_secret, "alpha")
     await approve_org(broker_host_url, admin_secret, "beta")
+
+    # ── Step 4: create one agent in each org ───────────────────────────────
+    alpha = create_agent(
+        proxy_service_name="proxy-alpha",
+        org_id="alpha",
+        agent_name="buyer",
+        capabilities=capabilities,
+    )
+    assert alpha.org_id == "alpha"
+    assert alpha.api_key.startswith("sk_")
+    assert "::" in alpha.agent_id  # convention: org::name
+
+    beta = create_agent(
+        proxy_service_name="proxy-beta",
+        org_id="beta",
+        agent_name="seller",
+        capabilities=capabilities,
+    )
+    assert beta.org_id == "beta"
 
     # ── Step 5: alpha-buyer discovers beta-seller (cross-org capability) ───
     discovered = await discover_agents(
@@ -170,14 +183,12 @@ async def test_invite_token_invalid_is_rejected(e2e_stack):
 
     # The proxy script exits 2 if /onboarding/join returns non-2xx.
     with pytest.raises(RuntimeError, match="setup_proxy_org.py failed"):
-        provision_org_and_agent(
+        register_org(
             proxy_service_name="proxy-alpha",
             broker_url=BROKER_INTERNAL_URL,
             invite_token="not-a-real-token-xxxxxxxxxxxxxxxx",
             org_id="rogue",
             display_name="Rogue Org",
-            agent_name="impostor",
-            capabilities=["procurement.read"],
         )
 
 

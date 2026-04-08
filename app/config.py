@@ -71,6 +71,12 @@ class Settings(BaseSettings):
     policy_backend: str = "webhook"
     opa_url: str = ""  # e.g. "http://opa:8181"
     policy_enforcement: bool = True  # False = bypass all policy checks (demo mode)
+    # SSRF escape hatch for the PDP webhook validator. When False (the
+    # production default) the broker rejects any webhook URL that resolves
+    # to a private/loopback/link-local/reserved IP. Set to True ONLY for
+    # local docker compose / e2e / demo stacks where the PDP webhook lives
+    # on the same private docker network as the broker.
+    policy_webhook_allow_private_ips: bool = False
 
     # KMS backend — "local" (filesystem) or "vault" (HashiCorp Vault KV v2)
     kms_backend: str = "vault"

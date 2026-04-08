@@ -8,7 +8,11 @@
 #   - Single self-contained network `cullis_e2e_net`
 #   - Volumes prefixed `cullis_e2e_*` and removed by `down -v`
 #   - Two MCP proxy instances baked in (alpha + beta) for the cross-org flow
-#   - Vault in dev mode, Redis in-memory only — no persistence needed
+#   - KMS_BACKEND=local — broker CA bind-mounted from tests/e2e/.fixtures/
+#     (deploy_broker.sh uses Vault and bootstraps the key into it; reproducing
+#     that bootstrap inside a transient compose was fragile, so we use the
+#     local file backend instead — same code path the unit tests exercise)
+#   - Redis in-memory only — no persistence needed
 #   - jaeger removed (the e2e test does not assert traces)
 #
 # Run with:
@@ -39,21 +43,6 @@ services:
       timeout: 3s
       retries: 20
 
-  vault:
-    image: hashicorp/vault:1.17
-    environment:
-      VAULT_DEV_ROOT_TOKEN_ID: cullis-e2e-vault-token
-      VAULT_DEV_LISTEN_ADDRESS: "0.0.0.0:8200"
-    cap_add:
-      - IPC_LOCK
-    networks:
-      - cullis_e2e_net
-    healthcheck:
-      test: ["CMD", "vault", "status", "-address=http://localhost:8200"]
-      interval: 3s
-      timeout: 3s
-      retries: 20
-
   redis:
     image: redis:7-alpine
     networks:
@@ -73,28 +62,35 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://cullis:cullis-e2e-pw@postgres:5432/cullis_e2e
       ADMIN_SECRET: cullis-e2e-admin-secret-do-not-reuse
-      TRUST_DOMAIN: e2e.test
+      # Must match the default AgentManager(trust_domain=...) used by the
+      # proxy when it issues agent x509 certs. The broker validates the
+      # SPIFFE SAN against this trust domain — mismatch → 401 on login.
+      TRUST_DOMAIN: atn.local
       # No reverse proxy in front of the broker for the e2e test — clients
       # call http://localhost:18000 directly so build_htu derives the URL
       # from the request itself. Leaving BROKER_PUBLIC_URL empty avoids the
       # htu mismatch foot-gun documented in docs/ops-runbook.md.
       BROKER_PUBLIC_URL: ""
       REDIS_URL: redis://redis:6379
-      KMS_BACKEND: vault
-      VAULT_ADDR: http://vault:8200
-      VAULT_TOKEN: cullis-e2e-vault-token
-      VAULT_SECRET_PATH: secret/data/broker
-      VAULT_ALLOW_HTTP: "true"
+      # KMS=local: read broker CA from /app/certs (bind-mounted from
+      # tests/e2e/.fixtures/broker_certs by conftest). The mount is rw
+      # because the lifespan also writes .admin_secret_hash there.
+      KMS_BACKEND: local
       POLICY_BACKEND: webhook
       POLICY_ENFORCEMENT: "true"
+      # PDP webhooks live on the same docker network as the broker
+      # (proxy-alpha:9100, proxy-beta:9100). Bypass the SSRF block on
+      # private/loopback IPs that the broker enforces in production.
+      POLICY_WEBHOOK_ALLOW_PRIVATE_IPS: "true"
       OTEL_ENABLED: "false"
       ENVIRONMENT: development
       INJECTION_LLM_JUDGE_ENABLED: "false"
+    volumes:
+      - ./.fixtures/broker_certs:/app/certs
     networks:
       - cullis_e2e_net
     depends_on:
       postgres: { condition: service_healthy }
-      vault:    { condition: service_healthy }
       redis:    { condition: service_healthy }
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
