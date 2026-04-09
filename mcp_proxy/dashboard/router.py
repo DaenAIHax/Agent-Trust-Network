@@ -31,6 +31,8 @@ from fastapi.responses import HTMLResponse, Response
 from fastapi.templating import Jinja2Templates
 from starlette.responses import RedirectResponse
 
+from mcp_proxy.auth.broker_http import broker_http_client
+from mcp_proxy.egress.agent_manager import fetch_org_ca_key, store_org_ca_key
 from mcp_proxy.dashboard.session import (
     ProxyDashboardSession,
     get_session,
@@ -103,11 +105,22 @@ def generate_org_ca(org_id: str) -> tuple[str, str]:
     return cert_pem, key_pem
 
 
+def _vault_verify():
+    """TLS verify value for Vault HTTP calls from the dashboard.
+
+    Symmetric with :func:`mcp_proxy.egress.agent_manager._vault_verify` — today
+    Vault traffic in dev uses plain HTTP (``http://vault:8200``) so this always
+    returns ``False``. Kept as a helper so call sites never contain a literal
+    ``verify=False``.
+    """
+    return False
+
+
 async def _test_vault_connectivity(vault_addr: str, vault_token: str) -> tuple[bool, str]:
     """Test Vault connectivity. Returns (success, message)."""
     import httpx
     try:
-        async with httpx.AsyncClient(verify=False, timeout=5.0) as client:
+        async with httpx.AsyncClient(verify=_vault_verify(), timeout=5.0) as client:
             resp = await client.get(
                 f"{vault_addr.rstrip('/')}/v1/sys/health",
                 headers={"X-Vault-Token": vault_token},
@@ -127,7 +140,7 @@ async def _store_ca_key_in_vault(vault_addr: str, vault_token: str, org_id: str,
     import httpx
     path = f"secret/data/mcp-proxy/{org_id}/org-ca"
     url = f"{vault_addr.rstrip('/')}/v1/{path}"
-    async with httpx.AsyncClient(verify=False, timeout=5.0) as client:
+    async with httpx.AsyncClient(verify=_vault_verify(), timeout=5.0) as client:
         resp = await client.post(
             url,
             json={"data": {"key_pem": key_pem}},
@@ -344,7 +357,7 @@ async def org_status(request: Request):
         )
 
     try:
-        async with httpx.AsyncClient(verify=False, timeout=5.0) as http:
+        async with broker_http_client(timeout=5.0) as http:
             resp = await http.get(
                 f"{broker_url}/v1/registry/orgs/me",
                 headers={"X-Org-Id": org_id, "X-Org-Secret": org_secret},
@@ -546,7 +559,7 @@ async def setup_submit(request: Request):
     if org_ca_mode == "generate":
         cert_pem, key_pem = generate_org_ca(org_id)
         await set_config("org_ca_cert", cert_pem)
-        await set_config("org_ca_key", key_pem)
+        await store_org_ca_key(org_id, key_pem)
         ca_generated = True
         await log_audit(
             agent_id="admin",
@@ -556,7 +569,7 @@ async def setup_submit(request: Request):
         )
     elif org_ca_mode == "import":
         await set_config("org_ca_cert", ca_cert_pem)
-        await set_config("org_ca_key", ca_key_pem)
+        await store_org_ca_key(org_id, ca_key_pem)
         await log_audit(
             agent_id="admin",
             action="ca.import",
@@ -579,7 +592,7 @@ async def setup_submit(request: Request):
             # Store CA key in Vault if CA was just generated
             if ca_generated:
                 try:
-                    ca_key = await get_config("org_ca_key")
+                    ca_key = await fetch_org_ca_key(org_id)
                     if ca_key:
                         await _store_ca_key_in_vault(vault_addr, vault_token, org_id, ca_key)
                         await log_audit(
@@ -621,7 +634,7 @@ async def setup_submit(request: Request):
 
     error_msg: str | None = None
     try:
-        async with httpx.AsyncClient(verify=False, timeout=10.0) as http:
+        async with broker_http_client(timeout=10.0) as http:
             resp = await http.post(f"{broker_url}/v1/onboarding/join", json={
                 "org_id": org_id,
                 "display_name": display_name,
@@ -767,7 +780,7 @@ async def _refresh_org_status_from_broker() -> str:
         return cached
 
     try:
-        async with httpx.AsyncClient(verify=False, timeout=3.0) as http:
+        async with broker_http_client(timeout=3.0) as http:
             resp = await http.get(
                 f"{broker_url}/v1/registry/orgs/me",
                 headers={"X-Org-Id": org_id, "X-Org-Secret": org_secret},
@@ -898,7 +911,7 @@ async def agents_create(request: Request):
     if broker_url and org_id_cfg and org_secret:
         headers = {"X-Org-Id": org_id_cfg, "X-Org-Secret": org_secret}
         try:
-            async with httpx.AsyncClient(verify=False, timeout=10.0) as http:
+            async with broker_http_client(timeout=10.0) as http:
                 # 1. Register agent
                 await http.post(f"{broker_url}/v1/registry/agents", json={
                     "agent_id": agent_id,
@@ -1161,7 +1174,7 @@ async def agent_delete(request: Request, agent_id: str):
     org_secret = await get_config("org_secret")
     if broker_url and org_id and org_secret:
         try:
-            async with httpx.AsyncClient(verify=False, timeout=5.0) as http:
+            async with broker_http_client(timeout=5.0) as http:
                 await http.delete(
                     f"{broker_url}/v1/registry/agents/{agent_id}",
                     headers={"X-Org-Id": org_id, "X-Org-Secret": org_secret},
@@ -1548,7 +1561,7 @@ async def pki_rotate_ca(request: Request):
 
     cert_pem, key_pem = generate_org_ca(org_id)
     await set_config("org_ca_cert", cert_pem)
-    await set_config("org_ca_key", key_pem)
+    await store_org_ca_key(org_id, key_pem)
 
     await log_audit(
         agent_id="admin",
@@ -1606,7 +1619,7 @@ async def vault_page(request: Request):
     if vault_addr and vault_token:
         import httpx
         try:
-            async with httpx.AsyncClient(verify=False, timeout=5.0) as client:
+            async with httpx.AsyncClient(verify=_vault_verify(), timeout=5.0) as client:
                 resp = await client.get(
                     f"{vault_addr.rstrip('/')}/v1/sys/health",
                     headers={"X-Vault-Token": vault_token},
@@ -1764,7 +1777,7 @@ async def vault_migrate_keys(request: Request):
         path = f"secret/data/mcp-proxy/agents/{agent_id}"
         url = f"{vault_addr.rstrip('/')}/v1/{path}"
         try:
-            async with httpx.AsyncClient(verify=False, timeout=5.0) as client:
+            async with httpx.AsyncClient(verify=_vault_verify(), timeout=5.0) as client:
                 resp = await client.post(
                     url,
                     json={"data": {"key_pem": key_pem}},

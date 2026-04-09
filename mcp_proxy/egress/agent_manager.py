@@ -22,6 +22,7 @@ from cryptography.x509 import (
 from cryptography.x509.oid import NameOID
 
 from mcp_proxy.auth.api_key import generate_api_key, hash_api_key
+from mcp_proxy.auth.broker_http import broker_http_client, cullis_client_verify
 from mcp_proxy.config import get_settings
 from mcp_proxy.db import (
     create_agent as db_create_agent,
@@ -32,6 +33,141 @@ from mcp_proxy.db import (
 )
 
 logger = logging.getLogger("mcp_proxy.egress.agent_manager")
+
+
+def _vault_verify():
+    """Return the TLS verify value for Vault HTTP calls.
+
+    Mirrors :meth:`ProxySettings.broker_verify` semantics but for Vault: a path
+    bundle is not yet modelled separately, so today this always returns
+    ``False`` (dev fallback). Kept as a helper so call sites never contain a
+    literal ``verify=False``.
+    """
+    return False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Org CA private key storage (Vault with DB fallback)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# The Org CA private key is the keystone of the proxy's PKI: whoever holds it
+# can mint certificates for any agent in the org. Historically it was kept as
+# plaintext in the ``proxy_config`` SQLite row ``org_ca_key``. These helpers
+# move it to Vault when a Vault backend is configured (``secret_backend=vault``)
+# and fall back to the DB column otherwise so the single-host demo still works.
+
+
+def _org_ca_vault_path(org_id: str) -> str:
+    """Vault path for the org CA private key (KV v2 ``data`` prefix included)."""
+    settings = get_settings()
+    return f"{settings.vault_secret_prefix}/org-ca/{org_id}"
+
+
+def _vault_configured() -> bool:
+    """True if the proxy is configured to use a reachable-looking Vault."""
+    settings = get_settings()
+    return settings.secret_backend == "vault" and bool(settings.vault_addr)
+
+
+async def _store_org_ca_key_vault(org_id: str, ca_key_pem: str) -> None:
+    """Write the Org CA private key to Vault at ``{prefix}/org-ca/{org_id}``."""
+    settings = get_settings()
+    url = f"{settings.vault_addr}/v1/{_org_ca_vault_path(org_id)}"
+    async with httpx.AsyncClient(verify=_vault_verify(), timeout=5.0) as http:
+        resp = await http.post(
+            url,
+            json={"data": {"private_key_pem": ca_key_pem}},
+            headers={"X-Vault-Token": settings.vault_token},
+        )
+        resp.raise_for_status()
+
+
+async def _fetch_org_ca_key_vault(org_id: str) -> str | None:
+    """Read the Org CA private key from Vault. Returns None if not present."""
+    settings = get_settings()
+    url = f"{settings.vault_addr}/v1/{_org_ca_vault_path(org_id)}"
+    async with httpx.AsyncClient(verify=_vault_verify(), timeout=5.0) as http:
+        resp = await http.get(
+            url,
+            headers={"X-Vault-Token": settings.vault_token},
+        )
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        payload = resp.json()
+        try:
+            return payload["data"]["data"]["private_key_pem"]
+        except (KeyError, TypeError):
+            return None
+
+
+async def store_org_ca_key(org_id: str, ca_key_pem: str) -> None:
+    """Persist the Org CA private key.
+
+    Writes to Vault when ``secret_backend=vault`` is configured; falls back to
+    the ``org_ca_key`` row in ``proxy_config`` otherwise. Vault failures fall
+    back to the DB so the setup flow never loses the key.
+    """
+    if _vault_configured():
+        try:
+            await _store_org_ca_key_vault(org_id, ca_key_pem)
+            # Blank the DB copy so the key lives in exactly one place once Vault
+            # is the source of truth.
+            await set_config("org_ca_key", "")
+            logger.info("Org CA key stored in Vault for org_id=%s", org_id)
+            return
+        except Exception as exc:
+            logger.warning(
+                "Vault unavailable storing Org CA key for %s — falling back to DB: %s",
+                org_id, exc,
+            )
+
+    await set_config("org_ca_key", ca_key_pem)
+    logger.info("Org CA key stored in proxy_config DB for org_id=%s", org_id)
+
+
+async def fetch_org_ca_key(org_id: str) -> str | None:
+    """Load the Org CA private key.
+
+    Vault takes precedence when configured. If Vault is configured but the key
+    is only found in the DB, the key is auto-migrated into Vault (one-time) and
+    the DB copy is blanked.
+    """
+    if _vault_configured():
+        try:
+            key_pem = await _fetch_org_ca_key_vault(org_id)
+        except Exception as exc:
+            logger.warning(
+                "Vault unreachable fetching Org CA key for %s — falling back to DB: %s",
+                org_id, exc,
+            )
+            key_pem = None
+
+        if key_pem:
+            return key_pem
+
+        # Vault configured but key absent — try migrating from the DB row.
+        db_key = await get_config("org_ca_key")
+        if db_key:
+            logger.info(
+                "migrating org CA to Vault for org_id=%s (one-time on first read post-upgrade)",
+                org_id,
+            )
+            try:
+                await _store_org_ca_key_vault(org_id, db_key)
+                await set_config("org_ca_key", "")
+                return db_key
+            except Exception as exc:
+                logger.warning(
+                    "Org CA migration to Vault failed for %s — keeping DB copy: %s",
+                    org_id, exc,
+                )
+                return db_key
+        return None
+
+    # Vault not configured — DB is the source of truth.
+    db_key = await get_config("org_ca_key")
+    return db_key or None
 
 
 class AgentManager:
@@ -62,16 +198,21 @@ class AgentManager:
         )
 
     async def load_org_ca_from_config(self) -> bool:
-        """Try to load Org CA from proxy_config DB table (keys: org_ca_key, org_ca_cert).
+        """Try to load Org CA from Vault (preferred) or proxy_config DB fallback.
+
+        Looks up the private key via :func:`fetch_org_ca_key` (which handles the
+        Vault-first / DB-fallback / one-time migration logic) and the CA cert
+        from the ``org_ca_cert`` proxy_config row — the cert is public and has
+        no reason to live in Vault.
 
         Returns True if loaded successfully, False otherwise.
         """
-        ca_key_pem = await get_config("org_ca_key")
+        ca_key_pem = await fetch_org_ca_key(self._org_id)
         ca_cert_pem = await get_config("org_ca_cert")
         if ca_key_pem and ca_cert_pem:
             await self.load_org_ca(ca_key_pem, ca_cert_pem)
             return True
-        logger.warning("Org CA not found in proxy_config — agent cert issuance unavailable")
+        logger.warning("Org CA not found — agent cert issuance unavailable")
         return False
 
     @property
@@ -240,7 +381,7 @@ class AgentManager:
         settings = get_settings()
         if settings.broker_url:
             try:
-                async with httpx.AsyncClient(verify=False, timeout=5.0) as http:
+                async with broker_http_client(timeout=5.0) as http:
                     resp = await http.delete(
                         f"{settings.broker_url}/v1/registry/agents/{agent_id}",
                         headers={
@@ -303,7 +444,7 @@ class AgentManager:
         path = f"{settings.vault_secret_prefix}/agents/{agent_id}"
         url = f"{settings.vault_addr}/v1/{path}"
 
-        async with httpx.AsyncClient(verify=False, timeout=5.0) as http:
+        async with httpx.AsyncClient(verify=_vault_verify(), timeout=5.0) as http:
             resp = await http.post(
                 url,
                 json={"data": {"key_pem": key_pem}},
@@ -320,7 +461,7 @@ class AgentManager:
         path = f"{settings.vault_secret_prefix}/agents/{agent_id}"
         url = f"{settings.vault_addr}/v1/{path}"
 
-        async with httpx.AsyncClient(verify=False, timeout=5.0) as http:
+        async with httpx.AsyncClient(verify=_vault_verify(), timeout=5.0) as http:
             resp = await http.get(
                 url,
                 headers={"X-Vault-Token": settings.vault_token},
@@ -352,7 +493,7 @@ class AgentManager:
             from cullis_sdk.client import CullisClient
 
             def _do_login():
-                client = CullisClient(broker_url, verify_tls=False)
+                client = CullisClient(broker_url, verify_tls=cullis_client_verify())
                 client.login_from_pem(agent_id, self._org_id, cert_pem, key_pem)
                 client.close()
 
@@ -386,7 +527,7 @@ class AgentManager:
         headers = {"X-Org-Id": self._org_id, "X-Org-Secret": org_secret}
 
         try:
-            async with httpx.AsyncClient(verify=False, timeout=5.0) as http:
+            async with broker_http_client(timeout=5.0) as http:
                 resp = await http.post(
                     f"{broker_url}/v1/registry/agents",
                     headers=headers,

@@ -1,0 +1,108 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# Cullis MCP Proxy — `--dev` override
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Applied on top of docker-compose.proxy.yml when the operator runs
+# `./deploy_proxy.sh --dev`. It layers on:
+#
+#   - Vault in dev mode (internal, not exposed to the host) — used as the
+#     secret backend for org CA private keys.
+#   - An nginx HTTPS terminator in front of the mcp-proxy dashboard with a
+#     self-signed cert matching the --public-url host.
+#   - A mount of the broker CA bundle fetched via .well-known, so the proxy
+#     can validate the broker's TLS certificate.
+#   - An isolated network (`cullis_proxy_dev_net`) so the dev override does
+#     NOT require the broker's docker network to exist on the local host.
+#     (In 3-VM the broker is on another host.)
+#
+# Usage (via the deploy script — do not run this override on its own):
+#   docker compose -f docker-compose.proxy.yml -f docker-compose.proxy.dev.yml up --build -d
+# ═══════════════════════════════════════════════════════════════════════════════
+
+services:
+
+  vault:
+    image: hashicorp/vault:1.17
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: ${MCP_PROXY_VAULT_TOKEN:-dev-root-token}
+      VAULT_DEV_LISTEN_ADDRESS: "0.0.0.0:8200"
+    cap_add:
+      - IPC_LOCK
+    # Not published to the host — dev aid, internal to the compose network only.
+    expose:
+      - "8200"
+    healthcheck:
+      test: ["CMD", "vault", "status", "-address=http://localhost:8200"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    networks:
+      - cullis_proxy_dev_net
+    restart: unless-stopped
+
+  nginx-proxy:
+    image: nginx:alpine
+    depends_on:
+      mcp-proxy:
+        condition: service_healthy
+    ports:
+      # Published on the host as 9443 so we don't need privileged port 443.
+      - "9443:443"
+    volumes:
+      - ./nginx-proxy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx-proxy/certs:/etc/nginx/certs:ro
+    networks:
+      - cullis_proxy_dev_net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--no-check-certificate", "--spider", "https://localhost/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  mcp-proxy:
+    # Override the base service to:
+    #   - replace the external broker_net with an isolated dev network
+    #     (uses the `!override` YAML tag, Compose 2.24+, to replace the
+    #     base's network list outright instead of merging with it)
+    #   - wait for vault to be healthy before starting
+    #   - mount the bootstrapped broker CA bundle
+    networks: !override
+      - cullis_proxy_dev_net
+    depends_on:
+      vault:
+        condition: service_healthy
+    environment:
+      # Pulled from proxy.env by the compose loader, but declared here so the
+      # values are explicit for the dev profile.
+      MCP_PROXY_ENVIRONMENT: ${MCP_PROXY_ENVIRONMENT:-development}
+      MCP_PROXY_ADMIN_SECRET: ${MCP_PROXY_ADMIN_SECRET:?admin secret required in proxy.env}
+      MCP_PROXY_DATABASE_URL: ${MCP_PROXY_DATABASE_URL:-sqlite+aiosqlite:////data/mcp_proxy.db}
+      MCP_PROXY_PDP_URL: ${MCP_PROXY_PDP_URL:-http://mcp-proxy:9100/pdp/policy}
+      MCP_PROXY_SECRET_BACKEND: ${MCP_PROXY_SECRET_BACKEND:-vault}
+      MCP_PROXY_VAULT_ADDR: ${MCP_PROXY_VAULT_ADDR:-http://vault:8200}
+      MCP_PROXY_VAULT_TOKEN: ${MCP_PROXY_VAULT_TOKEN:-dev-root-token}
+      MCP_PROXY_VAULT_SECRET_PREFIX: ${MCP_PROXY_VAULT_SECRET_PREFIX:-secret/data/mcp-proxy}
+      MCP_PROXY_BROKER_CA_PATH: ${MCP_PROXY_BROKER_CA_PATH:-/etc/cullis/broker-ca.pem}
+      MCP_PROXY_PROXY_PUBLIC_URL: ${MCP_PROXY_PROXY_PUBLIC_URL:?public URL required in proxy.env}
+      MCP_PROXY_PORT: ${MCP_PROXY_PORT:-9100}
+    volumes:
+      # Read-only bind mount of the broker CA bundle fetched via .well-known
+      # by the deploy script. If the file is missing, the deploy script bails
+      # out before bringing the stack up.
+      - ./certs/broker-ca.pem:/etc/cullis/broker-ca.pem:ro
+
+networks:
+  # Isolated dev network for the proxy, vault, and nginx. In a multi-VM dev
+  # deploy the broker is on another host — we do not need (and do not want)
+  # the broker's docker network here.
+  cullis_proxy_dev_net:
+    driver: bridge
+  # Neutralise the base file's `broker_net: external: true` declaration.
+  # The `!reset` tag clears the base entry entirely so Compose stops trying
+  # to validate an external network that does not exist on this host. No
+  # service attaches to broker_net in --dev (mcp-proxy.networks is reset
+  # above), so declaring it as empty is safe.
+  broker_net: !reset null

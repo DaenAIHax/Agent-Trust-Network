@@ -5,6 +5,7 @@ All settings are read from environment variables (prefix MCP_PROXY_) or .env fil
 validate_config() enforces production-safety invariants at startup.
 """
 import logging
+import os
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -52,6 +53,10 @@ class ProxySettings(BaseSettings):
     org_id: str = ""
     org_secret: str = ""
 
+    # TLS trust bundle for broker calls. Empty string falls back to verify=False
+    # (dev-only) with a loud warning. In production the file must exist.
+    broker_ca_path: str = ""
+
     # Built-in PDP webhook URL (registered with broker during org join)
     pdp_url: str = ""
 
@@ -60,6 +65,20 @@ class ProxySettings(BaseSettings):
 
     # Rate limiting
     rate_limit_per_minute: int = 60
+
+    # ── Helpers ─────────────────────────────────────────────────────
+
+    def broker_verify(self):
+        """Return the value to pass as ``verify=`` to httpx for broker calls.
+
+        - If ``broker_ca_path`` is non-empty AND the file exists, returns the
+          path (httpx will use it as a trusted CA bundle).
+        - Otherwise returns ``False`` (insecure; dev-only fallback).
+        """
+        path = (self.broker_ca_path or "").strip()
+        if path and os.path.isfile(path):
+            return path
+        return False
 
 
 def validate_config(settings: ProxySettings) -> None:
@@ -91,6 +110,30 @@ def validate_config(settings: ProxySettings) -> None:
                 "Use HTTPS for JWKS endpoint.", settings.broker_jwks_url
             )
             raise SystemExit(1)
+
+        if not settings.broker_ca_path:
+            _log.critical(
+                "BROKER_CA_PATH is empty in production. "
+                "Set MCP_PROXY_BROKER_CA_PATH to a trusted PEM bundle for the broker."
+            )
+            raise SystemExit(1)
+
+    # broker_ca_path cross-check: loud warning if set but the file is missing.
+    if settings.broker_ca_path:
+        if not os.path.isfile(settings.broker_ca_path):
+            _log.warning(
+                "BROKER_CA_PATH is set to '%s' but the file does not exist. "
+                "Falling back to verify=False (insecure). "
+                "Mount the broker CA bundle at this path or unset the variable.",
+                settings.broker_ca_path,
+            )
+    else:
+        if not is_production:
+            _log.warning(
+                "BROKER_CA_PATH is empty — broker TLS verification is DISABLED "
+                "(dev fallback). Set MCP_PROXY_BROKER_CA_PATH to a trusted PEM "
+                "bundle before going to production."
+            )
 
     # Warnings for any environment
     if settings.admin_secret == _INSECURE_DEFAULT_SECRET:

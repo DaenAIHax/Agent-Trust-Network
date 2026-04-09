@@ -110,10 +110,15 @@ def validate_config(settings: "Settings") -> None:
                 "Production requires PostgreSQL.", settings.database_url)
             raise SystemExit(1)
 
-        if not pathlib.Path(settings.broker_ca_key_path).exists():
+        # When KMS_BACKEND=vault the broker reads its CA key from Vault at
+        # runtime, so the on-disk file is not only unnecessary but actively
+        # removed by deploy_broker.sh after a successful upload. Only fail
+        # fast when the broker actually depends on the local file.
+        if settings.kms_backend != "vault" and not pathlib.Path(settings.broker_ca_key_path).exists():
             _startup_logger.critical(
-                "BROKER_CA_KEY_PATH '%s' does not exist on disk.",
-                settings.broker_ca_key_path)
+                "BROKER_CA_KEY_PATH '%s' does not exist on disk "
+                "(and KMS_BACKEND=%r, not 'vault').",
+                settings.broker_ca_key_path, settings.kms_backend)
             raise SystemExit(1)
 
         if settings.admin_secret == _INSECURE_DEFAULT_SECRET:

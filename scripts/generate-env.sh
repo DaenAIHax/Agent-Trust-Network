@@ -112,22 +112,36 @@ elif [[ "$MODE" == "defaults" ]]; then
     ALLOWED_ORIGINS="*"
     ENV_VALUE="development"
 
+elif [[ -n "${BROKER_PUBLIC_URL:-}" ]]; then
+    # Caller (e.g. deploy_broker.sh --public-url X) pre-seeded the URL.
+    # Skip the prompt entirely and use it verbatim.
+    BROKER_URL="$BROKER_PUBLIC_URL"
+    ALLOWED_ORIGINS="*"
+    ENV_VALUE="development"
+    ok "BROKER_PUBLIC_URL inherited from environment"
+
 else
-    # Interactive: detect LAN IP and ask
+    # Interactive: detect LAN IP and ask. Only TLS URLs are offered — the
+    # previous "http://LAN-IP:8000" option was removed because it bypasses
+    # TLS entirely and is a footgun for multi-VM setups.
+    echo ""
+    echo "  TLS only — http:// bypass removed. Use deploy_broker.sh --public-url to pre-seed this non-interactively."
     _DETECTED_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || true)
     if [[ -n "$_DETECTED_IP" && "$_DETECTED_IP" != "127.0.0.1" ]]; then
         echo ""
         echo "  Detected LAN IP: ${_DETECTED_IP}"
-        echo "  Agents on other machines need BROKER_PUBLIC_URL to match their BROKER_URL."
+        echo "  Agents on other machines need BROKER_PUBLIC_URL to match how they reach the broker."
         echo ""
-        echo "  1) https://localhost:8443  (local only — agents on this machine)"
-        echo "  2) http://${_DETECTED_IP}:8000   (LAN — agents on other VMs, no TLS)"
-        echo "  3) https://${_DETECTED_IP}:8443  (LAN — agents on other VMs, self-signed TLS)"
-        read -rp "  Choose BROKER_PUBLIC_URL [1/2/3]: " _url_choice
+        echo "  1) https://${_DETECTED_IP}:8443   (LAN — agents on other VMs, self-signed TLS)  [recommended]"
+        echo "  2) https://localhost:8443         (local only — agents on this machine)"
+        echo ""
+        echo "  Note: LAN HTTPS requires the self-signed cert to carry the LAN host"
+        echo "        in its SAN. Use deploy_broker.sh --public-url https://${_DETECTED_IP}:8443"
+        echo "        to regenerate the cert with the correct SAN (non-interactive)."
+        read -rp "  Choose BROKER_PUBLIC_URL [1/2, default 1]: " _url_choice
         case "$_url_choice" in
-            2) BROKER_URL="http://${_DETECTED_IP}:8000" ;;
-            3) BROKER_URL="https://${_DETECTED_IP}:8443" ;;
-            *) BROKER_URL="https://localhost:8443" ;;
+            2) BROKER_URL="https://localhost:8443" ;;
+            *) BROKER_URL="https://${_DETECTED_IP}:8443" ;;
         esac
     else
         BROKER_URL="https://localhost:8443"

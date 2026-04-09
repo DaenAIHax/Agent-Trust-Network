@@ -64,6 +64,7 @@ ARG_DOMAIN=""
 ARG_EMAIL=""
 ARG_CERT=""
 ARG_KEY=""
+ARG_PUBLIC_URL=""        # --public-url for --dev cross-VM: e.g. https://192.168.1.50:8443
 
 print_help() {
     cat <<EOF
@@ -82,10 +83,18 @@ Options:
   --email  <addr>             Email for Let's Encrypt notifications (--prod-acme only)
   --cert   <path>             Path to TLS certificate PEM (--prod-byoca only)
   --key    <path>             Path to TLS private key PEM (--prod-byoca only)
+  --public-url <URL>          (dev only) Public HTTPS URL other VMs will use
+                              to reach the broker. The host (IP or DNS) is
+                              added to the self-signed cert SAN and the URL
+                              is written to BROKER_PUBLIC_URL in .env.
+                              Examples:
+                                --public-url https://192.168.1.50:8443
+                                --public-url https://broker.lan:8443
   --help, -h                  Show this help and exit
 
 Examples:
   $0 --dev
+  $0 --dev --public-url https://192.168.1.50:8443
   $0 --prod-acme  --domain broker.example.com --email ops@example.com
   $0 --prod-byoca --domain broker.example.com \\
                   --cert /etc/ssl/cullis/fullchain.pem \\
@@ -105,10 +114,43 @@ while [[ $# -gt 0 ]]; do
         --email)       ARG_EMAIL="${2:-}"; shift 2 ;;
         --cert)        ARG_CERT="${2:-}"; shift 2 ;;
         --key)         ARG_KEY="${2:-}"; shift 2 ;;
+        --public-url)  ARG_PUBLIC_URL="${2:-}"; shift 2 ;;
         --help|-h)     print_help; exit 0 ;;
         *)             die "Unknown argument: $1 (use --help)" ;;
     esac
 done
+
+# ── Parse --public-url (dev only) ────────────────────────────────────────────
+# Extracts host and port, classifies host as IP or DNS, and builds the SAN
+# fragment that will be appended to the default DNS:localhost,IP:127.0.0.1.
+PUBLIC_URL_SAN_EXTRA=""
+PUBLIC_URL_HOST=""
+if [[ -n "$ARG_PUBLIC_URL" ]]; then
+    if [[ "$MODE" == "production" ]]; then
+        die "--public-url is only valid with --dev (or no profile)"
+    fi
+    if [[ ! "$ARG_PUBLIC_URL" =~ ^https?:// ]]; then
+        die "--public-url must start with http:// or https:// (got '$ARG_PUBLIC_URL')"
+    fi
+    # Strip scheme
+    _pu_noscheme="${ARG_PUBLIC_URL#*://}"
+    # Strip path (if any)
+    _pu_noscheme="${_pu_noscheme%%/*}"
+    # Split host[:port]
+    if [[ "$_pu_noscheme" == *:* ]]; then
+        PUBLIC_URL_HOST="${_pu_noscheme%:*}"
+    else
+        PUBLIC_URL_HOST="$_pu_noscheme"
+    fi
+    [[ -z "$PUBLIC_URL_HOST" ]] && die "--public-url has empty host: '$ARG_PUBLIC_URL'"
+
+    # IPv4 detection — simple regex, good enough for LAN addresses
+    if [[ "$PUBLIC_URL_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        PUBLIC_URL_SAN_EXTRA=",IP:${PUBLIC_URL_HOST}"
+    else
+        PUBLIC_URL_SAN_EXTRA=",DNS:${PUBLIC_URL_HOST}"
+    fi
+fi
 
 # Validate non-interactive profile combinations
 if [[ "$TLS_PROFILE" == "acme" ]]; then
@@ -165,6 +207,10 @@ if [[ -z "$MODE" ]]; then
     esac
 fi
 
+if [[ "$MODE" == "production" && -n "$ARG_PUBLIC_URL" ]]; then
+    die "--public-url is only valid with --dev (you chose production mode)"
+fi
+
 if [[ "$MODE" == "production" ]]; then
     ok "Production mode selected"
 
@@ -209,7 +255,13 @@ step "Environment configuration (.env)"
 if [[ "$MODE" == "production" ]]; then
     DOMAIN="${DOMAIN}" bash "$SCRIPT_DIR/scripts/generate-env.sh" --prod
 else
-    bash "$SCRIPT_DIR/scripts/generate-env.sh"
+    # Propagate --public-url non-interactively: generate-env.sh skips the
+    # prompt when BROKER_PUBLIC_URL is already in the environment.
+    if [[ -n "$ARG_PUBLIC_URL" ]]; then
+        BROKER_PUBLIC_URL="$ARG_PUBLIC_URL" bash "$SCRIPT_DIR/scripts/generate-env.sh"
+    else
+        bash "$SCRIPT_DIR/scripts/generate-env.sh"
+    fi
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -265,6 +317,14 @@ if [[ "${_REGEN_CA:-0}" == "1" ]]; then
         chmod 600 "$CERTS_DIR/broker-ca-key.pem"
         ok "Broker CA generated (via openssl)"
     fi
+
+    # Belt-and-suspenders: enforce 0600 on the private key regardless of which
+    # branch generated it. Both paths (generate_certs.py and the openssl
+    # fallback) already do this, but we re-assert it here so a stale file
+    # left by an earlier run cannot sneak in with looser perms.
+    if [[ -f "$CERTS_DIR/broker-ca-key.pem" ]]; then
+        chmod 600 "$CERTS_DIR/broker-ca-key.pem"
+    fi
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -289,14 +349,24 @@ if [[ "$MODE" == "development" ]]; then
     fi
 
     if [[ "${_REGEN_TLS:-0}" == "1" ]]; then
+        # Baseline SAN covers on-host access; append LAN host from --public-url
+        # (if supplied) so agents on other VMs validate the cert as well.
+        _dev_san="DNS:localhost,IP:127.0.0.1${PUBLIC_URL_SAN_EXTRA}"
+        # CN tracks the public host when --public-url is provided, so browsers
+        # and older TLS stacks that still fall back to CN validate correctly.
+        _dev_cn="${PUBLIC_URL_HOST:-localhost}"
         openssl req -x509 -newkey rsa:2048 -nodes \
             -keyout "$NGINX_CERTS/server-key.pem" \
             -out "$NGINX_CERTS/server.pem" \
             -days 365 \
-            -subj "/CN=localhost/O=ATN Dev" \
-            -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" \
+            -subj "/CN=${_dev_cn}/O=ATN Dev" \
+            -addext "subjectAltName=${_dev_san}" \
             2>/dev/null
-        ok "Self-signed TLS cert generated"
+        if [[ -n "$PUBLIC_URL_SAN_EXTRA" ]]; then
+            ok "Self-signed TLS cert generated (CN: ${_dev_cn}, SAN: ${_dev_san})"
+        else
+            ok "Self-signed TLS cert generated"
+        fi
     fi
 
 elif [[ "$USE_LETSENCRYPT" == "y" ]]; then
@@ -587,10 +657,31 @@ if [[ -f "$CERTS_DIR/broker-ca-key.pem" && -f "$CERTS_DIR/broker-ca.pem" ]]; the
         -d "$VAULT_PAYLOAD" 2>&1)
 
     if [[ "$HTTP_STATUS" == "200" || "$HTTP_STATUS" == "204" ]]; then
-        ok "Broker CA key stored in Vault at ${VAULT_SECRET_PATH}"
+        # Post-upload disk hygiene.
+        #
+        # The broker reads the CA private key via VaultKMSProvider when
+        # KMS_BACKEND=vault (the default in .env.example and docker-compose),
+        # so the disk copy is redundant once Vault has it. A plaintext RSA
+        # private key on a deploy host is a footgun — delete it.
+        #
+        # NOTE: app/config.py:validate_config() in production mode still has a
+        # FATAL startup check that insists on broker_ca_key_path existing on
+        # disk (see config.py:113). After this cleanup, the next production
+        # broker restart will SystemExit until that check is relaxed. This is
+        # intentional — we'd rather fail loud than silently pretend Vault KMS
+        # is the source of truth while still relying on disk. See the
+        # multi-VM blocker note at the end of the deploy output.
+        rm -f "$CERTS_DIR/broker-ca-key.pem"
+        ok "Broker CA key uploaded to Vault (path: ${VAULT_SECRET_PATH})"
+        ok "Broker CA private key removed from disk, lives only in Vault now"
     else
         err "Failed to store broker key in Vault (HTTP ${HTTP_STATUS})"
         warn "Re-run this script (idempotent) or load the key manually with the Vault CLI"
+        echo ""
+        echo -e "  ${RED}${BOLD}CRITICAL${RESET}${RED}: broker CA private key still on disk at${RESET}"
+        echo -e "  ${RED}${CERTS_DIR}/broker-ca-key.pem — Vault upload failed —${RESET}"
+        echo -e "  ${RED}production must re-run after Vault is healthy${RESET}"
+        echo ""
     fi
 else
     warn "Broker CA key not found at $CERTS_DIR/broker-ca-key.pem — skipping Vault load"
@@ -663,9 +754,13 @@ echo -e "${GREEN}${BOLD}Deployment complete!${RESET}"
 echo ""
 
 if [[ "$MODE" == "development" ]]; then
+    # Compute the effective public URL for the summary. When --public-url is
+    # given we echo that verbatim; otherwise it defaults to localhost:8443.
+    _SUMMARY_PUBLIC_URL="${ARG_PUBLIC_URL:-https://localhost:8443}"
+
     echo -e "  ${BOLD}Mode${RESET}        Development"
-    echo -e "  ${BOLD}Dashboard${RESET}   ${GRAY}https://localhost:8443/dashboard${RESET}"
-    echo -e "  ${BOLD}Broker${RESET}      ${GRAY}https://localhost:8443  (also http://localhost:8000 direct)${RESET}"
+    echo -e "  ${BOLD}Dashboard${RESET}   ${GRAY}${_SUMMARY_PUBLIC_URL}/dashboard${RESET}"
+    echo -e "  ${BOLD}Broker${RESET}      ${GRAY}${_SUMMARY_PUBLIC_URL}  (also http://localhost:8000 direct)${RESET}"
     echo -e "  ${BOLD}Vault${RESET}       ${GRAY}http://localhost:8200${RESET}"
     echo -e "  ${BOLD}Jaeger${RESET}      ${GRAY}http://localhost:16686${RESET}"
     echo ""
@@ -675,6 +770,18 @@ if [[ "$MODE" == "development" ]]; then
     echo "    3. Deploy the MCP Proxy for each org:"
     echo "       ./deploy_proxy.sh"
     echo "    4. Each org opens their proxy dashboard, enters broker URL + invite token"
+    echo ""
+    echo -e "  ${BOLD}Multi-VM setup${RESET}"
+    echo "    The broker CA public certificate is served at:"
+    echo -e "      ${GRAY}${_SUMMARY_PUBLIC_URL}/v1/.well-known/broker-ca.pem${RESET}"
+    echo "    Proxy VMs will fetch it automatically during ./deploy_proxy.sh"
+    echo "    and use it to verify TLS when talking to this broker."
+    if [[ -z "$ARG_PUBLIC_URL" ]]; then
+        echo ""
+        echo "    For a real 3-VM demo, re-run with --public-url pointing at this"
+        echo "    host's LAN address so the dev TLS cert SAN matches, e.g.:"
+        echo -e "      ${GRAY}./deploy_broker.sh --dev --public-url https://\$(hostname -I | awk '{print \$1}'):8443${RESET}"
+    fi
     echo ""
 else
     echo -e "  ${BOLD}Mode${RESET}        Production"

@@ -256,13 +256,22 @@ async def security_headers(request: Request, call_next):
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
     response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-    # JWKS endpoint should be cacheable; everything else is no-store
-    if request.url.path == "/.well-known/jwks.json":
+    # JWKS and broker CA endpoints are cacheable; everything else is no-store
+    if request.url.path in (
+        "/.well-known/jwks.json",
+        "/v1/.well-known/broker-ca.pem",
+    ):
         response.headers["Cache-Control"] = "public, max-age=3600"
     else:
         response.headers["Cache-Control"] = "no-store"
     # DPoP-Nonce on API responses only (RFC 9449 §8)
-    _no_dpop_nonce = ("/dashboard", "/health", "/.well-known/", "/readyz")
+    _no_dpop_nonce = (
+        "/dashboard",
+        "/health",
+        "/.well-known/",
+        "/v1/.well-known/",
+        "/readyz",
+    )
     if not any(request.url.path.startswith(p) for p in _no_dpop_nonce):
         from app.auth.dpop import get_current_dpop_nonce
         response.headers["DPoP-Nonce"] = get_current_dpop_nonce()
@@ -400,3 +409,49 @@ async def jwks_endpoint():
     kid = compute_kid(pub_pem)
     jwk = rsa_pem_to_jwk(pub_pem, kid=kid)
     return build_jwks([jwk])
+
+
+@app.get("/v1/.well-known/broker-ca.pem", tags=["infra"])
+async def broker_ca_pem_endpoint():
+    """Public broker CA certificate.
+
+    Returns the broker root CA in PEM form so that remote MCP proxies
+    (and any other client on a different VM) can pin the broker TLS
+    without an out-of-band copy step.
+
+    CA certificates are public by design — this endpoint is unauthenticated
+    and cacheable for one hour. The private key never leaves Vault / disk;
+    only the certificate is served.
+
+    Returns:
+        200 with ``text/x-pem-file`` body on success.
+        503 with JSON ``{"detail": ...}`` when the CA file is missing or
+        unreadable on the broker container filesystem — this is a broker
+        mis-configuration (the ``./certs`` bind-mount is empty or the cert
+        path is wrong) and clients should retry later.
+    """
+    import pathlib
+    from fastapi import HTTPException
+    from fastapi.responses import Response
+
+    ca_path = pathlib.Path(settings.broker_ca_cert_path)
+    if not ca_path.is_file():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"Broker CA certificate not available at "
+                f"{settings.broker_ca_cert_path} — broker mis-configured"
+            ),
+        )
+    try:
+        pem_bytes = ca_path.read_bytes()
+    except OSError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Broker CA certificate unreadable: {exc}",
+        )
+
+    return Response(
+        content=pem_bytes,
+        media_type="text/x-pem-file",
+    )
