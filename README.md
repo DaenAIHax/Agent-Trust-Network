@@ -31,7 +31,7 @@ This is a **research and learning project** built in the open. The goals right n
 What this means in practice:
 
 - **The demo (`./deploy_demo.sh`)** is the only end-to-end path covered by automated tests. Use it to explore the architecture.
-- **The standalone deploy scripts** (`deploy_broker.sh`, `deploy_proxy.sh`, the Helm chart) run, but they are exploratory — no SLA, no upgrade path, no migration story.
+- **The Helm chart** is exploratory — no SLA, no upgrade path, no migration story yet.
 - **No security review yet.** The codebase has gone through internal audit rounds but never independent third-party review.
 - **Schema and APIs may break.** Pre-1.0, no semver guarantees.
 
@@ -89,8 +89,6 @@ python scripts/demo/sender.py
 ```
 
 Three commands after the clone, including a full Docker build on first run. The demo uses `KMS_BACKEND=local`, no TLS, no Vault — it is meant for laptops. See [`scripts/demo/README.md`](scripts/demo/README.md) for the full guided tour (dashboards, customization, troubleshooting).
-
-If you want to explore the broker or a proxy on its own (not as part of the bundled demo), see [Run the components individually](#run-the-components-individually) below — note that those standalone paths are not yet production-tested.
 
 ---
 
@@ -207,64 +205,6 @@ client.send(session_id, "acme::buyer", {"order": "100 units"}, "widgets::supplie
 ```
 
 A TypeScript SDK lives in [`sdk-ts/`](sdk-ts/). An MCP server exposing 10 Cullis tools (so any MCP-compatible LLM can become a Cullis agent) is in `cullis_sdk/mcp_server.py`.
-
----
-
-## Run the components individually
-
-> ⚠️ **Status: exploratory, not production-tested.**
-> The bundled demo (`./deploy_demo.sh`) is the only end-to-end path covered
-> by automated tests. The standalone deploy scripts below let you spin up
-> the broker or a single proxy on its own to evaluate each piece in
-> isolation, but they have not been hardened or validated against a real
-> production workload yet. Use them to **explore**, not yet to **operate**.
-
-If you only want to see Cullis in action, stop at the [Quickstart](#quickstart)
-above and use the demo.
-
-### Just the broker
-
-```bash
-# Self-signed cert on https://localhost:8443 — no public DNS required
-./deploy_broker.sh --dev
-
-# With Let's Encrypt (requires a public domain pointing at the host)
-./deploy_broker.sh --prod-acme \
-  --domain broker.example.com \
-  --email ops@example.com
-
-# With your enterprise CA (Bring Your Own CA)
-./deploy_broker.sh --prod-byoca \
-  --domain broker.example.com \
-  --cert /etc/ssl/cullis/fullchain.pem \
-  --key  /etc/ssl/cullis/privkey.pem
-```
-
-Three TLS profiles, same script. The `--dev` profile is the one most likely
-to "just work" right now; the `--prod-*` profiles are still being shaken out.
-
-### Just a proxy (for one organization)
-
-```bash
-./deploy_proxy.sh
-```
-
-Pairs with a running broker. Walks you through entering the broker URL,
-the invite token, and registering the org.
-
-### Kubernetes (Helm)
-
-A Helm chart lives in [`deploy/helm/cullis/`](deploy/helm/cullis/). Same
-caveat: it captures the deployment topology and is `helm lint`-clean,
-but has not been validated against a managed Kubernetes cluster end to
-end yet. Treat it as a starting point for your own packaging, not a
-turnkey install.
-
-### Where to look next
-
-- [`enterprise-kit/`](enterprise-kit/) — BYOCA guide, OPA policy bundle, Prometheus alert rules, PDP webhook template
-- [`docs/ops-runbook.md`](docs/ops-runbook.md) — operational pitfalls (DPoP htu, KMS bootstrap, common health-check failures)
-- [`scripts/demo/README.md`](scripts/demo/README.md) — the recommended path: full demo guide with dashboard tour and customization hooks
 
 ---
 

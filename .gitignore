@@ -59,6 +59,8 @@ agent.sh
 CLAUDE.md
 CHANGELOG.md
 .claude/
+deploy_broker.sh
+deploy_proxy.sh
 enterprise-lab/
 org-node/
 backups/
