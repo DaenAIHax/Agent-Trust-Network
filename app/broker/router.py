@@ -541,33 +541,36 @@ async def send_message(
 
     _log.info("✔ message accepted  (%s → %s)", current_agent.org, session.target_org_id)
 
-    # Cache the nonce in-memory BEFORE storing the message to close the
-    # race window where two concurrent requests both pass is_nonce_cached().
-    # If the DB insert fails (duplicate), we leave the nonce in the cache
-    # (false-positive is safe — it just blocks a replayed nonce).
-    session.cache_nonce(envelope.nonce)
+    # Per-session lock protects nonce cache + _next_seq + _messages from
+    # corruption under concurrent sends to the same session.
+    async with session._msg_lock:
+        # Cache the nonce in-memory BEFORE storing the message to close the
+        # race window where two concurrent requests both pass is_nonce_cached().
+        # If the DB insert fails (duplicate), we leave the nonce in the cache
+        # (false-positive is safe — it just blocks a replayed nonce).
+        session.cache_nonce(envelope.nonce)
 
-    seq = session.store_message(current_agent.agent_id, envelope.payload, envelope.nonce,
-                                envelope.signature, client_seq=envelope.client_seq)
+        seq = session.store_message(current_agent.agent_id, envelope.payload, envelope.nonce,
+                                    envelope.signature, client_seq=envelope.client_seq)
 
-    # Atomic DB insert — source of truth for nonce uniqueness.
-    # Rollback in-memory state on ANY failure (nonce conflict or DB error).
-    try:
-        inserted = await save_message(db, session_id, session._messages[-1])
-    except Exception:
-        session._messages.pop()
-        session._next_seq -= 1
-        _log.exception("DB error saving message in session %s", session_id)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                            detail="Failed to persist message")
-    if not inserted:
-        session._messages.pop()
-        session._next_seq -= 1
-        await log_event(db, "broker.message_send", "denied",
-                        agent_id=current_agent.agent_id, session_id=session_id,
-                        details={"reason": "replay attack detected (DB)", "nonce": envelope.nonce})
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
-                            detail="Nonce already used — possible replay attack")
+        # Atomic DB insert — source of truth for nonce uniqueness.
+        # Rollback in-memory state on ANY failure (nonce conflict or DB error).
+        try:
+            inserted = await save_message(db, session_id, session._messages[-1])
+        except Exception:
+            session._messages.pop()
+            session._next_seq -= 1
+            _log.exception("DB error saving message in session %s", session_id)
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                                detail="Failed to persist message")
+        if not inserted:
+            session._messages.pop()
+            session._next_seq -= 1
+            await log_event(db, "broker.message_send", "denied",
+                            agent_id=current_agent.agent_id, session_id=session_id,
+                            details={"reason": "replay attack detected (DB)", "nonce": envelope.nonce})
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                                detail="Nonce already used — possible replay attack")
 
     import hashlib
     import json as _json

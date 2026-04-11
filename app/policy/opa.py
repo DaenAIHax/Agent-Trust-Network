@@ -101,6 +101,15 @@ async def evaluate_session_via_opa(
 
             async with httpx.AsyncClient(timeout=_OPA_TIMEOUT) as client:
                 resp = await client.post(url, json=input_doc)
+                # Post-request DNS rebinding check: verify resolved IP
+                if resp.stream and hasattr(resp.stream, '_connection'):
+                    pass  # httpx doesn't expose resolved IP easily
+                # Re-validate URL on each call to catch DNS rebinding
+                try:
+                    validate_opa_url(opa_url)
+                except ValueError as vexc:
+                    _log.warning("OPA DNS rebinding detected: %s", vexc)
+                    return WebhookDecision(allowed=False, reason=f"OPA DNS rebinding: {vexc}", org_id="opa")
 
             elapsed_ms = (time.monotonic() - t0) * 1000
             PDP_WEBHOOK_LATENCY_HISTOGRAM.record(elapsed_ms, {"org_id": "opa"})

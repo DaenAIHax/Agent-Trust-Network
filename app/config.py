@@ -154,6 +154,17 @@ def validate_config(settings: "Settings") -> None:
     if settings.allowed_origins.strip() == "*":
         _startup_logger.warning("ALLOWED_ORIGINS is '*' — CORS fully open.")
 
+    if not settings.dashboard_signing_key:
+        if is_production:
+            _startup_logger.critical(
+                "DASHBOARD_SIGNING_KEY is not set in production. "
+                "Sessions will not survive restarts or work across workers.")
+            raise SystemExit(1)
+        else:
+            _startup_logger.warning(
+                "DASHBOARD_SIGNING_KEY not set — auto-generating per-process key. "
+                "Dashboard sessions will not persist across restarts.")
+
     _startup_logger.info("Startup validation passed (environment=%s).", settings.environment)
 
 

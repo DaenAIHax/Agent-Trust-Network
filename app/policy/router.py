@@ -51,6 +51,18 @@ async def create_rule(
             detail="policy_type must be 'session' or 'message'",
         )
 
+    # Validate rules schema
+    _rules = body.rules
+    if not isinstance(_rules, dict):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="rules must be a JSON object")
+    if "effect" in _rules and _rules["effect"] not in ("allow", "deny"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="rules.effect must be 'allow' or 'deny'")
+    if "conditions" in _rules and not isinstance(_rules["conditions"], dict):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="rules.conditions must be a JSON object")
+
     existing = await get_policy(db, body.policy_id)
     if existing:
         raise HTTPException(

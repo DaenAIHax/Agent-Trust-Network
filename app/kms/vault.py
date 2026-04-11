@@ -65,7 +65,9 @@ class VaultKMSProvider:
     async def _fetch_secret(self) -> dict:
         """Fetch the secret dict from Vault KV v2."""
         url = f"{self._vault_addr}/v1/{self._secret_path}"
-        async with httpx.AsyncClient(timeout=_VAULT_READ_TIMEOUT) as client:
+        _ca_cert = os.environ.get("VAULT_CA_CERT", "")
+        _verify: bool | str = _ca_cert if _ca_cert else True
+        async with httpx.AsyncClient(timeout=_VAULT_READ_TIMEOUT, verify=_verify) as client:
             resp = await client.get(url, headers={"X-Vault-Token": self._vault_token})
             if resp.status_code != 200:
                 _log.error("Vault returned HTTP %d for %s: %s",

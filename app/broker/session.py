@@ -45,6 +45,7 @@ class Session:
     _messages: list[StoredMessage] = field(default_factory=list)
     _next_seq: int = 0
     _MAX_NONCES: int = 100_000  # prevent unbounded memory growth
+    _msg_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def is_expired(self) -> bool:
         if self.expires_at is None:

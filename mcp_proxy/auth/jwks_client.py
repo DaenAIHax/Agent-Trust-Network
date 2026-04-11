@@ -103,9 +103,26 @@ class JWKSClient:
             except Exception as exc:
                 _log.warning("Failed to parse JWK kid=%s: %s", kid, exc)
 
-        self._cache = keys
+        # Merge new keys into cache rather than replacing — prevents transient
+        # key removal during rotation if the JWKS endpoint temporarily returns
+        # incomplete data.
+        self._cache.update(keys)
+        # Remove keys absent from the latest fetch only if they've been
+        # missing for multiple consecutive fetches (tracked via _absent_count).
+        if not hasattr(self, "_absent_count"):
+            self._absent_count: dict[str, int] = {}
+        stale_kids = set(self._cache.keys()) - set(keys.keys())
+        for kid in stale_kids:
+            self._absent_count[kid] = self._absent_count.get(kid, 0) + 1
+            if self._absent_count[kid] >= 3:
+                self._cache.pop(kid, None)
+                self._absent_count.pop(kid, None)
+                _log.info("JWKS key %s removed after 3 consecutive absences", kid)
+        # Reset absent count for keys that reappeared
+        for kid in keys:
+            self._absent_count.pop(kid, None)
         self._last_fetch = time.time()
-        _log.info("JWKS cache updated: %d key(s)", len(keys))
+        _log.info("JWKS cache updated: %d key(s)", len(self._cache))
         return keys
 
     async def get_public_key(self, kid: str) -> RSAPublicKey:
