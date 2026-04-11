@@ -102,7 +102,6 @@ Three commands after the clone, including a full Docker build on first run. See 
 > | **Admin secrets** | Hardcoded in compose file (`cullis-demo-admin-secret`) | Strong random, rotated, from secrets manager |
 > | **SSRF protection** | Bypassed (`POLICY_WEBHOOK_ALLOW_PRIVATE_IPS=true`) | Enforced — webhooks cannot hit private IPs |
 > | **OIDC admin login** | Disabled — password-only | Okta / Azure AD / Google federation |
-> | **LLM injection detection** | Fast-path regex only | + LLM judge (Claude Haiku) for real-time analysis |
 > | **Observability** | Off (`OTEL_ENABLED=false`) | OpenTelemetry + Jaeger traces + Prometheus metrics |
 > | **CORS** | `*` (all origins) | Specific allowed origins |
 > | **Cookie security** | `secure=False` (HTTP) | `secure=True` (HTTPS only) |
