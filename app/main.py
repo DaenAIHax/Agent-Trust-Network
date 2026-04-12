@@ -357,14 +357,23 @@ async def readyz():
 
     checks: dict[str, str] = {}
 
+    def _fail(check: str, exc: Exception) -> JSONResponse:
+        checks[check] = f"error: {exc}"
+        # Surface on stderr so `kubectl logs` shows why /readyz went 503.
+        # Kubelet probes don't log response bodies, so without this we have
+        # no way to diagnose a stuck deploy from the cluster side.
+        import sys
+        print(f"READYZ FAIL [{check}]: {type(exc).__name__}: {exc}",
+              file=sys.stderr, flush=True)
+        return JSONResponse({"status": "not_ready", "checks": checks}, status_code=503)
+
     # Database
     try:
         async with AsyncSessionLocal() as session:
             await session.execute(text("SELECT 1"))
         checks["database"] = "ok"
     except Exception as exc:
-        checks["database"] = f"error: {exc}"
-        return JSONResponse({"status": "not_ready", "checks": checks}, status_code=503)
+        return _fail("database", exc)
 
     # Redis (optional — skip if not configured)
     try:
@@ -376,8 +385,7 @@ async def readyz():
         else:
             checks["redis"] = "not_configured"
     except Exception as exc:
-        checks["redis"] = f"error: {exc}"
-        return JSONResponse({"status": "not_ready", "checks": checks}, status_code=503)
+        return _fail("redis", exc)
 
     # KMS
     try:
@@ -386,8 +394,7 @@ async def readyz():
         await kms.get_broker_public_key_pem()
         checks["kms"] = "ok"
     except Exception as exc:
-        checks["kms"] = f"error: {exc}"
-        return JSONResponse({"status": "not_ready", "checks": checks}, status_code=503)
+        return _fail("kms", exc)
 
     return {"status": "ready", "checks": checks}
 
