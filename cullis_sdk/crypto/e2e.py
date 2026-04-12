@@ -14,6 +14,16 @@ import base64
 import json
 import os
 
+
+def _b64url_decode(s: str) -> bytes:
+    """Decode base64url with or without padding (RFC 4648 §5 / JWT convention)."""
+    if isinstance(s, bytes):
+        s = s.decode("ascii")
+    rem = len(s) % 4
+    if rem:
+        s += "=" * (4 - rem)
+    return base64.urlsafe_b64decode(s)
+
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, padding as asym_padding, rsa
@@ -102,7 +112,7 @@ def encrypt_for_agent(
 
 def _decrypt_aes_key_rsa(privkey, cipher_blob: dict) -> bytes:
     """Unwrap AES key with RSA-OAEP."""
-    encrypted_key = base64.urlsafe_b64decode(cipher_blob["encrypted_key"])
+    encrypted_key = _b64url_decode(cipher_blob["encrypted_key"])
     return privkey.decrypt(
         encrypted_key,
         asym_padding.OAEP(
@@ -115,8 +125,8 @@ def _decrypt_aes_key_rsa(privkey, cipher_blob: dict) -> bytes:
 
 def _decrypt_aes_key_ec(privkey, cipher_blob: dict) -> bytes:
     """Unwrap AES key with ECDH + HKDF."""
-    encrypted_key = base64.urlsafe_b64decode(cipher_blob["encrypted_key"])
-    ephemeral_pub_pem = base64.urlsafe_b64decode(cipher_blob["ephemeral_pubkey"])
+    encrypted_key = _b64url_decode(cipher_blob["encrypted_key"])
+    ephemeral_pub_pem = _b64url_decode(cipher_blob["ephemeral_pubkey"])
     ephemeral_pub = serialization.load_pem_public_key(ephemeral_pub_pem)
     shared_secret = privkey.exchange(ec.ECDH(), ephemeral_pub)
     derived_key = HKDF(
@@ -142,8 +152,8 @@ def decrypt_from_agent(
         recipient_privkey_pem.encode(), password=None
     )
 
-    iv = base64.urlsafe_b64decode(cipher_blob["iv"])
-    ciphertext = base64.urlsafe_b64decode(cipher_blob["ciphertext"])
+    iv = _b64url_decode(cipher_blob["iv"])
+    ciphertext = _b64url_decode(cipher_blob["ciphertext"])
 
     if isinstance(privkey, rsa.RSAPrivateKey):
         aes_key = _decrypt_aes_key_rsa(privkey, cipher_blob)
@@ -184,7 +194,7 @@ def verify_inner_signature(
 
     cert = crypto_x509.load_pem_x509_certificate(sender_cert_pem.encode())
     pub_key = cert.public_key()
-    sig = base64.urlsafe_b64decode(inner_signature_b64)
+    sig = _b64url_decode(inner_signature_b64)
 
     # Canonical format must match sign_message() in message_signer.py
     payload_str = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)

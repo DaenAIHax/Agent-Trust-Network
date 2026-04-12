@@ -1,7 +1,9 @@
 /**
  * End-to-end encryption and message signing for inter-agent messages.
  *
- * Encryption: AES-256-GCM (data) + RSA-OAEP-SHA256 (key wrapping)
+ * Encryption: AES-256-GCM (data)
+ *   + RSA-OAEP-SHA256 (key wrapping, RSA recipients)
+ *   + ECDH ephemeral + HKDF-SHA256 (key wrapping, EC recipients)
  * Signing:    RSA-PSS-SHA256
  *
  * This mirrors app/e2e_crypto.py and app/auth/message_signer.py exactly,
@@ -15,10 +17,19 @@ import {
   randomBytes,
   createCipheriv,
   createDecipheriv,
+  createPublicKey,
+  createPrivateKey,
+  generateKeyPairSync,
+  diffieHellman,
+  hkdfSync,
   constants,
+  type KeyObject,
 } from "node:crypto";
 import type { CipherBlob } from "./types.js";
 import { base64url, base64urlDecode, canonicalJson } from "./utils.js";
+
+const HKDF_INFO = Buffer.from("cullis-e2e-v1", "utf-8");
+const HKDF_SALT = Buffer.alloc(0);
 
 // ── Message Signing (RSA-PSS-SHA256) ──────────────────────────────
 
@@ -118,16 +129,107 @@ export function verifyMessageSignature(
   return true;
 }
 
-// ── E2E Encryption (AES-256-GCM + RSA-OAEP) ─────────────────────
+// ── E2E Encryption (AES-256-GCM + RSA-OAEP or ECDH+HKDF) ────────
+
+function xorBuffers(a: Buffer, b: Buffer): Buffer {
+  if (a.length !== b.length) {
+    throw new Error("xor length mismatch");
+  }
+  const out = Buffer.alloc(a.length);
+  for (let i = 0; i < a.length; i++) {
+    out[i] = a[i]! ^ b[i]!;
+  }
+  return out;
+}
+
+function wrapAesKeyRsa(
+  recipientPubKey: KeyObject,
+  aesKey: Buffer,
+): { encrypted_key: string } {
+  const encryptedKey = publicEncrypt(
+    {
+      key: recipientPubKey,
+      padding: constants.RSA_PKCS1_OAEP_PADDING,
+      oaepHash: "sha256",
+    },
+    aesKey,
+  );
+  return { encrypted_key: base64url(encryptedKey) };
+}
+
+function wrapAesKeyEc(
+  recipientPubKey: KeyObject,
+  aesKey: Buffer,
+): { encrypted_key: string; ephemeral_pubkey: string } {
+  const details = recipientPubKey.asymmetricKeyDetails;
+  const namedCurve = details?.namedCurve;
+  if (!namedCurve) {
+    throw new Error("EC recipient key missing namedCurve");
+  }
+  const ephemeral = generateKeyPairSync("ec", { namedCurve });
+  const sharedSecret = diffieHellman({
+    privateKey: ephemeral.privateKey,
+    publicKey: recipientPubKey,
+  });
+  const derived = Buffer.from(
+    hkdfSync("sha256", sharedSecret, HKDF_SALT, HKDF_INFO, 32),
+  );
+  const encryptedKey = xorBuffers(aesKey, derived);
+  const ephemeralPubPem = ephemeral.publicKey
+    .export({ type: "spki", format: "pem" })
+    .toString();
+  return {
+    encrypted_key: base64url(encryptedKey),
+    ephemeral_pubkey: base64url(Buffer.from(ephemeralPubPem, "utf-8")),
+  };
+}
+
+function unwrapAesKeyRsa(
+  recipientPrivKey: KeyObject,
+  blob: CipherBlob,
+): Buffer {
+  const encryptedKey = base64urlDecode(blob.encrypted_key);
+  return privateDecrypt(
+    {
+      key: recipientPrivKey,
+      padding: constants.RSA_PKCS1_OAEP_PADDING,
+      oaepHash: "sha256",
+    },
+    encryptedKey,
+  );
+}
+
+function unwrapAesKeyEc(
+  recipientPrivKey: KeyObject,
+  blob: CipherBlob,
+): Buffer {
+  if (!blob.ephemeral_pubkey) {
+    throw new Error("EC recipient requires ephemeral_pubkey in cipher blob");
+  }
+  const ephemeralPubPem = base64urlDecode(blob.ephemeral_pubkey).toString(
+    "utf-8",
+  );
+  const ephemeralPub = createPublicKey(ephemeralPubPem);
+  const sharedSecret = diffieHellman({
+    privateKey: recipientPrivKey,
+    publicKey: ephemeralPub,
+  });
+  const derived = Buffer.from(
+    hkdfSync("sha256", sharedSecret, HKDF_SALT, HKDF_INFO, 32),
+  );
+  const encryptedKey = base64urlDecode(blob.encrypted_key);
+  return xorBuffers(encryptedKey, derived);
+}
+
 
 /**
  * Encrypt a payload for a specific recipient agent.
  *
  * Schema: AES-256-GCM encrypts {payload, inner_signature} as JSON.
- * The AES key is wrapped with the recipient's RSA public key (OAEP-SHA256).
+ * The AES key is wrapped with the recipient's public key:
+ *   - RSA keys: RSA-OAEP-SHA256
+ *   - EC keys:  ephemeral ECDH + HKDF-SHA256 (info="cullis-e2e-v1"), XOR wrap
  * AAD binds the ciphertext to the session context.
- *
- * Returns: { ciphertext, encrypted_key, iv } all base64url-encoded.
  */
 export function encryptForAgent(
   payload: Record<string, unknown>,
@@ -137,18 +239,15 @@ export function encryptForAgent(
   innerSignature: string,
   clientSeq?: number | null,
 ): CipherBlob {
-  // Serialize the inner envelope (payload + signature) as canonical JSON
   const innerEnvelope = canonicalJson({
     inner_signature: innerSignature,
     payload,
   });
   const plaintext = Buffer.from(innerEnvelope, "utf-8");
 
-  // Generate random AES-256 key and 12-byte IV
   const aesKey = randomBytes(32);
   const iv = randomBytes(12);
 
-  // Build AAD to bind ciphertext to session context
   let aad: Buffer;
   if (clientSeq !== undefined && clientSeq !== null) {
     aad = Buffer.from(`${sessionId}|${senderAgentId}|${clientSeq}`, "utf-8");
@@ -156,33 +255,34 @@ export function encryptForAgent(
     aad = Buffer.from(`${sessionId}|${senderAgentId}`, "utf-8");
   }
 
-  // AES-256-GCM encrypt
   const cipher = createCipheriv("aes-256-gcm", aesKey, iv);
   cipher.setAAD(aad);
   const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
-  const authTag = cipher.getAuthTag(); // 16 bytes
-  // Python appends the tag to ciphertext
+  const authTag = cipher.getAuthTag();
   const ciphertextWithTag = Buffer.concat([encrypted, authTag]);
 
-  // RSA-OAEP-SHA256 wrap the AES key
-  const encryptedKey = publicEncrypt(
-    {
-      key: recipientPublicKeyPem,
-      padding: constants.RSA_PKCS1_OAEP_PADDING,
-      oaepHash: "sha256",
-    },
-    aesKey,
-  );
+  const recipientPubKey = createPublicKey(recipientPublicKeyPem);
+  let keyWrap: { encrypted_key: string; ephemeral_pubkey?: string };
+  if (recipientPubKey.asymmetricKeyType === "rsa") {
+    keyWrap = wrapAesKeyRsa(recipientPubKey, aesKey);
+  } else if (recipientPubKey.asymmetricKeyType === "ec") {
+    keyWrap = wrapAesKeyEc(recipientPubKey, aesKey);
+  } else {
+    throw new Error(
+      `Unsupported recipient key type: ${recipientPubKey.asymmetricKeyType}`,
+    );
+  }
 
   return {
     ciphertext: base64url(ciphertextWithTag),
-    encrypted_key: base64url(encryptedKey),
     iv: base64url(iv),
+    ...keyWrap,
   };
 }
 
 /**
  * Decrypt an E2E encrypted message.
+ * Supports both RSA-OAEP and ECDH+HKDF key unwrapping.
  *
  * @returns [plaintextPayload, innerSignature]
  */
@@ -193,16 +293,17 @@ export function decryptFromAgent(
   senderAgentId: string,
   clientSeq?: number | null,
 ): [Record<string, unknown>, string] {
-  // Unwrap AES key with RSA-OAEP-SHA256
-  const encryptedKey = base64urlDecode(encryptedMessage.encrypted_key);
-  const aesKey = privateDecrypt(
-    {
-      key: privateKeyPem,
-      padding: constants.RSA_PKCS1_OAEP_PADDING,
-      oaepHash: "sha256",
-    },
-    encryptedKey,
-  );
+  const recipientPrivKey = createPrivateKey(privateKeyPem);
+  let aesKey: Buffer;
+  if (recipientPrivKey.asymmetricKeyType === "rsa") {
+    aesKey = unwrapAesKeyRsa(recipientPrivKey, encryptedMessage);
+  } else if (recipientPrivKey.asymmetricKeyType === "ec") {
+    aesKey = unwrapAesKeyEc(recipientPrivKey, encryptedMessage);
+  } else {
+    throw new Error(
+      `Unsupported recipient key type: ${recipientPrivKey.asymmetricKeyType}`,
+    );
+  }
 
   const ivBuf = base64urlDecode(encryptedMessage.iv);
   const ciphertextWithTag = base64urlDecode(encryptedMessage.ciphertext);

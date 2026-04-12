@@ -23,6 +23,16 @@ _PSS_PADDING = padding.PSS(
 )
 
 
+def _b64url_decode(s: str) -> bytes:
+    """Decode base64url with or without padding (RFC 4648 §5 / JWT convention)."""
+    if isinstance(s, bytes):
+        s = s.decode("ascii")
+    rem = len(s) % 4
+    if rem:
+        s += "=" * (4 - rem)
+    return base64.urlsafe_b64decode(s)
+
+
 def _canonical(session_id: str, sender_agent_id: str, nonce: str, timestamp: int,
                payload: dict, client_seq: int | None = None) -> bytes:
     """Deterministic canonical string to be signed."""
@@ -81,7 +91,7 @@ def verify_signature(
     except Exception:
         return False
 
-    sig = base64.urlsafe_b64decode(signature_b64)
+    sig = _b64url_decode(signature_b64)
     canonical = _canonical(session_id, sender_agent_id, nonce, timestamp, payload, client_seq)
     try:
         if isinstance(pub_key, rsa_alg.RSAPublicKey):

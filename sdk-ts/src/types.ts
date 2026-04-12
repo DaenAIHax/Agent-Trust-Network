@@ -100,6 +100,8 @@ export interface CipherBlob {
   ciphertext: string;
   encrypted_key: string;
   iv: string;
+  /** Present only when the recipient key is EC (ECDH+HKDF wrapping). */
+  ephemeral_pubkey?: string;
 }
 
 // ── RFQ (Request for Quote) ───────────────────────────────────────
