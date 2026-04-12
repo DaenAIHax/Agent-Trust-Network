@@ -1,0 +1,8 @@
+{{/*
+The in-cluster Postgres (when postgres.internal=true) uses a StatefulSet
+with `volumeClaimTemplates` so the PVC is rendered automatically per
+replica with a stable name.
+
+This file is intentionally left empty: defining a standalone PVC alongside
+the StatefulSet would shadow the per-replica claim and break upgrades.
+*/}}

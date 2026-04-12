@@ -1,0 +1,30 @@
+apiVersion: v2
+name: cullis-proxy
+description: |
+  Cullis MCP Proxy — org-level gateway between internal AI agents and the
+  Cullis trust broker. Production-ready Helm chart with HPA,
+  PodDisruptionBudget, NetworkPolicy, cert-manager TLS termination and
+  Prometheus Operator integration.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.25.0-0"
+home: https://cullis.tech
+sources:
+  - https://github.com/cullis-security/cullis
+maintainers:
+  - name: Cullis Maintainers
+    url: https://github.com/cullis-security
+keywords:
+  - cullis
+  - mcp
+  - mcp-proxy
+  - agent-trust
+  - gateway
+  - pdp
+  - dpop
+  - zero-trust
+annotations:
+  artifacthub.io/license: Apache-2.0
+  artifacthub.io/changes: |
+    - Initial Helm chart for production deployments of the MCP Proxy.

@@ -1,0 +1,44 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "cullis-proxy.configMapName" . }}
+  labels:
+    {{- include "cullis-proxy.proxy.labels" . | nindent 4 }}
+data:
+  MCP_PROXY_ENVIRONMENT: {{ .Values.proxy.environment | quote }}
+  MCP_PROXY_HOST: "0.0.0.0"
+  MCP_PROXY_PORT: {{ .Values.proxy.containerPort | quote }}
+
+  {{- if .Values.proxy.brokerUrl }}
+  MCP_PROXY_BROKER_URL: {{ .Values.proxy.brokerUrl | quote }}
+  {{- end }}
+  {{- if .Values.proxy.brokerJwksUrl }}
+  MCP_PROXY_BROKER_JWKS_URL: {{ .Values.proxy.brokerJwksUrl | quote }}
+  {{- end }}
+  MCP_PROXY_BROKER_VERIFY_TLS: {{ .Values.proxy.brokerVerifyTls | quote }}
+
+  {{- if .Values.proxy.proxyPublicUrl }}
+  MCP_PROXY_PROXY_PUBLIC_URL: {{ .Values.proxy.proxyPublicUrl | quote }}
+  {{- else if .Values.ingress.enabled }}
+  MCP_PROXY_PROXY_PUBLIC_URL: {{ printf "%s://%s" (ternary "https" "http" .Values.ingress.tls.enabled) .Values.ingress.host | quote }}
+  {{- end }}
+
+  {{- if .Values.proxy.pdpUrl }}
+  MCP_PROXY_PDP_URL: {{ .Values.proxy.pdpUrl | quote }}
+  {{- end }}
+
+  {{- if .Values.proxy.orgId }}
+  MCP_PROXY_ORG_ID: {{ .Values.proxy.orgId | quote }}
+  {{- end }}
+
+  MCP_PROXY_ALLOWED_ORIGINS: {{ .Values.proxy.allowedOrigins | quote }}
+
+  MCP_PROXY_DATABASE_URL: {{ include "cullis-proxy.databaseUrl" . | quote }}
+
+  {{- if .Values.vault.enabled }}
+  MCP_PROXY_SECRET_BACKEND: "vault"
+  MCP_PROXY_VAULT_ADDR: {{ .Values.vault.addr | quote }}
+  MCP_PROXY_VAULT_SECRET_PREFIX: {{ .Values.vault.secretPrefix | quote }}
+  {{- else }}
+  MCP_PROXY_SECRET_BACKEND: "env"
+  {{- end }}

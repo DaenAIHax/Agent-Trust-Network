@@ -1,0 +1,49 @@
+# Dev values override — relaxed settings for kind / minikube / k3d.
+# NEVER use on a real production cluster.
+#
+#   helm install cullis-proxy ./deploy/helm/cullis-proxy \
+#     -f deploy/helm/cullis-proxy/values-dev.yaml
+
+proxy:
+  environment: development
+  replicaCount: 1
+  brokerUrl: "http://cullis-broker.cullis.svc.cluster.local:8000"
+  brokerJwksUrl: "http://cullis-broker.cullis.svc.cluster.local:8000/.well-known/jwks.json"
+  proxyPublicUrl: "http://cullis-proxy.127.0.0.1.nip.io"
+  brokerVerifyTls: false
+  resources:
+    limits:
+      cpu: "250m"
+      memory: "256Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+
+secrets:
+  adminSecret: "dev-admin-secret-change-me"
+  dashboardSigningKey: "dev-dashboard-signing-key-change-me"
+
+persistence:
+  enabled: true
+  size: 1Gi
+
+ingress:
+  enabled: true
+  className: nginx
+  host: cullis-proxy.127.0.0.1.nip.io
+  tls:
+    enabled: false
+    certManagerIssuer: ""
+
+monitoring:
+  serviceMonitor:
+    enabled: false
+
+networkPolicy:
+  enabled: false
+
+autoscaling:
+  enabled: false
+
+podDisruptionBudget:
+  enabled: false

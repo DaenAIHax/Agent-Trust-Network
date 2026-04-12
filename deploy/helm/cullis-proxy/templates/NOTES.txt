@@ -1,0 +1,62 @@
+Cullis MCP Proxy — org-level gateway — has been installed.
+
+Release : {{ .Release.Name }}
+Chart   : {{ .Chart.Name }}-{{ .Chart.Version }} (appVersion {{ .Chart.AppVersion }})
+
+1. Check that proxy pods reached Ready:
+
+   kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/instance={{ .Release.Name }},app.kubernetes.io/component=proxy
+
+2. Tail the proxy logs:
+
+   kubectl -n {{ .Release.Namespace }} logs -l app.kubernetes.io/instance={{ .Release.Name }},app.kubernetes.io/component=proxy -f
+
+{{- if .Values.ingress.enabled }}
+3. Public URL:
+
+   {{ if .Values.ingress.tls.enabled }}https{{ else }}http{{ end }}://{{ .Values.ingress.host }}{{ .Values.ingress.path }}
+
+   Dashboard login:
+
+   {{ if .Values.ingress.tls.enabled }}https{{ else }}http{{ end }}://{{ .Values.ingress.host }}/proxy/login
+{{- else }}
+3. Ingress is disabled. Port-forward the proxy Service to reach it:
+
+   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "cullis-proxy.proxy.fullname" . }} 9100:{{ .Values.proxy.service.port }}
+   open http://127.0.0.1:9100/health
+{{- end }}
+
+{{- if not .Values.proxy.brokerUrl }}
+
+WARNING: proxy.brokerUrl is empty. The proxy will start but egress to the
+         broker is disabled until you set it (configure via helm upgrade or
+         through the setup wizard in the proxy dashboard).
+{{- end }}
+
+{{- if and .Values.secrets.create (not .Values.secrets.adminSecret) }}
+
+WARNING: secrets.adminSecret is empty. A random value has been generated on
+         install but will be re-generated on every `helm upgrade` unless you
+         set it explicitly. Generate once with:
+
+             python -c "import secrets; print(secrets.token_urlsafe(32))"
+
+         and provide it via --set secrets.adminSecret=... or a values file.
+{{- end }}
+
+{{- if and .Values.secrets.create (not .Values.secrets.dashboardSigningKey) }}
+
+WARNING: secrets.dashboardSigningKey is empty. Admin dashboard sessions
+         will be invalidated on every pod restart because a random key is
+         generated per-process. Pin it to survive rollouts.
+{{- end }}
+
+{{- if and (gt (int .Values.proxy.replicaCount) 1) (has "ReadWriteOnce" .Values.persistence.accessModes) }}
+
+WARNING: proxy.replicaCount > 1 but persistence.accessModes is ReadWriteOnce.
+         SQLite cannot be shared across pods on RWO storage. Either scale
+         back to 1 replica or switch to a RWX-capable StorageClass
+         (EFS / Filestore / Azure Files / Longhorn RWX).
+{{- end }}
+
+For upgrade and operational runbooks see deploy/helm/cullis-proxy/README.md.
