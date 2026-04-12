@@ -54,46 +54,61 @@ helm install ingress-nginx ingress-nginx/ingress-nginx \
 
 ---
 
-## Step 2 — Bring Your Own CA (BYOCA)
+## Step 2 — Provide a broker CA
 
-The broker needs a CA certificate + private key. In production your
-security team hands these to you (or you integrate with an internal PKI).
-For a first deployment on a fresh cluster, generate an ephemeral pair:
+The broker signs agent certificates with a root CA it reads from
+`/app/certs/broker-ca.pem` + `/app/certs/broker-ca-key.pem`. Pick one
+of the two paths below.
+
+### Option A — Auto-bootstrap (evaluation / dev clusters)
+
+`values-dev.yaml` enables this by default. The chart renders a
+post-install Job that generates a self-signed CA, writes it into a
+Secret the broker Deployment mounts, and pushes the PEMs into the
+in-cluster Vault so `KMS_BACKEND=vault` resolves on first boot — no
+manual `kubectl exec` required.
+
+Nothing to do in this step except create the namespace:
+
+```bash
+kubectl create namespace cullis
+```
+
+### Option B — Bring Your Own CA (production-preferred)
+
+In production your security team provides the PEMs (or you integrate
+with an internal PKI). For a one-off ephemeral pair:
 
 ```bash
 mkdir -p /tmp/cullis-pki && cd /tmp/cullis-pki
 openssl genrsa -out ca.key 4096
 openssl req -x509 -new -nodes -key ca.key -sha256 -days 3650 \
   -subj "/CN=Your Org Cullis CA/O=Your Org" -out ca.crt
-```
 
-Create the namespace and the Secret that the chart will mount:
-
-```bash
 kubectl create namespace cullis
-
 kubectl -n cullis create secret generic broker-pki \
   --from-file=broker-ca.pem=ca.crt \
   --from-file=broker-ca-key.pem=ca.key
 ```
 
-The Secret MUST be named `broker-pki` (or whatever you reference in
-`values.yaml → broker.pki.existingSecret`), and the keys MUST be
-`broker-ca.pem` and `broker-ca-key.pem` — the broker's
-`Settings()` expects those filenames.
+The keys MUST be named `broker-ca.pem` + `broker-ca-key.pem` — the
+broker's `Settings()` expects those exact filenames. At install time,
+add `--set broker.pki.bootstrap.enabled=false --set
+broker.pki.existingSecret=broker-pki` to disable the auto-bootstrap
+and use your Secret instead.
 
 ---
 
 ## Step 3 — Install the broker chart
 
-Dev-ergonomic deployment (Postgres / Redis / Vault spun up inline, Vault
-in dev mode — suitable for evaluation and testing only):
+Dev-ergonomic deployment (Postgres / Redis / Vault spun up inline,
+Vault in dev mode, auto-bootstrapped CA — suitable for evaluation and
+testing only):
 
 ```bash
 helm install cullis deploy/helm/cullis/ \
   --namespace cullis \
   --values deploy/helm/cullis/values-dev.yaml \
-  --set broker.pki.existingSecret=broker-pki \
   --set ingress.host=broker.your-org.com \
   --wait --timeout 5m
 ```
@@ -102,22 +117,16 @@ Replace `broker.your-org.com` with a hostname resolvable to your
 cluster's Ingress IP. For local k3d / kind runs, `broker.127.0.0.1.nip.io`
 works without editing `/etc/hosts`.
 
-### Bootstrap Vault secret
-
-The chart provisions an inline Vault StatefulSet but does not yet
-populate it with the broker's CA. Until the PKI bootstrap Job lands
-(tracked in a follow-up), run once after install:
+For Option B (BYOCA), extend the command:
 
 ```bash
-kubectl -n cullis exec cullis-vault-0 -- sh -c '
-  export VAULT_ADDR=http://127.0.0.1:8200 VAULT_TOKEN=dev-root-token
-  vault kv put secret/broker \
-    private_key_pem="'"$(cat /tmp/cullis-pki/ca.key)"'" \
-    ca_cert_pem="'"$(cat /tmp/cullis-pki/ca.crt)"'"
-'
-
-kubectl -n cullis rollout restart deployment/cullis-broker
-kubectl -n cullis rollout status  deployment/cullis-broker --timeout=3m
+helm install cullis deploy/helm/cullis/ \
+  --namespace cullis \
+  --values deploy/helm/cullis/values-dev.yaml \
+  --set broker.pki.bootstrap.enabled=false \
+  --set broker.pki.existingSecret=broker-pki \
+  --set ingress.host=broker.your-org.com \
+  --wait --timeout 5m
 ```
 
 ### Verify
@@ -227,8 +236,12 @@ Full `values.yaml` options are documented inline in the chart.
    sets this automatically.
 
 **`/readyz` stuck at 503 with `kms: error: Vault secret ... missing 'ca_cert_pem'`**
-→ You skipped Step 3's "Bootstrap Vault secret" subsection. Run those
-   `kubectl exec vault-0 vault kv put ...` commands.
+→ The PKI bootstrap Job failed or did not run. Check its logs:
+   `kubectl -n cullis get jobs -l app.kubernetes.io/component=broker-pki-bootstrap`
+   `kubectl -n cullis logs job/cullis-broker-pki-bootstrap`
+   Common causes: Vault StatefulSet still coming up (the Job retries
+   for ~2 minutes), or `broker.pki.bootstrap.pushToVault=false` when
+   `vault.kmsBackend=vault`.
 
 **Broker pod `CrashLoopBackOff` with no `certs/broker-ca.pem`**
 → `broker.pki.existingSecret` is empty or the Secret doesn't have
