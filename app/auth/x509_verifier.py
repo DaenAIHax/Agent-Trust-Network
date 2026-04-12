@@ -11,14 +11,16 @@ Flow:
 import base64
 import datetime
 import hashlib
+import hmac
 import time as _time
+import urllib.parse
 
 from cryptography import x509
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
 from cryptography.x509.oid import NameOID, ExtendedKeyUsageOID
-from fastapi import HTTPException, status
+from fastapi import HTTPException, Request, status
 import jwt
 from jwt.exceptions import InvalidTokenError as JWTError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -35,21 +37,29 @@ _AUDIENCE = "agent-trust-broker"
 _ALLOWED_HASH_ALGORITHMS = (hashes.SHA256, hashes.SHA384, hashes.SHA512)
 
 
-async def verify_client_assertion(assertion: str, db: AsyncSession) -> tuple[str, str, str, str]:
+async def verify_client_assertion(
+    assertion: str,
+    db: AsyncSession,
+    request: Request | None = None,
+) -> tuple[str, str, str, str]:
     """
     Verify a client_assertion JWT and return (agent_id, org_id, cert_pem, cert_thumbprint).
     cert_pem is the agent certificate extracted from x5c — it is saved in DB
     by the auth router to allow verification of message signatures.
     cert_thumbprint is the SHA-256 hex digest of the DER-encoded certificate.
 
+    When ``request`` is provided and ``mtls_binding`` is enabled in settings,
+    also enforces RFC 8705-style confirmation that the mTLS client cert
+    forwarded by the reverse proxy matches the cert in x5c.
+
     Raises HTTPException 401/403 if verification fails.
     """
     _t0 = _time.monotonic()
     with tracer.start_as_current_span("auth.x509_verify") as _span:
-      return await _verify_client_assertion_inner(assertion, db, _span, _t0)
+      return await _verify_client_assertion_inner(assertion, db, _span, _t0, request)
 
 
-async def _verify_client_assertion_inner(assertion, db, _span, _t0):
+async def _verify_client_assertion_inner(assertion, db, _span, _t0, request=None):
     # ── 1. Header without verification ──────────────────────────────────────
     try:
         header = jwt.get_unverified_header(assertion)
@@ -247,6 +257,40 @@ async def _verify_client_assertion_inner(assertion, db, _span, _t0):
     exp_ts = payload.get("exp")
     expires_at = datetime.datetime.fromtimestamp(exp_ts, tz=datetime.timezone.utc)
     await check_and_consume_jti(db, jti, expires_at)
+
+    # ── 13. mTLS binding (RFC 8705 §3) ───────────────────────────────────────
+    # When a reverse proxy terminates mTLS and forwards the client cert via
+    # header, verify it matches the cert in x5c. A stolen JWT is useless
+    # without the corresponding private key used to open the TLS tunnel.
+    settings = get_settings()
+    mtls_mode = getattr(settings, "mtls_binding", "off")
+    if request is not None and mtls_mode != "off":
+        header_name = getattr(settings, "mtls_client_cert_header", "X-SSL-Client-Cert")
+        raw = request.headers.get(header_name)
+        if raw:
+            try:
+                # nginx $ssl_client_escaped_cert is URL-encoded (\n → %0A, etc).
+                # Traefik passthrough headers are plain PEM. Handle both.
+                decoded = urllib.parse.unquote(raw)
+                mtls_cert = x509.load_pem_x509_certificate(decoded.encode())
+                mtls_thumbprint = hashlib.sha256(
+                    mtls_cert.public_bytes(serialization.Encoding.DER)
+                ).hexdigest()
+            except Exception:
+                raise HTTPException(
+                    status.HTTP_401_UNAUTHORIZED,
+                    detail="mTLS client certificate header is malformed",
+                )
+            if not hmac.compare_digest(mtls_thumbprint, cert_thumbprint):
+                raise HTTPException(
+                    status.HTTP_401_UNAUTHORIZED,
+                    detail="mTLS cert does not match client_assertion cert (RFC 8705 binding)",
+                )
+        elif mtls_mode == "required":
+            raise HTTPException(
+                status.HTTP_401_UNAUTHORIZED,
+                detail="mTLS binding required but client certificate header absent",
+            )
 
     cert_pem = agent_cert.public_bytes(serialization.Encoding.PEM).decode()
     _span.set_attribute("cert.thumbprint", cert_thumbprint)

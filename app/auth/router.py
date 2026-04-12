@@ -49,7 +49,9 @@ async def issue_token(
         dpop_jkt = await verify_dpop_proof(dpop, htm="POST", htu=htu, access_token=None)
 
         # ── Verify certificate and signature ─────────────────────────────────
-        agent_id, org_id, cert_pem, cert_thumbprint = await verify_client_assertion(body.client_assertion, db)
+        agent_id, org_id, cert_pem, cert_thumbprint = await verify_client_assertion(
+            body.client_assertion, db, request=request,
+        )
         span.set_attribute("agent.id", agent_id)
         span.set_attribute("org.id", org_id)
 

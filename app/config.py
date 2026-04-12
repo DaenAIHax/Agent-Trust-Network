@@ -78,6 +78,18 @@ class Settings(BaseSettings):
     # on the same private docker network as the broker.
     policy_webhook_allow_private_ips: bool = False
 
+    # mTLS binding (RFC 8705 §3) — defense-in-depth at /auth/token.
+    # When the broker sits behind a reverse proxy that terminates mTLS,
+    # the proxy forwards the client certificate via an HTTP header. The
+    # broker then verifies that the mTLS cert and the cert in the JWT
+    # client_assertion (x5c) are the same — an attacker who steals a JWT
+    # needs the matching client cert to open the tunnel in the first place.
+    #   off      → header ignored (default, backward compatible)
+    #   optional → if header present, enforce match; if absent, allow
+    #   required → header must be present and match; 401 otherwise
+    mtls_binding: str = "off"
+    mtls_client_cert_header: str = "X-SSL-Client-Cert"
+
     # KMS backend — "local" (filesystem) or "vault" (HashiCorp Vault KV v2)
     kms_backend: str = "vault"
     vault_addr: str = ""
