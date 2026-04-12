@@ -117,11 +117,28 @@ spec:
                   - /bin/sh
                   - -c
                   - sleep {{ .Values.broker.preStopSleepSeconds }}
-          {{- with .Values.broker.extraVolumeMounts }}
+          {{- $pkiSecret := include "cullis.broker.pkiSecretName" . }}
+          {{- if or $pkiSecret .Values.broker.extraVolumeMounts }}
           volumeMounts:
+            {{- if $pkiSecret }}
+            - name: broker-pki
+              mountPath: {{ .Values.broker.pki.mountPath }}
+              readOnly: true
+            {{- end }}
+            {{- with .Values.broker.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- end }}
-      {{- with .Values.broker.extraVolumes }}
+      {{- $pkiSecret := include "cullis.broker.pkiSecretName" . }}
+      {{- if or $pkiSecret .Values.broker.extraVolumes }}
       volumes:
+        {{- if $pkiSecret }}
+        - name: broker-pki
+          secret:
+            secretName: {{ $pkiSecret }}
+            defaultMode: 0444
+        {{- end }}
+        {{- with .Values.broker.extraVolumes }}
         {{- toYaml . | nindent 8 }}
+        {{- end }}
       {{- end }}
