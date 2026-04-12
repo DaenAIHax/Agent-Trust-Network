@@ -69,30 +69,30 @@ cmd_check() {
     local expected; expected="$(cat "$NONCE_FILE")"
     say "demo_network: asserting checker received nonce=$expected"
 
-    # Pull the last-message via Traefik (exercises the full TLS path too).
-    local got
-    got="$(docker run --rm --network cullis-demo-net \
-          -v demo_network_test-certs:/certs:ro \
-          curlimages/curl:8.10.1 \
-          -s --max-time 10 --cacert /certs/ca.crt \
-          https://checker.cullis.test:8443/last-message || true)"
+    # The checker's poll loop runs every 1s; sender may have just exited
+    # and the message hasn't been decoded + stored yet. Retry for up to 20s
+    # before declaring failure.
+    local got="" actual=""
+    local attempts=20
+    for ((i=1; i<=attempts; i++)); do
+        got="$(docker run --rm --network cullis-demo-net \
+              -v demo_network_test-certs:/certs:ro \
+              curlimages/curl:8.10.1 \
+              -s --max-time 5 --cacert /certs/ca.crt \
+              https://checker.cullis.test:8443/last-message 2>/dev/null || true)"
+        # Same grep -m1 trick as before — avoid head/pipefail SIGPIPE trap.
+        actual="$(echo "$got" | grep -m1 -oE '"nonce"[[:space:]]*:[[:space:]]*"[^"]+"' | sed -E 's/.*"([^"]+)"$/\1/')" || actual=""
+        if [[ "$actual" == "$expected" ]]; then
+            ok "smoke PASS: message round-trip succeeded (nonce=$expected)"
+            return 0
+        fi
+        sleep 1
+    done
 
-    if [[ -z "$got" ]]; then
-        dump_failure_logs
-        die "checker /last-message returned empty body"
-    fi
-
-    # Parse the nonce out of the JSON with a lean regex — avoids a jq dep.
-    local actual
-    actual="$(echo "$got" | grep -oE '"nonce"[[:space:]]*:[[:space:]]*"[^"]+"' | head -1 | sed -E 's/.*"([^"]+)"$/\1/')"
-
-    if [[ "$actual" != "$expected" ]]; then
-        warn "expected nonce: $expected"
-        warn "actual payload: $got"
-        dump_failure_logs
-        die "nonce mismatch"
-    fi
-    ok "smoke PASS: message round-trip succeeded (nonce=$expected)"
+    warn "expected nonce: $expected"
+    warn "actual body after ${attempts}s of polling: $got"
+    dump_failure_logs
+    die "nonce mismatch or checker never delivered"
 }
 
 cmd_down() {
