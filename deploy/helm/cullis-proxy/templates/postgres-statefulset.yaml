@@ -1,0 +1,80 @@
+{{- if .Values.postgres.internal }}
+# NOTE: the current proxy image does NOT read from Postgres — see
+# mcp_proxy/db.py (aiosqlite only). This StatefulSet is provided as a
+# forward-compatible stub and is disabled by default.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "cullis-proxy.postgres.fullname" . }}
+  labels:
+    {{- include "cullis-proxy.postgres.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "cullis-proxy.postgres.fullname" . }}
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "cullis-proxy.postgres.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "cullis-proxy.postgres.selectorLabels" . | nindent 8 }}
+    spec:
+      securityContext:
+        fsGroup: 999
+      containers:
+        - name: postgres
+          image: {{ .Values.postgres.image }}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: postgres
+              containerPort: {{ .Values.postgres.port }}
+              protocol: TCP
+          env:
+            - name: POSTGRES_USER
+              value: {{ .Values.postgres.username | quote }}
+            - name: POSTGRES_PASSWORD
+              value: {{ .Values.postgres.password | quote }}
+            - name: POSTGRES_DB
+              value: {{ .Values.postgres.database | quote }}
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - {{ .Values.postgres.username | quote }}
+                - -d
+                - {{ .Values.postgres.database | quote }}
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - {{ .Values.postgres.username | quote }}
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          {{- with .Values.postgres.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "cullis-proxy.postgres.labels" . | nindent 10 }}
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        {{- if .Values.postgres.storageClassName }}
+        storageClassName: {{ .Values.postgres.storageClassName | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.postgres.storageSize }}
+{{- end }}

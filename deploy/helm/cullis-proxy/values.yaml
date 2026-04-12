@@ -1,0 +1,437 @@
+# Cullis MCP Proxy Helm chart — default values.
+#
+# This file is tuned for PRODUCTION deployments on managed Kubernetes
+# (EKS, GKE, AKS). The proxy persists state in SQLite on a PVC mounted at
+# /data — this is the backend the app supports today (see mcp_proxy/db.py,
+# which uses aiosqlite directly). For multi-replica HA the SQLite volume
+# must be RWX (e.g. EFS / Filestore) — otherwise keep a single replica and
+# rely on an external Postgres once the app grows such a backend.
+#
+# Any value marked REQUIRED must be overridden via --set or a custom values
+# file before `helm install` on a real cluster.
+
+# -- Override the chart name (defaults to chart metadata name).
+nameOverride: ""
+# -- Override the fully-qualified release name (defaults to release-name-chart).
+fullnameOverride: ""
+
+# -- Global image pull secrets applied to every workload in the chart.
+imagePullSecrets: []
+  # - name: ghcr-credentials
+
+# ---------------------------------------------------------------------------
+# Proxy — the MCP Proxy FastAPI/uvicorn workload.
+# ---------------------------------------------------------------------------
+proxy:
+  image:
+    # -- Container image repository for the MCP proxy.
+    repository: ghcr.io/daenaihax/cullis-proxy
+    # -- Image tag. When empty the chart appVersion is used.
+    tag: ""
+    # -- Image pull policy.
+    pullPolicy: IfNotPresent
+
+  # -- Static replica count. The proxy keeps state (SQLite, DPoP nonce,
+  # JWKS cache) in-pod. Running >1 replica requires a RWX PVC backend
+  # (EFS, Filestore, Azure Files, Longhorn RWX) and sticky sessions on
+  # the Ingress — see README.
+  replicaCount: 1
+
+  # -- Value for MCP_PROXY_ENVIRONMENT env var (development | production).
+  # production rejects insecure defaults at boot (see mcp_proxy/config.py).
+  environment: production
+
+  # -- Container port the proxy listens on. Matches the Dockerfile.
+  containerPort: 9100
+
+  # -- Broker uplink URL. REQUIRED. In production MUST be HTTPS.
+  # The proxy calls this to join the org and bridge egress traffic.
+  brokerUrl: ""
+    # e.g. "https://broker.cullis.example.com"
+
+  # -- Broker JWKS endpoint used to validate broker-signed JWTs. REQUIRED
+  # in production (config.validate_config enforces HTTPS here).
+  brokerJwksUrl: ""
+    # e.g. "https://broker.cullis.example.com/.well-known/jwks.json"
+
+  # -- Public URL where THIS proxy is reachable from its internal agents.
+  # Used for DPoP htu validation on the ingress endpoints.
+  proxyPublicUrl: ""
+    # e.g. "https://proxy.myorg.example.com"
+
+  # -- PDP webhook URL the broker calls to get policy decisions from this
+  # proxy. Must be reachable from the broker. When empty, the proxy does
+  # not advertise a PDP to the broker.
+  pdpUrl: ""
+    # e.g. "https://proxy.myorg.example.com/pdp/policy"
+
+  # -- Org ID the proxy represents. Set after bootstrap; can also be
+  # configured through the setup wizard (DB-resident).
+  orgId: ""
+
+  # -- Comma-separated CORS origins allowed to call the proxy dashboard.
+  # Empty = no CORS middleware (fail-safe).
+  allowedOrigins: ""
+
+  # -- Verify broker TLS certificate. Disable ONLY for local dev with a
+  # self-signed broker.
+  brokerVerifyTls: true
+
+  # -- When the broker TLS cert is signed by a non-public CA, mount the
+  # CA bundle via extraVolumes/extraVolumeMounts and set this to the path
+  # inside the container. Exported as SSL_CERT_FILE + REQUESTS_CA_BUNDLE.
+  # Example wiring below under extraVolumes.
+  brokerCaBundle: ""
+    # e.g. "/certs/corporate-ca.pem"
+
+  # -- CPU/memory resource requests and limits.
+  resources:
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+
+  # -- Grace period for pod termination. Aligned with uvicorn graceful
+  # timeout and preStop sleep.
+  terminationGracePeriodSeconds: 40
+
+  # -- Arbitrary extra environment variables merged into the proxy
+  # Deployment container. Use for tool-specific config, feature flags, etc.
+  # Each entry must be a full Kubernetes env var object (name/value or
+  # name/valueFrom). Keep secrets out of here — use proxy.extraEnvFrom or
+  # the proxy Secret below.
+  extraEnv: []
+    # - name: MCP_PROXY_RATE_LIMIT_PER_MINUTE
+    #   value: "120"
+
+  # -- Additional envFrom sources (e.g. External Secret-backed Secrets).
+  extraEnvFrom: []
+    # - secretRef:
+    #     name: cullis-proxy-external-secrets
+
+  # -- Extra volumes injected into the proxy pod. Typical uses:
+  #   * Mount a ConfigMap holding the corporate CA bundle (VAULT_CACERT
+  #     / broker CA) — see proxy.brokerCaBundle.
+  #   * Mount a Vault Agent Injector sidecar-managed secret file.
+  #   * Mount an External Secrets-synced Secret as a file.
+  extraVolumes: []
+    # - name: broker-ca
+    #   configMap:
+    #     name: broker-ca-bundle
+    #     items:
+    #       - key: ca.pem
+    #         path: corporate-ca.pem
+    # - name: vault-ca
+    #   configMap:
+    #     name: vault-ca-bundle
+
+  # -- Extra volume mounts on the proxy container. Pair with extraVolumes.
+  extraVolumeMounts: []
+    # - name: broker-ca
+    #   mountPath: /certs
+    #   readOnly: true
+
+  # -- Additional annotations on proxy pods.
+  podAnnotations: {}
+    # Example: inject a secret via HashiCorp Vault Agent Injector.
+    # vault.hashicorp.com/agent-inject: "true"
+    # vault.hashicorp.com/role: "cullis-proxy"
+    # vault.hashicorp.com/agent-inject-secret-proxy.env: "secret/data/cullis-proxy/env"
+
+  # -- Additional labels on proxy pods.
+  podLabels: {}
+
+  # -- Pod-level securityContext. Stringent defaults: non-root, seccomp
+  # RuntimeDefault, dedicated UID/GID matching the Dockerfile user.
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+
+  # -- Container-level securityContext. Drops ALL capabilities; keeps a
+  # writable root FS because SQLite temp files sit next to the DB file on
+  # the persistent volume. Set readOnlyRootFilesystem=true if you front
+  # the proxy with an emptyDir for /tmp and mount /data separately.
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: false
+    capabilities:
+      drop:
+        - ALL
+
+  # -- Node selector for proxy pods.
+  nodeSelector: {}
+  # -- Tolerations for proxy pods.
+  tolerations: []
+  # -- Affinity for proxy pods. Default anti-affinity spreads replicas
+  # across nodes for HA during a node-drain event.
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            topologyKey: kubernetes.io/hostname
+            labelSelector:
+              matchLabels:
+                app.kubernetes.io/name: cullis-proxy
+                app.kubernetes.io/component: proxy
+
+  # -- Liveness probe configuration. Hits /healthz.
+  livenessProbe:
+    httpGet:
+      path: /healthz
+      port: http
+    initialDelaySeconds: 15
+    periodSeconds: 20
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+  # -- Readiness probe configuration. Hits /readyz — returns 503 when the
+  # DB is unwritable or the JWKS cache is stale beyond 2x refresh.
+  readinessProbe:
+    httpGet:
+      path: /readyz
+      port: http
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+    successThreshold: 1
+
+  # -- Startup probe (optional — useful on first DB init).
+  startupProbe:
+    httpGet:
+      path: /healthz
+      port: http
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    failureThreshold: 30
+
+  # -- preStop hook. Sleep gives Kubernetes time to propagate the pod
+  # removal through the Service endpoints before uvicorn gets SIGTERM.
+  preStopSleepSeconds: 5
+
+  service:
+    # -- Service type. Keep ClusterIP and front it with the Ingress.
+    type: ClusterIP
+    # -- Service port exposed to the Ingress controller.
+    port: 9100
+    # -- Extra annotations on the proxy Service.
+    annotations: {}
+
+  serviceAccount:
+    # -- Create a dedicated ServiceAccount for the proxy.
+    create: true
+    # -- Name of the ServiceAccount. Auto-generated when empty.
+    name: ""
+    # -- Extra annotations on the ServiceAccount (e.g. IRSA role ARN,
+    # GKE Workload Identity SA).
+    annotations: {}
+
+# ---------------------------------------------------------------------------
+# Persistence — SQLite DB backing the proxy.
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Postgres — NOT used by the current proxy code (mcp_proxy/db.py uses
+# aiosqlite directly). These hooks are kept as forward-compatible stubs for
+# a future Postgres backend and are disabled by default. Do not enable them
+# unless the proxy image has Postgres support wired in.
+# ---------------------------------------------------------------------------
+postgres:
+  # -- Set to true to deploy a dedicated in-cluster Postgres StatefulSet
+  # for the proxy. Today the proxy does not read from Postgres; enabling
+  # this only provisions the infrastructure.
+  internal: false
+  # -- External Postgres URL (SQLAlchemy async format). Used to override
+  # MCP_PROXY_DATABASE_URL when the proxy image supports it.
+  externalUrl: ""
+
+  # Only used when internal: true — settings for the bundled StatefulSet.
+  image: postgres:16-alpine
+  storageSize: 10Gi
+  storageClassName: ""
+  username: cullis_proxy
+  password: cullis-proxy-dev-password
+  database: cullis_proxy
+  port: 5432
+  resources:
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+
+persistence:
+  # -- Enable PVC-backed storage for /data (SQLite DB, audit log). When
+  # false the proxy falls back to an emptyDir — data is lost on pod
+  # restart. Never do this in production.
+  enabled: true
+  # -- Size of the PVC.
+  size: 5Gi
+  # -- StorageClass override. Leave empty to use the cluster default.
+  storageClassName: ""
+  # -- AccessModes. Use ReadWriteMany if you run multiple replicas; this
+  # requires a RWX-capable StorageClass (EFS, Filestore, Azure Files).
+  accessModes:
+    - ReadWriteOnce
+  # -- Mount path inside the container (matches the Dockerfile).
+  mountPath: /data
+  # -- Re-use an existing PVC instead of creating one.
+  existingClaim: ""
+
+# ---------------------------------------------------------------------------
+# Secrets (rendered into a Kubernetes Secret). Prefer wiring via SealedSecret
+# or ExternalSecret — see README for examples. The values here are the
+# last-resort path for quick installs.
+# ---------------------------------------------------------------------------
+secrets:
+  # -- When false the chart will NOT create the proxy Secret and will
+  # instead expect a user-managed Secret with the same name (see
+  # secrets.existingSecret).
+  create: true
+  # -- Name of a user-managed Secret to bind to the Deployment instead
+  # of the one generated by this chart. Useful with SealedSecrets /
+  # ExternalSecrets / CSI secret providers.
+  existingSecret: ""
+  # -- Admin secret for the proxy dashboard and admin API. REQUIRED in
+  # production (config.validate_config refuses the default). Generate with:
+  #   python -c "import secrets; print(secrets.token_urlsafe(32))"
+  adminSecret: ""
+  # -- Persistent HMAC key for the proxy dashboard cookies. Without this
+  # admin sessions are invalidated on every proxy restart because a random
+  # key is generated per-process. Pin it to survive rollouts.
+  dashboardSigningKey: ""
+  # -- Org-level secret used by the proxy to authenticate to the broker
+  # for admin/egress operations (when the broker is configured to require
+  # one). Optional.
+  orgSecret: ""
+  # -- Vault token used by the secret_backend=vault option (scoped, NOT
+  # the root token). Prefer Kubernetes auth via the ServiceAccount token
+  # in production — see proxy.serviceAccount.annotations.
+  vaultToken: ""
+  # -- Extra raw secret entries. Each key becomes an env var in the pod.
+  extra: {}
+
+# ---------------------------------------------------------------------------
+# Vault integration — used when secret_backend=vault in proxy config.
+# ---------------------------------------------------------------------------
+vault:
+  # -- Enable the vault secret backend in the proxy (sets
+  # MCP_PROXY_SECRET_BACKEND=vault).
+  enabled: false
+  # -- External Vault address. REQUIRED when vault.enabled=true.
+  addr: ""
+    # e.g. "https://vault.corp.example.com:8200"
+  # -- KV v2 secret prefix the proxy reads tool secrets from.
+  secretPrefix: "secret/data/mcp-proxy/tools"
+
+# ---------------------------------------------------------------------------
+# Ingress — cert-manager TLS termination with websocket-friendly annotations.
+# ---------------------------------------------------------------------------
+ingress:
+  enabled: true
+  className: nginx
+  # -- Public hostname for the proxy.
+  host: proxy.example.com
+  # -- Path prefix exposed by the Ingress.
+  path: /
+  # -- Path type (Prefix | Exact | ImplementationSpecific).
+  pathType: Prefix
+  # -- Extra Ingress annotations merged with the websocket/TLS defaults.
+  annotations: {}
+    # Example: cert-manager issuer override.
+    # cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    # Example: limit to internal network.
+    # nginx.ingress.kubernetes.io/whitelist-source-range: "10.0.0.0/8,192.168.0.0/16"
+  tls:
+    enabled: true
+    # -- Name of the cert-manager ClusterIssuer or Issuer. When empty
+    # cert-manager is not wired and you must provide a pre-existing
+    # Secret via tls.secretName.
+    certManagerIssuer: letsencrypt-prod
+    # -- Kind of issuer — `ClusterIssuer` (default) or `Issuer`.
+    certManagerIssuerKind: ClusterIssuer
+    # -- Name of the TLS Secret to reference in the Ingress. When empty
+    # the chart generates one from the release name and host.
+    secretName: ""
+
+# ---------------------------------------------------------------------------
+# Monitoring — Prometheus Operator integration. The proxy does not expose a
+# /metrics endpoint today; the ServiceMonitor is provided as a no-op that
+# will start scraping once metrics are added. Set monitoring.enabled=false
+# if you are not running Prometheus Operator.
+# ---------------------------------------------------------------------------
+monitoring:
+  serviceMonitor:
+    # -- Render ServiceMonitor CRD pointing at /metrics.
+    enabled: false
+    # -- Scrape interval.
+    interval: 30s
+    # -- Scrape timeout.
+    scrapeTimeout: 10s
+    # -- Metrics path exposed by the proxy.
+    path: /metrics
+    # -- Extra labels on the ServiceMonitor (Prometheus Operator selector).
+    labels: {}
+      # release: kube-prometheus-stack
+    # -- Extra labels applied to every scraped metric.
+    targetLabels: []
+    # -- Metric relabel configs.
+    metricRelabelings: []
+    # -- Relabel configs.
+    relabelings: []
+
+# ---------------------------------------------------------------------------
+# NetworkPolicy — ingress from the nginx ingress namespace + the broker
+# namespace (for the PDP webhook); egress to the broker public endpoint and
+# DNS only.
+# ---------------------------------------------------------------------------
+networkPolicy:
+  enabled: true
+  # -- Namespace where the ingress controller runs (used for ingress
+  # NetworkPolicy selector).
+  ingressNamespace: ingress-nginx
+  # -- Namespace where the Cullis broker runs. When the broker is in the
+  # same cluster, the broker pods need to reach the proxy /pdp/policy
+  # webhook. Set to empty string to disable the rule (broker is remote).
+  brokerNamespace: cullis
+  # -- Extra ingress rules merged with the defaults.
+  extraIngress: []
+  # -- Extra egress rules merged with the defaults (DNS + HTTPS).
+  extraEgress: []
+    # - to:
+    #     - ipBlock:
+    #         cidr: 10.200.0.0/16
+    #   ports:
+    #     - protocol: TCP
+    #       port: 8200
+
+# ---------------------------------------------------------------------------
+# Autoscaling — HPA on CPU utilisation. Only useful if persistence is backed
+# by a RWX volume and the dashboard sessions are sticky behind the Ingress
+# (see README).
+# ---------------------------------------------------------------------------
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 70
+  # -- Optional additional metric (e.g. memory). Leave empty to disable.
+  targetMemoryUtilizationPercentage: 0
+
+# ---------------------------------------------------------------------------
+# PodDisruptionBudget — protects the proxy during voluntary drains.
+# ---------------------------------------------------------------------------
+podDisruptionBudget:
+  # -- Disabled by default because replicaCount=1 makes a PDB meaningless.
+  # Enable when you bump replicaCount or enable autoscaling with RWX storage.
+  enabled: false
+  minAvailable: 1
+  # -- Use maxUnavailable instead of minAvailable when not empty.
+  maxUnavailable: ""
