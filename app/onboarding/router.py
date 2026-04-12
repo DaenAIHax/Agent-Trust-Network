@@ -26,6 +26,7 @@ from app.registry.org_store import (
     register_org,
     update_org_ca_cert,
     update_org_secret,
+    update_org_webhook,
     list_pending_orgs,
     set_org_status,
 )
@@ -198,6 +199,7 @@ class AttachCARequest(BaseModel):
     ca_certificate: str              # PEM of the organization's CA
     invite_token: str = Field(..., max_length=64)
     secret: str = Field(..., max_length=256)  # proxy-chosen secret, replaces the placeholder set at org creation
+    webhook_url: str | None = None   # PDP webhook; if set, replaces any value the admin may have stored at creation
 
 
 class AttachCAResponse(BaseModel):
@@ -332,9 +334,15 @@ async def attach_ca(
     # The proxy now owns the org — rotate secret_hash to the proxy-chosen value.
     # The placeholder secret set by the broker admin at creation is discarded.
     await update_org_secret(db, org_id, body.secret)
+    # Optionally publish the proxy's PDP webhook URL. Keeping it optional so
+    # orgs that don't run their own PDP can stay with whatever the admin
+    # configured (or keep None = default-deny).
+    if body.webhook_url is not None:
+        await update_org_webhook(db, org_id, body.webhook_url)
     await log_event(db, "onboarding.ca_attached", "ok",
                     org_id=org_id,
-                    details={"invite_id": invite.id, "secret_rotated": True})
+                    details={"invite_id": invite.id, "secret_rotated": True,
+                             "webhook_updated": body.webhook_url is not None})
 
     return AttachCAResponse(
         org_id=org_id,

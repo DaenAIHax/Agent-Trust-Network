@@ -40,25 +40,28 @@ their startup path (JWKS fetch, Org CA load, BrokerBridge init). Sender
 and checker talk directly to the broker via the SDK — the proxies are
 not on the critical path for message flow in this smoke.
 
-## What passes this smoke tells you
+## What passing this smoke tells you
 
-- Alembic migrations apply cleanly on a fresh DB (including attach-ca)
+Production-like stack — Postgres + Redis + Vault + policy enforcement ON:
+
+- Alembic migrations apply cleanly on a fresh **Postgres** DB (including attach-ca)
 - `POST /v1/onboarding/join` works (generic invite)
-- `POST /v1/onboarding/attach` works (org-bound invite + secret rotation)
+- `POST /v1/onboarding/attach` works (org-bound invite + secret rotation + webhook URL)
 - `POST /v1/registry/agents` + `POST /v1/registry/bindings/{id}/approve` work
-- x509 agent login via `/v1/auth/token` (DPoP) works
+- x509 agent login via `/v1/auth/token` (DPoP) works — broker JWT signed with a key stored in **Vault**
 - Session open/accept state machine works
+- **Policy enforcement is ON**: broker calls proxy `/pdp/policy` webhook on every session — smoke exercises the full SSRF-protected webhook client path
+- Proxy-side PDP default-allow decision returned via HTTPS, TLS verified through the test CA
 - E2E encrypted send + decrypt works cross-org
+- **Redis** backs DPoP JTI blacklist and WS pub/sub — no in-memory fallback
 
 ## What this smoke does NOT tell you
 
-- PDP webhook enforcement (set `POLICY_ENFORCEMENT=true` in compose.yml
-  to test it — the smoke runs with enforcement off)
-- Redis-backed features (DPoP JTI store, WS pub/sub) — we run in-memory
-- Postgres-specific migrations (we run SQLite)
-- Real PKI (real Let's Encrypt / corporate CA), real DNS, real network
-- Enterprise plugins (Vault, license, observability) — community only
-- MCP proxy ingress path (internal agents → proxy → broker)
+- Real PKI (real Let's Encrypt / corporate CA), real DNS, real multi-host network
+- Enterprise plugins (license check, observability exporters) — community only
+- MCP proxy ingress path (internal agents → proxy → broker) — sender/checker use SDK direct
+- LLM-driven negotiation flows — the smoke sends a single static payload
+- Load / concurrency / fault injection
 
 ## Dashboards for manual inspection
 

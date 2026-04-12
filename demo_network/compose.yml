@@ -48,8 +48,53 @@ services:
   #    has something to route to. Replaced with real broker/proxy/checker
   #    in later steps.
 
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER:     atn
+      POSTGRES_PASSWORD: atn-smoke
+      POSTGRES_DB:       agent_trust
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U atn -d agent_trust"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+      start_period: 2s
+
+  vault:
+    image: hashicorp/vault:1.17
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID:    "demo-vault-root-token"
+      VAULT_DEV_LISTEN_ADDRESS:   "0.0.0.0:8200"
+    cap_add:
+      - IPC_LOCK
+    healthcheck:
+      test: ["CMD", "vault", "status", "-address=http://localhost:8200"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+      start_period: 3s
+
   broker-init:
     build: ./broker-init
+    depends_on:
+      vault:
+        condition: service_healthy
+    environment:
+      VAULT_ADDR:        "http://vault:8200"
+      VAULT_TOKEN:       "demo-vault-root-token"
+      VAULT_SECRET_PATH: "secret/data/broker"
     volumes:
       - broker-certs:/broker-certs
     restart: "no"
@@ -61,28 +106,40 @@ services:
     depends_on:
       broker-init:
         condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      vault:
+        condition: service_healthy
     environment:
       ADMIN_SECRET: "demo-admin-secret-change-me"
       BROKER_CA_KEY_PATH: /broker-certs/broker-ca-key.pem
       BROKER_CA_CERT_PATH: /broker-certs/broker-ca.pem
       BROKER_PUBLIC_URL: "https://broker.cullis.test:8443"
-      DATABASE_URL: "sqlite+aiosqlite:////data/broker.db"
-      KMS_BACKEND: "local"
+      DATABASE_URL: "postgresql+asyncpg://atn:atn-smoke@postgres:5432/agent_trust"
+      REDIS_URL: "redis://redis:6379"
+      KMS_BACKEND: "vault"
+      VAULT_ADDR: "http://vault:8200"
+      VAULT_TOKEN: "demo-vault-root-token"
+      VAULT_SECRET_PATH: "secret/data/broker"
+      VAULT_ALLOW_HTTP: "true"
       POLICY_BACKEND: "webhook"
-      # Demo bypass: we haven't wired a real PDP per org. Production must
-      # keep this true — the smoke only validates the transport/protocol path.
-      POLICY_ENFORCEMENT: "false"
+      POLICY_ENFORCEMENT: "true"
+      # Smoke runs PDP webhooks inside the Docker network (172.x.x.x), so
+      # the default SSRF guard against private IPs would block every call.
+      POLICY_WEBHOOK_ALLOW_PRIVATE_IPS: "true"
       TRUST_DOMAIN: "cullis.test"
       OTEL_ENABLED: "false"
       FORWARDED_ALLOW_IPS: "172.16.0.0/12"
       ENVIRONMENT: "development"
+      # Trust the demo CA when the broker calls the proxy's /pdp/policy
+      # endpoint via https://proxy-X.cullis.test:8443/...
+      SSL_CERT_FILE: /certs/ca.crt
+      REQUESTS_CA_BUNDLE: /certs/ca.crt
     volumes:
       - broker-certs:/broker-certs:ro
-    # SQLite DB on tmpfs: smoke is ephemeral, no persistence needed, and
-    # tmpfs sidesteps permission issues on root-owned named volumes for
-    # the non-root appuser inside the image.
-    tmpfs:
-      - /data:uid=999,gid=999,mode=0700
+      - test-certs:/certs:ro
     expose: ["8000"]
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
@@ -274,6 +331,7 @@ volumes:
   bootstrap-state:
   proxy-a-data:
   proxy-b-data:
+  postgres-data:
 
 networks:
   default:

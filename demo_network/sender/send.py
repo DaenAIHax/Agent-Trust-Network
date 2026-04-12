@@ -35,11 +35,19 @@ def main() -> int:
         client.login(AGENT_ID, ORG_ID, CERT_PATH, KEY_PATH)
 
         print(f"sender: opening session with {PEER_AGENT}")
-        session_id = client.open_session(
-            target_agent_id=PEER_AGENT,
-            target_org_id=PEER_ORG,
-            capabilities=["message.receive"],
-        )
+        try:
+            session_id = client.open_session(
+                target_agent_id=PEER_AGENT,
+                target_org_id=PEER_ORG,
+                capabilities=["message.exchange"],
+            )
+        except Exception as exc:
+            # Surface the broker response body — the SDK only raises a generic
+            # HTTPStatusError which loses the JSON detail that tells us why.
+            import httpx as _h
+            if isinstance(exc, _h.HTTPStatusError):
+                print(f"sender: open_session failed — body: {exc.response.text[:500]}")
+            raise
 
         # The session is pending until the checker accepts it. Wait up to 30s.
         for attempt in range(30):

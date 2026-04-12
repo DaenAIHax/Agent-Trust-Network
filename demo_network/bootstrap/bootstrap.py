@@ -42,7 +42,8 @@ ORGS = [
     {
         "org_id": "demo-org-a", "display_name": "Demo Org A", "flow": "join",
         "agent_role": "sender",
-        "capabilities": ["message.send"],
+        "capabilities": ["message.exchange"],
+        "webhook_url": "https://proxy-a.cullis.test:8443/pdp/policy",
     },
     # Onboarding via admin-register + POST /onboarding/attach (simulates the
     # realistic enterprise path where the broker admin creates the org before
@@ -50,7 +51,8 @@ ORGS = [
     {
         "org_id": "demo-org-b", "display_name": "Demo Org B", "flow": "attach",
         "agent_role": "checker",
-        "capabilities": ["message.receive"],
+        "capabilities": ["message.exchange"],
+        "webhook_url": "https://proxy-b.cullis.test:8443/pdp/policy",
     },
 ]
 
@@ -141,6 +143,7 @@ def _onboard_via_join(client: httpx.Client, org: dict, cert_pem: bytes,
         "ca_certificate": cert_pem.decode(),
         "contact_email": f"admin@{org_id}.test",
         "invite_token": token,
+        "webhook_url": org.get("webhook_url"),
     })
     if r.status_code != 202:
         raise SystemExit(f"join failed for {org_id}: HTTP {r.status_code} {r.text}")
@@ -279,11 +282,12 @@ def _onboard_via_attach(client: httpx.Client, org: dict, cert_pem: bytes,
     r.raise_for_status()
     token = r.json()["token"]
 
-    # 3. Proxy side calls /onboarding/attach with its chosen secret.
+    # 3. Proxy side calls /onboarding/attach with its chosen secret + PDP URL.
     r = client.post(f"{BROKER_URL}/v1/onboarding/attach", json={
         "ca_certificate": cert_pem.decode(),
         "invite_token": token,
         "secret": org_secret,
+        "webhook_url": org.get("webhook_url"),
     })
     if r.status_code != 200:
         raise SystemExit(f"attach failed for {org_id}: HTTP {r.status_code} {r.text}")

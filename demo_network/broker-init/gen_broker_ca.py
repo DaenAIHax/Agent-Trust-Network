@@ -5,11 +5,17 @@ Generates a self-signed broker root CA (RSA-4096, 10y) at
 /broker-certs/broker-ca.pem + broker-ca-key.pem, idempotent.
 The broker container mounts this volume read-only.
 
+If VAULT_ADDR + VAULT_TOKEN are set we also push the private key PEM and
+the public key PEM into Vault at VAULT_SECRET_PATH, because the broker
+with KMS_BACKEND=vault reads them from there at startup (smoke runs in
+prod-like mode with Vault enabled).
+
 Deliberately standalone — avoids pulling the full app package into the
 init container, so this service has a tiny image and no app-code churn
 risk.
 """
 import datetime
+import os
 import pathlib
 import sys
 
@@ -23,8 +29,55 @@ OUT.mkdir(parents=True, exist_ok=True)
 KEY = OUT / "broker-ca-key.pem"
 CRT = OUT / "broker-ca.pem"
 
+
+def _maybe_push_to_vault(priv_pem: bytes, pub_pem: bytes) -> None:
+    """Push broker keys to Vault at VAULT_SECRET_PATH if Vault is configured."""
+    vault_addr = os.environ.get("VAULT_ADDR", "")
+    vault_token = os.environ.get("VAULT_TOKEN", "")
+    # Path is kv/v2-style, e.g. "secret/data/broker". Extract the mount +
+    # logical path — write uses the same path shape as read for kv-v2.
+    secret_path = os.environ.get("VAULT_SECRET_PATH", "secret/data/broker")
+    if not vault_addr or not vault_token:
+        print("broker-init: VAULT_ADDR/VAULT_TOKEN not set, skipping Vault push")
+        return
+
+    import httpx
+    import time
+
+    url = f"{vault_addr.rstrip('/')}/v1/{secret_path}"
+    body = {
+        "data": {
+            "private_key_pem": priv_pem.decode(),
+            "public_key_pem":  pub_pem.decode(),
+        }
+    }
+    # Vault may still be warming up — retry briefly.
+    last_exc: Exception | None = None
+    for attempt in range(20):
+        try:
+            r = httpx.post(url, json=body,
+                           headers={"X-Vault-Token": vault_token},
+                           timeout=5.0)
+            if r.status_code in (200, 204):
+                print(f"broker-init: pushed broker keys to Vault at {secret_path}")
+                return
+            last_exc = RuntimeError(f"HTTP {r.status_code}: {r.text[:200]}")
+        except Exception as exc:
+            last_exc = exc
+        time.sleep(1)
+    raise SystemExit(f"broker-init: Vault push failed after retries: {last_exc}")
+
+
 if KEY.exists() and CRT.exists():
-    print(f"broker-init: CA already present at {OUT}, skipping")
+    print(f"broker-init: CA already present at {OUT}, re-using for Vault push")
+    priv_existing = KEY.read_bytes()
+    cert_existing = CRT.read_bytes()
+    cert_obj = x509.load_pem_x509_certificate(cert_existing)
+    pub_existing = cert_obj.public_key().public_bytes(
+        serialization.Encoding.PEM,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    _maybe_push_to_vault(priv_existing, pub_existing)
     sys.exit(0)
 
 print("broker-init: generating broker root CA (RSA-4096)")
@@ -47,15 +100,24 @@ cert = (
     .sign(key, hashes.SHA256())
 )
 
-KEY.write_bytes(key.private_bytes(
+priv_pem = key.private_bytes(
     serialization.Encoding.PEM,
     serialization.PrivateFormat.PKCS8,
     serialization.NoEncryption(),
-))
-CRT.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+)
+cert_pem = cert.public_bytes(serialization.Encoding.PEM)
+pub_pem = key.public_key().public_bytes(
+    serialization.Encoding.PEM,
+    serialization.PublicFormat.SubjectPublicKeyInfo,
+)
+
+KEY.write_bytes(priv_pem)
+CRT.write_bytes(cert_pem)
 
 # Broker runs as non-root 'appuser' — make files world-readable.
 KEY.chmod(0o644)
 CRT.chmod(0o644)
 
 print(f"broker-init: wrote {CRT} + {KEY}")
+
+_maybe_push_to_vault(priv_pem, pub_pem)
