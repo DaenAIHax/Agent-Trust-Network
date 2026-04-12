@@ -10,11 +10,7 @@ by the smoke tests; here we focus on:
 """
 from __future__ import annotations
 
-import json
-
 import pytest
-
-from app.broker.models import SessionStatus
 
 
 # ─────────────────────────────────────────────────────────────────────
