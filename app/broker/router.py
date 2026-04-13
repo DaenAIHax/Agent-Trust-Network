@@ -966,7 +966,13 @@ async def _drain_queue_for_agent(
     from app.telemetry_metrics import WS_QUEUE_DRAINED_COUNTER
     import json as _json_inner
 
-    pending = await mq.fetch_pending_for_recipient(db, agent_id)
+    try:
+        pending = await asyncio.wait_for(
+            mq.fetch_pending_for_recipient(db, agent_id), timeout=3.0,
+        )
+    except asyncio.TimeoutError:
+        _log.warning("drain: fetch_pending_for_recipient exceeded 3s for %s — skipping", agent_id)
+        return 0
     for q in pending:
         try:
             payload = _json_inner.loads(q.ciphertext.decode())

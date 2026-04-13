@@ -82,7 +82,10 @@ async def _sweep_message_queue() -> int:
 
     try:
         async with AsyncSessionLocal() as db:
-            notices = await mq.sweep_expired(db)
+            notices = await asyncio.wait_for(mq.sweep_expired(db), timeout=5.0)
+    except asyncio.TimeoutError:
+        _log.warning("sweeper: message queue sweep exceeded 5s — skipping this cycle")
+        return 0
     except Exception:
         _log.exception("sweeper: message queue sweep failed")
         return 0
