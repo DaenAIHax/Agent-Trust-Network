@@ -142,7 +142,7 @@ async def _register_agent_with_spiffe(
     client: AsyncClient,
     agent_id: str,
     org_id: str,
-    trust_domain: str = "atn.local",
+    trust_domain: str = "cullis.local",
 ):
     """Registra org + CA + agente + binding approvato, con SAN SPIFFE nel cert."""
     org_secret = org_id + "-secret"
@@ -184,7 +184,7 @@ async def test_jwt_sub_e_spiffe_id(client: AsyncClient, dpop):
     """
     agent_id = "spiffe-jwt-org::agent-1"
     org_id = "spiffe-jwt-org"
-    trust_domain = "atn.local"
+    trust_domain = "cullis.local"
 
     await _register_agent_with_spiffe(client, agent_id, org_id, trust_domain)
 
@@ -247,7 +247,7 @@ async def test_autenticazione_con_san_corretto(client: AsyncClient, dpop):
 
     await _register_agent_with_spiffe(client, agent_id, org_id)
 
-    assertion = make_assertion(agent_id, org_id, trust_domain="atn.local")
+    assertion = make_assertion(agent_id, org_id, trust_domain="cullis.local")
     proof = dpop.proof("POST", "/v1/auth/token")
     resp = await client.post(
         "/v1/auth/token",
@@ -316,7 +316,7 @@ async def test_registry_espone_agent_uri(client: AsyncClient, dpop):
     await _register_agent_with_spiffe(client, agent_id, org_id)
 
     # Ottieni token per fare la query
-    token = await dpop.get_token(client, agent_id, org_id, trust_domain="atn.local")
+    token = await dpop.get_token(client, agent_id, org_id, trust_domain="cullis.local")
 
     resp = await client.get(
         "/v1/registry/agents",
@@ -328,4 +328,4 @@ async def test_registry_espone_agent_uri(client: AsyncClient, dpop):
     agent = next(a for a in agents if a["agent_id"] == agent_id)
     assert "agent_uri" in agent
     assert agent["agent_uri"].startswith("spiffe://")
-    assert agent["agent_uri"] == f"spiffe://atn.local/{org_id}/agent-1"
+    assert agent["agent_uri"] == f"spiffe://cullis.local/{org_id}/agent-1"
