@@ -71,7 +71,16 @@ async def _sweep_message_queue() -> int:
 
     Runs on each sweeper cycle. Isolated so DB or WS failures don't
     kill the session sweep. Returns the number of messages expired.
+
+    Skipped under pytest (``PYTEST_CURRENT_TEST`` env set): the sweep
+    contends with the in-memory SQLite StaticPool used in tests and can
+    deadlock the suite. The queue expiry behaviour is covered directly
+    by ``tests/test_m3_sweeper_ttl.py`` calling this function in
+    isolation, so we don't lose coverage.
     """
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return 0
+
     try:
         from app.broker import message_queue as mq
         from app.broker.ws_manager import ws_manager

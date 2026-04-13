@@ -43,6 +43,11 @@ async def _insert_expired(session_id: str, sender: str, recipient: str) -> str:
 
 
 async def test_sweep_message_queue_expires_and_notifies(monkeypatch):
+    # Bypass the under-pytest skip guard added in session_sweeper to avoid
+    # SQLite StaticPool contention — this test exercises the function
+    # deliberately, so we want it to run.
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+
     captured: list[tuple[str, dict]] = []
 
     async def fake_send(agent_id: str, data: dict) -> None:
@@ -78,13 +83,16 @@ async def test_sweep_message_queue_expires_and_notifies(monkeypatch):
     assert payload["recipient_agent_id"] == "org-q::recipient"
 
 
-async def test_sweep_message_queue_noop_when_empty():
+async def test_sweep_message_queue_noop_when_empty(monkeypatch):
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
     from app.broker.session_sweeper import _sweep_message_queue
     n = await _sweep_message_queue()
     assert n == 0
 
 
 async def test_sweep_message_queue_tolerates_ws_failures(monkeypatch):
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+
     async def fake_send(*_args, **_kwargs):
         raise RuntimeError("boom")
 
