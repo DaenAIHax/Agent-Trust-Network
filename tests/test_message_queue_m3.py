@@ -6,7 +6,6 @@ imp/m0_storage_spike.md) but the schema and ops are dialect-portable.
 """
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime, timedelta, timezone
 
 import pytest
