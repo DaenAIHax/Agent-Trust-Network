@@ -459,6 +459,16 @@ async def close_session(
 async def send_message(
     session_id: str,
     envelope: MessageEnvelope,
+    ttl_seconds: int = Query(
+        default=300, ge=1, le=86400,
+        description="TTL for queued delivery when recipient is offline (M3). "
+                    "Ignored on direct WS push.",
+    ),
+    idempotency_key: str | None = Query(
+        default=None, max_length=128,
+        description="Optional dedupe key — a retry with the same "
+                    "(recipient_agent_id, idempotency_key) returns the same queued msg_id (M3).",
+    ),
     current_agent: TokenPayload = Depends(get_current_agent),
     store: SessionStore = Depends(get_session_store),
     db: AsyncSession = Depends(get_db),
@@ -469,7 +479,9 @@ async def send_message(
       - session is active and not expired
       - sender is a legitimate participant
       - nonce has not already been used (replay protection)
-    After saving, pushes the message via WS to the recipient if connected.
+    If the recipient is connected locally, the message is pushed via WS.
+    Otherwise it is persisted in the proxy message queue (M3) and drained
+    on the recipient's next WS connect/resume.
     """
     await rate_limiter.check(current_agent.agent_id, "broker.message")
 
@@ -652,7 +664,7 @@ async def send_message(
                     })
     _log.info("✔ message accepted + audit logged  (seq=%d, session=%s)", seq, session_id)
 
-    # Push WS to the recipient if connected
+    # ── Delivery: WS push if recipient locally connected, else enqueue (M3) ──
     recipient_id = (
         session.target_agent_id
         if current_agent.agent_id == session.initiator_agent_id
@@ -672,8 +684,106 @@ async def send_message(
         if envelope.client_seq is not None:
             ws_msg["message"]["client_seq"] = envelope.client_seq
         await ws_manager.send_to_agent(recipient_id, ws_msg)
+        response: dict = {"status": "accepted", "session_id": session_id}
+    else:
+        from app.broker import message_queue as mq
+        from app.telemetry_metrics import (
+            MESSAGE_QUEUED_COUNTER, MESSAGE_QUEUE_DEDUPED_COUNTER,
+        )
+        ciphertext = _json.dumps(
+            envelope.payload, sort_keys=True, separators=(",", ":")
+        ).encode()
+        msg_id, inserted = await mq.enqueue(
+            db,
+            session_id=session_id,
+            recipient_agent_id=recipient_id,
+            sender_agent_id=current_agent.agent_id,
+            ciphertext=ciphertext,
+            seq=seq,
+            ttl_seconds=ttl_seconds,
+            idempotency_key=idempotency_key,
+        )
+        if inserted:
+            MESSAGE_QUEUED_COUNTER.add(1)
+        else:
+            MESSAGE_QUEUE_DEDUPED_COUNTER.add(1)
+        await log_event(
+            db, "broker.message_queued",
+            "ok" if inserted else "deduped",
+            agent_id=current_agent.agent_id, session_id=session_id,
+            org_id=current_agent.org,
+            details={
+                "msg_id": msg_id,
+                "recipient_agent_id": recipient_id,
+                "ttl_seconds": ttl_seconds,
+                "idempotency_key": idempotency_key,
+                "inserted": inserted,
+            },
+        )
+        response = {
+            "status": "queued",
+            "session_id": session_id,
+            "msg_id": msg_id,
+            "deduped": not inserted,
+        }
 
-    return {"status": "accepted", "session_id": session_id}
+    return response
+
+
+@router.post(
+    "/sessions/{session_id}/messages/{msg_id}/ack",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def ack_queued_message(
+    session_id: str,
+    msg_id: str,
+    current_agent: TokenPayload = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """Acknowledge a queued message (M3.6).
+
+    Called by the recipient SDK after it has successfully decrypted and
+    processed a message delivered via the queue-drain path. Scoped to
+    the caller's agent_id so an attacker who guesses a msg_id cannot
+    ack someone else's message.
+
+    Returns 204 on success, 404 if the message does not exist for this
+    recipient, 409 if it is already delivered or has expired.
+    """
+    _validate_session_id(session_id)
+    if not _UUID_RE.match(msg_id):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="msg_id must be a UUID")
+
+    from app.broker import message_queue as mq
+    from app.broker.db_models import ProxyMessageQueueRecord
+    from sqlalchemy import select as _select
+
+    ok = await mq.mark_delivered(
+        db, msg_id, recipient_agent_id=current_agent.agent_id,
+    )
+    if ok:
+        await log_event(
+            db, "broker.message_acked", "ok",
+            agent_id=current_agent.agent_id, session_id=session_id,
+            org_id=current_agent.org,
+            details={"msg_id": msg_id},
+        )
+        return
+
+    # Distinguish missing vs already-terminal to give the SDK a clear signal.
+    existing = (await db.execute(
+        _select(ProxyMessageQueueRecord.delivery_status).where(
+            ProxyMessageQueueRecord.msg_id == msg_id,
+            ProxyMessageQueueRecord.recipient_agent_id == current_agent.agent_id,
+        )
+    )).scalar_one_or_none()
+    if existing is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Message not found for this recipient")
+    # delivered (1) or expired (2) — terminal state, ack is a no-op 409.
+    raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                        detail="Message already in a terminal state")
 
 
 @router.get("/sessions", response_model=list[SessionResponse])
@@ -839,6 +949,60 @@ async def get_rfq_status(
     return result
 
 
+async def _drain_queue_for_agent(
+    websocket: WebSocket,
+    agent_id: str,
+    db: AsyncSession,
+) -> int:
+    """Push queued offline messages to the just-connected agent (M3.6).
+
+    Called after ``auth_ok`` and at the end of ``_handle_ws_resume``.
+    Messages stay in the queue (status=pending) until the recipient
+    ack's via POST /messages/{msg_id}/ack — this function only pushes
+    the frames, it does not mutate state. Delivered frames carry
+    ``queued: true`` and ``msg_id`` so the SDK knows to ack.
+    """
+    import os as _os
+    if _os.environ.get("CULLIS_DISABLE_QUEUE_OPS") == "1":
+        # Set by tests/conftest.py to avoid SQLite StaticPool contention
+        # with test_ws TestClient lifecycles. Drain logic is covered by
+        # tests/test_m3_ws_drain.py with a FakeWS + isolated DB.
+        return 0
+
+    from app.broker import message_queue as mq
+    from app.telemetry_metrics import WS_QUEUE_DRAINED_COUNTER
+    import json as _json_inner
+
+    try:
+        pending = await asyncio.wait_for(
+            mq.fetch_pending_for_recipient(db, agent_id), timeout=3.0,
+        )
+    except asyncio.TimeoutError:
+        _log.warning("drain: fetch_pending_for_recipient exceeded 3s for %s — skipping", agent_id)
+        return 0
+    for q in pending:
+        try:
+            payload = _json_inner.loads(q.ciphertext.decode())
+        except Exception:
+            _log.exception("drain: bad ciphertext in queue row %s", q.msg_id)
+            continue
+        await websocket.send_json({
+            "type": "new_message",
+            "session_id": q.session_id,
+            "msg_id": q.msg_id,
+            "queued": True,
+            "message": {
+                "seq": q.seq,
+                "sender_agent_id": q.sender_agent_id,
+                "payload": payload,
+                "timestamp": q.enqueued_at.isoformat(),
+            },
+        })
+    if pending:
+        WS_QUEUE_DRAINED_COUNTER.add(len(pending))
+    return len(pending)
+
+
 _WS_AUTH_TIMEOUT = 10  # seconds — max time to wait for initial auth message
 
 
@@ -928,6 +1092,12 @@ async def _handle_ws_resume(
             "message": m,
             "replayed": True,
         })
+
+    # M3.6 — after in-session replay, drain offline queue for this agent.
+    try:
+        await _drain_queue_for_agent(websocket, agent_id, db)
+    except Exception:
+        _log.exception("WS drain failed for agent %s (resume path)", agent_id)
 
 
 @router.websocket("/ws")
@@ -1051,6 +1221,13 @@ async def websocket_endpoint(websocket: WebSocket, db: AsyncSession = Depends(ge
             await websocket.close()
             return
         await websocket.send_json({"type": "auth_ok", "agent_id": agent_id})
+
+        # M3.6 — drain any offline-queued messages for this agent.
+        # Best-effort: drain failures don't abort the WS session.
+        try:
+            await _drain_queue_for_agent(websocket, agent_id, db)
+        except Exception:
+            _log.exception("WS drain failed for agent %s (auth_ok path)", agent_id)
 
         # Step 4: keepalive loop with M2 server-initiated heartbeat.
         _WS_IDLE_TIMEOUT = 300   # 5 minutes — upper bound on total client inactivity
