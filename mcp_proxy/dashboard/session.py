@@ -149,6 +149,11 @@ async def verify_csrf(request: Request, session: ProxyDashboardSession) -> bool:
 
 # ─────────────────────────────────────────────────────────────────────────────
 # OIDC flow state cookie — short-lived, signed, single-purpose
+#
+# NOTE: set_oidc_state / get_oidc_state / clear_oidc_state duplicate the
+# equivalent helpers in app/dashboard/session.py (only the cookie name
+# differs: atn_session → mcp_proxy_session). Will be extracted to
+# cullis_core/ shared lib in a follow-up refactor.
 # ─────────────────────────────────────────────────────────────────────────────
 
 _OIDC_STATE_COOKIE = "mcp_proxy_oidc_state"

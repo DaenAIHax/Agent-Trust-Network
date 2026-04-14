@@ -1,3 +1,10 @@
+# NOTE: Protocol logic (PKCE + discovery + token exchange + id_token
+# validation) is duplicated from app/dashboard/oidc.py. The proxy package
+# cannot import from the broker package (they are separate services), so
+# we carry a trimmed copy here (no role/org_id, no role-mapping helper,
+# proxy_config KV instead of DB tables). This duplication will be
+# extracted to a shared cullis_core/ lib in a follow-up refactor
+# (tracked: ADR for shared lib).
 """
 OIDC (OpenID Connect) client for the MCP Proxy dashboard.
 
@@ -7,10 +14,6 @@ Per-proxy OIDC config is stored in proxy_config under the keys:
   - oidc_issuer_url
   - oidc_client_id
   - oidc_client_secret
-
-This module mirrors app/dashboard/oidc.py but is intentionally standalone:
-the proxy package never imports from the broker package (see mcp_proxy
-top-level rule).
 """
 from __future__ import annotations
 
