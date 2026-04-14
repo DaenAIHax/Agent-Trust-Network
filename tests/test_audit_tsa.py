@@ -13,7 +13,7 @@ from app.audit.tsa_client import (
     get_tsa_client,
 )
 from app.audit.tsa_worker import anchor_all_orgs_once
-from app.db.audit import AuditLog, AuditTsaAnchor, log_event, log_event_cross_org
+from app.db.audit import AuditLog, AuditTsaAnchor, log_event
 from tests.conftest import TestSessionLocal
 
 
