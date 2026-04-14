@@ -14,6 +14,7 @@ is internal-facing (loopback or LAN); if logs capture URLs, redact the
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, Query, WebSocket
@@ -68,8 +69,17 @@ async def local_ws(
         # ADR-001 Phase 3c — drain any messages that were enqueued while
         # this agent was offline. Each replay carries queued:true so the
         # SDK can skip duplicate business handlers if the flow is idempotent.
+        # Guarded with a timeout so a slow DB can't stall the WS accept
+        # indefinitely — pending rows remain in the queue for the next
+        # reconnect.
         try:
-            pending = await local_queue.fetch_pending_for_recipient(agent_id)
+            pending = await asyncio.wait_for(
+                local_queue.fetch_pending_for_recipient(agent_id),
+                timeout=5.0,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("Local queue drain timed out for %s", agent_id)
+            pending = []
         except Exception as exc:
             logger.warning("Local queue drain failed for %s: %s", agent_id, exc)
             pending = []
