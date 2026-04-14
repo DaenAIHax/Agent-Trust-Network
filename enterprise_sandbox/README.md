@@ -41,6 +41,22 @@ Modello federazione Cullis: **1 broker condiviso** + N org che attach-ano la pro
 
 Ogni proxy è attached a org-internal + public-wan (fa da bridge). IdP/Vault/SPIRE/agent chiusi dentro org-internal. Le 2 org non si vedono tra loro se non via broker.
 
+## Browser OIDC login (manuale)
+
+Aggiungi al tuo `/etc/hosts`:
+```
+127.0.0.1 keycloak-a keycloak-b
+```
+
+Poi browse:
+- Broker dashboard: http://localhost:8000/
+- Login via Keycloak-a (Org A): http://localhost:8000/dashboard/oidc/start?role=org&org_id=orga
+  - credenziali: `alice` / `alice-sandbox`
+- Login via Keycloak-b (Org B): http://localhost:8000/dashboard/oidc/start?role=org&org_id=orgb
+  - credenziali: `bob` / `bob-sandbox`
+- Keycloak admin-a: http://localhost:8180/ (admin / admin-sandbox)
+- Keycloak admin-b: http://localhost:8280/ (admin / admin-sandbox)
+
 ## File di riferimento
 
 - `imp/enterprise_sandbox_plan.md` — piano completo 6 blocchi

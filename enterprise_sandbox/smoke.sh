@@ -78,7 +78,7 @@ echo "[smoke] Blocco 3 — Keycloak OIDC per org"
 # B3.1 — Keycloak-a OIDC discovery reachable from broker
 if docker exec enterprise_sandbox-broker-1 python -c "
 import urllib.request
-urllib.request.urlopen('http://keycloak-a:8080/realms/orga/.well-known/openid-configuration')
+urllib.request.urlopen('http://keycloak-a:8180/realms/orga/.well-known/openid-configuration')
 " 2>/dev/null; then
     pass "B3.1 keycloak-a realm 'orga' discovery OK"
 else
@@ -88,7 +88,7 @@ fi
 # B3.2 — Keycloak-b OIDC discovery reachable from broker
 if docker exec enterprise_sandbox-broker-1 python -c "
 import urllib.request
-urllib.request.urlopen('http://keycloak-b:8080/realms/orgb/.well-known/openid-configuration')
+urllib.request.urlopen('http://keycloak-b:8280/realms/orgb/.well-known/openid-configuration')
 " 2>/dev/null; then
     pass "B3.2 keycloak-b realm 'orgb' discovery OK"
 else
@@ -100,7 +100,7 @@ oidc_a=$(docker exec enterprise_sandbox-postgres-1 psql -U atn -d agent_trust -A
     "SELECT oidc_issuer_url FROM organizations WHERE org_id='orga';")
 oidc_b=$(docker exec enterprise_sandbox-postgres-1 psql -U atn -d agent_trust -Atc \
     "SELECT oidc_issuer_url FROM organizations WHERE org_id='orgb';")
-if [[ "$oidc_a" == "http://keycloak-a:8080/realms/orga" && "$oidc_b" == "http://keycloak-b:8080/realms/orgb" ]]; then
+if [[ "$oidc_a" == "http://keycloak-a:8180/realms/orga" && "$oidc_b" == "http://keycloak-b:8280/realms/orgb" ]]; then
     pass "B3.3 per-org OIDC config wired in broker DB"
 else
     fail "B3.3 OIDC config wired (orga=$oidc_a orgb=$oidc_b)"
@@ -114,11 +114,11 @@ data = urllib.parse.urlencode({
     'client_secret':'orga-oidc-client-secret-change-me',
     'username':'alice','password':'alice-sandbox','scope':'openid email'
 }).encode()
-t = json.loads(urllib.request.urlopen('http://keycloak-a:8080/realms/orga/protocol/openid-connect/token', data=data).read())
+t = json.loads(urllib.request.urlopen('http://keycloak-a:8180/realms/orga/protocol/openid-connect/token', data=data).read())
 p = json.loads(base64.urlsafe_b64decode(t['id_token'].split('.')[1]+'==='))
 print(p['iss']+'|'+p['email'])
 " 2>/dev/null)
-if [[ "$b34" == "http://keycloak-a:8080/realms/orga|alice@orga.test" ]]; then
+if [[ "$b34" == "http://keycloak-a:8180/realms/orga|alice@orga.test" ]]; then
     pass "B3.4 alice@orga OIDC login → id_token valid"
 else
     fail "B3.4 alice OIDC login (got: $b34)"
@@ -132,12 +132,42 @@ data = urllib.parse.urlencode({
     'client_secret':'orga-oidc-client-secret-change-me',
     'username':'bob','password':'bob-sandbox','scope':'openid'
 }).encode()
-try: urllib.request.urlopen('http://keycloak-a:8080/realms/orga/protocol/openid-connect/token', data=data); exit(1)
+try: urllib.request.urlopen('http://keycloak-a:8180/realms/orga/protocol/openid-connect/token', data=data); exit(1)
 except Exception: exit(0)
 " 2>/dev/null; then
     pass "B3.5 tenant isolation (bob rejected by keycloak-a)"
 else
     fail "B3.5 tenant isolation (bob accepted by keycloak-a — LEAK)"
+fi
+
+# B3.6 — Full browser OIDC login flow (auth code + token exchange + session)
+browser_flow() {
+    local org_id="$1" kc="$2" port="$3" user="$4" pass="$5"
+    local cj; cj=$(mktemp)
+    local au lp fa cu rc dash
+    au=$(curl -s -o /dev/null -w "%{redirect_url}" -c "$cj" -b "$cj" \
+        "http://localhost:8000/dashboard/oidc/start?role=org&org_id=$org_id") || { rm -f "$cj"; return 1; }
+    lp=$(curl -s --resolve "$kc:$port:127.0.0.1" -c "$cj" -b "$cj" -L "$au") || { rm -f "$cj"; return 1; }
+    fa=$(echo "$lp" | grep -oE 'action="[^"]+"' | head -1 | sed 's/action="//;s/"$//;s/&amp;/\&/g')
+    [[ -n "$fa" ]] || { rm -f "$cj"; return 1; }
+    cu=$(curl -s -o /dev/null -w "%{redirect_url}" --resolve "$kc:$port:127.0.0.1" -c "$cj" -b "$cj" \
+        -d "username=$user&password=$pass&credentialId=" "$fa")
+    rc=$(curl -s -o /dev/null -w "%{http_code}" -c "$cj" -b "$cj" "$cu")
+    dash=$(curl -s -o /dev/null -w "%{http_code}" -c "$cj" -b "$cj" -L "http://localhost:8000/dashboard/")
+    rm -f "$cj"
+    [[ "$rc" == "303" && "$dash" == "200" ]]
+}
+
+if browser_flow orga keycloak-a 8180 alice alice-sandbox; then
+    pass "B3.6 alice@orga full browser OIDC login → broker dashboard"
+else
+    fail "B3.6 alice@orga browser OIDC login"
+fi
+
+if browser_flow orgb keycloak-b 8280 bob bob-sandbox; then
+    pass "B3.7 bob@orgb full browser OIDC login → broker dashboard"
+else
+    fail "B3.7 bob@orgb browser OIDC login"
 fi
 
 # Upcoming

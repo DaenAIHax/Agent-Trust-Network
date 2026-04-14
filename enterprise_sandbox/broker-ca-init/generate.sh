@@ -24,7 +24,10 @@ openssl req -x509 -new -nodes -key "$KEY" -sha256 -days 3650 \
     -out "$CERT"
 
 chmod 644 "$CERT"
-chmod 600 "$KEY"
+# Broker runs as non-root; local KMS derives encryption key from this PEM
+# and needs read access. World-readable is acceptable in sandbox since the
+# CA is ephemeral test material (not a real production key).
+chmod 644 "$KEY"
 
 echo "[broker-ca-init:$ORG_ID] generated broker CA"
 openssl x509 -in "$CERT" -noout -subject -dates
