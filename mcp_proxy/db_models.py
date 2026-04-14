@@ -71,6 +71,49 @@ class ProxyConfig(Base):
     value = Column(Text, nullable=False)
 
 
+class PendingEnrollment(Base):
+    """Connector enrollment requests awaiting admin decision.
+
+    Lifecycle: pending → approved (cert issued) | rejected | expired.
+    The requester supplies identity (name/email/reason) and a public key.
+    The admin chooses agent_id + capabilities + groups and signs the cert —
+    the requester never influences those values.
+    """
+    __tablename__ = "pending_enrollments"
+
+    session_id = Column(Text, primary_key=True)
+    pubkey_pem = Column(Text, nullable=False)
+    pubkey_fingerprint = Column(Text, nullable=False)  # SHA-256 hex of SubjectPublicKeyInfo DER
+    requester_name = Column(Text, nullable=False)
+    requester_email = Column(Text, nullable=False)
+    reason = Column(Text, nullable=True)
+    device_info = Column(Text, nullable=True)  # free-form JSON from SDK
+    status = Column(
+        Text, nullable=False, server_default="pending"
+    )  # pending | approved | rejected | expired
+    created_at = Column(Text, nullable=False)
+    expires_at = Column(Text, nullable=False)
+
+    # Filled on admin decision
+    decided_at = Column(Text, nullable=True)
+    decided_by = Column(Text, nullable=True)
+
+    # Approved: admin-assigned fields and resulting cert
+    agent_id_assigned = Column(Text, nullable=True)
+    capabilities_assigned = Column(Text, nullable=True, server_default="[]")
+    groups_assigned = Column(Text, nullable=True, server_default="[]")
+    cert_pem = Column(Text, nullable=True)
+
+    # Rejected
+    rejection_reason = Column(Text, nullable=True)
+
+    __table_args__ = (
+        Index("idx_pending_enrollments_status", "status"),
+        Index("idx_pending_enrollments_created_at", "created_at"),
+        Index("idx_pending_enrollments_fingerprint", "pubkey_fingerprint"),
+    )
+
+
 # ── Local-* tables (ADR-001 Phase 1, unused until Phase 4) ───────────────────
 #
 # Minimal forward-compatible columns. Each table exists so that Phase 4 work
