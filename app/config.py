@@ -46,6 +46,11 @@ class Settings(BaseSettings):
     # (requires uvicorn --proxy-headers when behind a proxy).
     broker_public_url: str = ""
 
+    # ADR-002 — A2A protocol adapter at the broker edge. When false (default),
+    # /v1/a2a/* endpoints are not registered. Cullis-native surface stays
+    # always-on. Phase 2a only exposes read-only AgentCard + directory.
+    a2a_adapter: bool = False
+
     # OpenTelemetry — traces and metrics exported via OTLP/gRPC to Jaeger
     otel_enabled: bool = True
     otel_service_name: str = "cullis-broker"

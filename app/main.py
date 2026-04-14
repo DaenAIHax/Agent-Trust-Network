@@ -330,6 +330,14 @@ v1.include_router(broker_router)
 v1.include_router(policy_router)
 v1.include_router(onboarding_router)
 v1.include_router(admin_router)
+
+# ADR-002 Phase 2a — A2A protocol adapter (read-only AgentCard + directory).
+# Gated on settings.a2a_adapter (default False) so existing deployments
+# see no surface change.
+if settings.a2a_adapter:
+    from app.a2a.router import router as a2a_router
+    v1.include_router(a2a_router)
+
 app.include_router(v1)
 
 # ── Static files ─────────────────────────────────────────────────────────────
