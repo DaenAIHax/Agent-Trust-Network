@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import io
 from pathlib import Path
-from typing import Callable
 
 import pytest
 
@@ -109,7 +108,6 @@ def test_enroll_happy_path_persists_identity(
     tmp_path: Path, fake_httpx, monkeypatch
 ):
     # Use a real self-signed cert so load_identity round-trips the x509 parse.
-    import cullis_connector.identity as identity_pkg
     from cryptography import x509
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import ec
@@ -204,7 +202,6 @@ def test_enroll_raises_on_expired(tmp_path: Path, fake_httpx):
 
 def test_enroll_submits_pubkey_not_private_key(tmp_path: Path, fake_httpx):
     """Sanity check that we never send private material to the Site."""
-    import cullis_connector.identity as identity_pkg  # noqa: F401
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric import ec
     from cryptography import x509
