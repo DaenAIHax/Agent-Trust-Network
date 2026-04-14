@@ -26,6 +26,9 @@ networks:
 volumes:
   broker-ca:
   postgres-data:
+  bootstrap-state:
+  proxy-a-data:
+  proxy-b-data:
 
 services:
 
@@ -107,3 +110,117 @@ services:
       timeout: 3s
       retries: 20
       start_period: 15s
+
+  # ── Blocco 2: bootstrap creates 2 orgs on shared broker ────────────────────
+
+  bootstrap:
+    build: ./bootstrap
+    depends_on:
+      broker:
+        condition: service_healthy
+    environment:
+      BROKER_URL:   "http://broker:8000"
+      ADMIN_SECRET: "sandbox-admin-secret-change-me"
+      STATE_DIR:    /state
+    volumes:
+      - bootstrap-state:/state
+    networks: [public-wan]
+    restart: "no"
+
+  # ── Org A proxy ────────────────────────────────────────────────────────────
+
+  proxy-a-init:
+    build: ./proxy-init
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+    environment:
+      ORG_ID:           "orga"
+      BROKER_URL:       "http://broker:8000"
+      PROXY_PUBLIC_URL: "http://proxy-a:9100"
+      PROXY_DB_PATH:    /data/mcp_proxy.db
+      STATE_DIR:        /state
+    volumes:
+      - bootstrap-state:/state:ro
+      - proxy-a-data:/data
+    restart: "no"
+
+  proxy-a:
+    build:
+      context: ..
+      dockerfile: mcp_proxy/Dockerfile
+    depends_on:
+      proxy-a-init:
+        condition: service_completed_successfully
+    environment:
+      MCP_PROXY_BROKER_URL:        "http://broker:8000"
+      MCP_PROXY_BROKER_JWKS_URL:   "http://broker:8000/.well-known/jwks.json"
+      MCP_PROXY_PROXY_PUBLIC_URL:  "http://proxy-a:9100"
+      MCP_PROXY_ADMIN_SECRET:      "sandbox-proxy-admin-a"
+      MCP_PROXY_DATABASE_URL:      "sqlite+aiosqlite:////data/mcp_proxy.db"
+      MCP_PROXY_ORG_ID:            "orga"
+      MCP_PROXY_ALLOWED_ORIGINS:   "http://proxy-a:9100"
+      MCP_PROXY_ENVIRONMENT:       "development"
+    volumes:
+      - proxy-a-data:/data
+    networks:
+      orga-internal:
+        aliases: [proxy-a]
+      public-wan:
+        aliases: [proxy-a]
+    expose: ["9100"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9100/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  # ── Org B proxy ────────────────────────────────────────────────────────────
+
+  proxy-b-init:
+    build: ./proxy-init
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+    environment:
+      ORG_ID:           "orgb"
+      BROKER_URL:       "http://broker:8000"
+      PROXY_PUBLIC_URL: "http://proxy-b:9100"
+      PROXY_DB_PATH:    /data/mcp_proxy.db
+      STATE_DIR:        /state
+    volumes:
+      - bootstrap-state:/state:ro
+      - proxy-b-data:/data
+    restart: "no"
+
+  proxy-b:
+    build:
+      context: ..
+      dockerfile: mcp_proxy/Dockerfile
+    depends_on:
+      proxy-b-init:
+        condition: service_completed_successfully
+    environment:
+      MCP_PROXY_BROKER_URL:        "http://broker:8000"
+      MCP_PROXY_BROKER_JWKS_URL:   "http://broker:8000/.well-known/jwks.json"
+      MCP_PROXY_PROXY_PUBLIC_URL:  "http://proxy-b:9100"
+      MCP_PROXY_ADMIN_SECRET:      "sandbox-proxy-admin-b"
+      MCP_PROXY_DATABASE_URL:      "sqlite+aiosqlite:////data/mcp_proxy.db"
+      MCP_PROXY_ORG_ID:            "orgb"
+      MCP_PROXY_ALLOWED_ORIGINS:   "http://proxy-b:9100"
+      MCP_PROXY_ENVIRONMENT:       "development"
+    volumes:
+      - proxy-b-data:/data
+    networks:
+      orgb-internal:
+        aliases: [proxy-b]
+      public-wan:
+        aliases: [proxy-b]
+    expose: ["9100"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9100/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
