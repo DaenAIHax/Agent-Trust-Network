@@ -27,11 +27,14 @@ async def test_metrics_endpoint_does_not_require_auth(client: AsyncClient):
 
 async def test_metrics_endpoint_when_enabled(client: AsyncClient, monkeypatch):
     """When PROMETHEUS_ENABLED=true, /metrics returns the Prometheus text format."""
-    from app.config import get_settings
+    import app.main
 
-    # Patch the cached settings to enable Prometheus for this test only.
-    s = get_settings()
-    monkeypatch.setattr(s, "prometheus_enabled", True)
+    # Patch both the lru_cached settings *and* the module-level reference in
+    # app.main. If another test has called `get_settings.cache_clear()` earlier
+    # on this worker, `get_settings()` now returns a fresh instance while
+    # `app.main.settings` still references the original — the /metrics route
+    # reads from the latter, so we must flip the flag there too.
+    monkeypatch.setattr(app.main.settings, "prometheus_enabled", True)
 
     resp = await client.get("/metrics")
     assert resp.status_code == 200
