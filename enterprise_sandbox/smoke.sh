@@ -72,8 +72,75 @@ else
     fail "B2.5 proxy-a bridges to broker"
 fi
 
+echo ""
+echo "[smoke] Blocco 3 — Keycloak OIDC per org"
+
+# B3.1 — Keycloak-a OIDC discovery reachable from broker
+if docker exec enterprise_sandbox-broker-1 python -c "
+import urllib.request
+urllib.request.urlopen('http://keycloak-a:8080/realms/orga/.well-known/openid-configuration')
+" 2>/dev/null; then
+    pass "B3.1 keycloak-a realm 'orga' discovery OK"
+else
+    fail "B3.1 keycloak-a discovery"
+fi
+
+# B3.2 — Keycloak-b OIDC discovery reachable from broker
+if docker exec enterprise_sandbox-broker-1 python -c "
+import urllib.request
+urllib.request.urlopen('http://keycloak-b:8080/realms/orgb/.well-known/openid-configuration')
+" 2>/dev/null; then
+    pass "B3.2 keycloak-b realm 'orgb' discovery OK"
+else
+    fail "B3.2 keycloak-b discovery"
+fi
+
+# B3.3 — Per-org OIDC config wired in broker DB
+oidc_a=$(docker exec enterprise_sandbox-postgres-1 psql -U atn -d agent_trust -Atc \
+    "SELECT oidc_issuer_url FROM organizations WHERE org_id='orga';")
+oidc_b=$(docker exec enterprise_sandbox-postgres-1 psql -U atn -d agent_trust -Atc \
+    "SELECT oidc_issuer_url FROM organizations WHERE org_id='orgb';")
+if [[ "$oidc_a" == "http://keycloak-a:8080/realms/orga" && "$oidc_b" == "http://keycloak-b:8080/realms/orgb" ]]; then
+    pass "B3.3 per-org OIDC config wired in broker DB"
+else
+    fail "B3.3 OIDC config wired (orga=$oidc_a orgb=$oidc_b)"
+fi
+
+# B3.4 — End-to-end: alice@orga obtains id_token with correct issuer
+b34=$(docker exec enterprise_sandbox-broker-1 python -c "
+import urllib.request, urllib.parse, json, base64
+data = urllib.parse.urlencode({
+    'grant_type':'password','client_id':'cullis-broker-dashboard',
+    'client_secret':'orga-oidc-client-secret-change-me',
+    'username':'alice','password':'alice-sandbox','scope':'openid email'
+}).encode()
+t = json.loads(urllib.request.urlopen('http://keycloak-a:8080/realms/orga/protocol/openid-connect/token', data=data).read())
+p = json.loads(base64.urlsafe_b64decode(t['id_token'].split('.')[1]+'==='))
+print(p['iss']+'|'+p['email'])
+" 2>/dev/null)
+if [[ "$b34" == "http://keycloak-a:8080/realms/orga|alice@orga.test" ]]; then
+    pass "B3.4 alice@orga OIDC login → id_token valid"
+else
+    fail "B3.4 alice OIDC login (got: $b34)"
+fi
+
+# B3.5 — Tenant isolation: Keycloak-a does NOT have bob, Keycloak-b does NOT have alice
+if docker exec enterprise_sandbox-broker-1 python -c "
+import urllib.request, urllib.parse, json
+data = urllib.parse.urlencode({
+    'grant_type':'password','client_id':'cullis-broker-dashboard',
+    'client_secret':'orga-oidc-client-secret-change-me',
+    'username':'bob','password':'bob-sandbox','scope':'openid'
+}).encode()
+try: urllib.request.urlopen('http://keycloak-a:8080/realms/orga/protocol/openid-connect/token', data=data); exit(1)
+except Exception: exit(0)
+" 2>/dev/null; then
+    pass "B3.5 tenant isolation (bob rejected by keycloak-a)"
+else
+    fail "B3.5 tenant isolation (bob accepted by keycloak-a — LEAK)"
+fi
+
 # Upcoming
-skip "B3 Keycloak OIDC"              "Blocco 3 not yet implemented"
 skip "B4 SPIRE + SVID agent"         "Blocco 4 not yet implemented"
 skip "B5 full 10-assertion smoke"    "Blocco 5 not yet implemented"
 

@@ -111,6 +111,46 @@ services:
       retries: 20
       start_period: 15s
 
+  # ── Blocco 3: Keycloak IdP per org (OIDC) ──────────────────────────────────
+
+  keycloak-a:
+    image: quay.io/keycloak/keycloak:25.0
+    command: ["start-dev", "--import-realm", "--http-port=8080"]
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin-sandbox
+      KC_HTTP_ENABLED: "true"
+      KC_HOSTNAME_STRICT: "false"
+      KC_HEALTH_ENABLED: "true"
+    volumes:
+      - ./keycloak-seed/realm-orga.json:/opt/keycloak/data/import/realm-orga.json:ro
+    networks:
+      public-wan:
+        aliases: [keycloak-a]
+    expose: ["8080"]
+    ports: ["8180:8080"]
+    # Keycloak image has no curl/wget and /bin/sh doesn't support /dev/tcp.
+    # Rely on start_period (~30s cold start) + bootstrap's own probe.
+
+  keycloak-b:
+    image: quay.io/keycloak/keycloak:25.0
+    command: ["start-dev", "--import-realm", "--http-port=8080"]
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin-sandbox
+      KC_HTTP_ENABLED: "true"
+      KC_HOSTNAME_STRICT: "false"
+      KC_HEALTH_ENABLED: "true"
+    volumes:
+      - ./keycloak-seed/realm-orgb.json:/opt/keycloak/data/import/realm-orgb.json:ro
+    networks:
+      public-wan:
+        aliases: [keycloak-b]
+    expose: ["8080"]
+    ports: ["8280:8080"]
+    # Keycloak image has no curl/wget and /bin/sh doesn't support /dev/tcp.
+    # Rely on start_period (~30s cold start) + bootstrap's own probe.
+
   # ── Blocco 2: bootstrap creates 2 orgs on shared broker ────────────────────
 
   bootstrap:
@@ -118,10 +158,21 @@ services:
     depends_on:
       broker:
         condition: service_healthy
+      keycloak-a:
+        condition: service_started
+      keycloak-b:
+        condition: service_started
     environment:
       BROKER_URL:   "http://broker:8000"
       ADMIN_SECRET: "sandbox-admin-secret-change-me"
       STATE_DIR:    /state
+      POSTGRES_DSN: "postgresql://atn:atn-sandbox@postgres:5432/agent_trust"
+      ORGA_OIDC_ISSUER: "http://keycloak-a:8080/realms/orga"
+      ORGA_OIDC_CLIENT_ID: "cullis-broker-dashboard"
+      ORGA_OIDC_CLIENT_SECRET: "orga-oidc-client-secret-change-me"
+      ORGB_OIDC_ISSUER: "http://keycloak-b:8080/realms/orgb"
+      ORGB_OIDC_CLIENT_ID: "cullis-broker-dashboard"
+      ORGB_OIDC_CLIENT_SECRET: "orgb-oidc-client-secret-change-me"
     volumes:
       - bootstrap-state:/state
     networks: [public-wan]
