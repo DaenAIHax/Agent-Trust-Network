@@ -31,7 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.a2a.agent_card import build_agent_card
 from app.config import get_settings
 from app.db.database import get_db
-from app.registry.store import AgentRecord, get_agent_by_id, list_agents
+from app.registry.store import get_agent_by_id, list_agents
 
 logger = logging.getLogger("agent_trust.a2a")
 
