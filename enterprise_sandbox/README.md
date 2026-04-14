@@ -24,20 +24,22 @@ Blocco corrente: **1 — Scheletro + 2 broker cross-org** (in progress)
 
 ## Topologia
 
+Modello federazione Cullis: **1 broker condiviso** + N org che attach-ano la propria CA. Il cross-org avviene via quel broker (zero-knowledge, vede solo ciphertext E2E).
+
 ```
 ┌──────────────── public-wan ────────────────┐
-│    broker-a                  broker-b      │
-└────┬────────────────────────────┬──────────┘
-     │                            │
-┌────┼── orga-internal ──┐   ┌────┼── orgb-internal ──┐
-│  proxy-a connector-a   │   │  proxy-b connector-b   │
-│  agent-a               │   │  agent-b               │
-│  keycloak-a vault-a    │   │  keycloak-b vault-b    │
-│  spire-a               │   │  spire-b               │
-└────────────────────────┘   └────────────────────────┘
+│              broker (shared)               │
+└────┬──────────────────────────┬────────────┘
+     │                          │
+┌────┼── orga-internal ──┐  ┌───┼── orgb-internal ──┐
+│  proxy-a  (bridge)     │  │  proxy-b  (bridge)   │
+│  connector-a agent-a   │  │  connector-b agent-b │
+│  keycloak-a vault-a    │  │  keycloak-b vault-b  │
+│  spire-a               │  │  spire-b             │
+└────────────────────────┘  └──────────────────────┘
 ```
 
-Solo i broker attraversano `public-wan`. Tutto il resto è chiuso nella org-internal.
+Ogni proxy è attached a org-internal + public-wan (fa da bridge). IdP/Vault/SPIRE/agent chiusi dentro org-internal. Le 2 org non si vedono tra loro se non via broker.
 
 ## File di riferimento
 
