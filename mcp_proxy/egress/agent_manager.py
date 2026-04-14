@@ -134,6 +134,55 @@ class AgentManager:
         logger.info("Generated x509 cert for %s (SAN %s)", agent_id, spiffe_uri)
         return cert_pem, key_pem
 
+    def sign_external_pubkey(self, *, pubkey_pem: str, agent_name: str) -> str:
+        """Sign an externally-generated public key with the Org CA.
+
+        Used by the Connector enrollment flow: the Connector keeps its
+        private key on the user's machine and only submits the public key,
+        the admin approves, and the proxy issues a cert bound to that key.
+
+        Raises ``RuntimeError`` if the Org CA is not loaded or the PEM is
+        malformed. Accepts any key type the ``cryptography`` library can
+        load (RSA, EC, Ed25519); the resulting cert signature is always
+        SHA-256 per the existing convention.
+        """
+        if not self.ca_loaded:
+            raise RuntimeError("Org CA not loaded — call load_org_ca() first")
+
+        public_key = serialization.load_pem_public_key(pubkey_pem.encode())
+
+        agent_id = f"{self._org_id}::{agent_name}"
+        spiffe_uri = f"spiffe://{self._trust_domain}/{self._org_id}/{agent_name}"
+
+        subject = x509.Name([
+            x509.NameAttribute(NameOID.COMMON_NAME, agent_id),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, self._org_id),
+        ])
+
+        now = datetime.now(timezone.utc)
+        cert = (
+            x509.CertificateBuilder()
+            .subject_name(subject)
+            .issuer_name(self._org_ca_cert.subject)
+            .public_key(public_key)
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now)
+            .not_valid_after(now + timedelta(days=365))
+            .add_extension(
+                SubjectAlternativeName([
+                    UniformResourceIdentifier(spiffe_uri),
+                ]),
+                critical=False,
+            )
+            .sign(self._org_ca_key, hashes.SHA256())
+        )
+
+        cert_pem = cert.public_bytes(serialization.Encoding.PEM).decode()
+        logger.info(
+            "Signed external pubkey for %s (SAN %s)", agent_id, spiffe_uri
+        )
+        return cert_pem
+
     # ── Agent CRUD ──────────────────────────────────────────────────
 
     async def create_agent(

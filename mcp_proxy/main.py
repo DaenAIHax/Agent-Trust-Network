@@ -347,6 +347,9 @@ app.include_router(egress_router)
 from mcp_proxy.local.ws_router import router as local_ws_router
 app.include_router(local_ws_router)
 
+from mcp_proxy.enrollment.router import router as enrollment_router
+app.include_router(enrollment_router)
+
 from mcp_proxy.dashboard.router import router as dashboard_router
 app.include_router(dashboard_router)
 

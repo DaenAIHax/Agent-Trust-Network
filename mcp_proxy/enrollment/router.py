@@ -1,0 +1,238 @@
+"""FastAPI router for the Connector enrollment API.
+
+Two audiences share this router:
+
+* **Connector-side** (unauthenticated, keyed by an unguessable session_id):
+  - ``POST /v1/enrollment/start`` — start a pending request
+  - ``GET  /v1/enrollment/{session_id}/status`` — poll for decision
+
+* **Admin dashboard** (requires dashboard session + CSRF header):
+  - ``GET  /v1/admin/enrollments`` — list pending
+  - ``POST /v1/admin/enrollments/{session_id}/approve`` — approve
+  - ``POST /v1/admin/enrollments/{session_id}/reject`` — reject
+
+Identity on the Connector side is self-declared; the admin is the authority
+that decides what gets through. OIDC + SCIM layer on top later without
+changing this surface.
+"""
+from __future__ import annotations
+
+import hmac
+import json
+import logging
+
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import RedirectResponse
+
+from mcp_proxy.dashboard.session import (
+    ProxyDashboardSession,
+    require_login,
+)
+from mcp_proxy.db import get_db
+from mcp_proxy.enrollment import service
+from mcp_proxy.enrollment.schemas import (
+    EnrollmentApproveRequest,
+    EnrollmentRejectRequest,
+    EnrollmentStartRequest,
+    EnrollmentStartResponse,
+    EnrollmentStatusResponse,
+    PendingEnrollmentSummary,
+)
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(tags=["enrollment"])
+
+
+# ── Helpers ──────────────────────────────────────────────────────────────
+
+
+def _require_logged_in(request: Request) -> ProxyDashboardSession:
+    """Variant of ``require_login`` that raises HTTP 401 for JSON endpoints
+    instead of redirecting. The dashboard's existing HTML views continue to
+    use ``require_login`` (which redirects to ``/proxy/login``); our JSON
+    admin API shouldn't 303 an XHR."""
+    session = require_login(request)
+    if isinstance(session, RedirectResponse):
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return session
+
+
+def _verify_csrf_header(request: Request, session: ProxyDashboardSession) -> None:
+    """Check ``X-CSRF-Token`` header against the token bound to the session
+    cookie. Raises HTTP 403 on mismatch. Used for JSON mutations — the
+    form-based flow keeps using ``verify_csrf`` from the session module."""
+    token = request.headers.get("X-CSRF-Token", "")
+    if not session.csrf_token or not token:
+        raise HTTPException(status_code=403, detail="CSRF token missing")
+    if not hmac.compare_digest(token, session.csrf_token):
+        raise HTTPException(status_code=403, detail="CSRF token invalid")
+
+
+def _require_agent_manager(request: Request):
+    mgr = getattr(request.app.state, "agent_manager", None)
+    if mgr is None:
+        raise HTTPException(
+            status_code=503,
+            detail="agent_manager not initialized (complete broker setup first)",
+        )
+    return mgr
+
+
+# ── Connector-facing (unauthenticated, keyed by session_id) ──────────────
+
+
+@router.post(
+    "/v1/enrollment/start",
+    response_model=EnrollmentStartResponse,
+    status_code=201,
+)
+async def start_enrollment(
+    payload: EnrollmentStartRequest,
+    request: Request,
+) -> EnrollmentStartResponse:
+    try:
+        async with get_db() as conn:
+            started = await service.start_enrollment(
+                conn,
+                pubkey_pem=payload.pubkey_pem,
+                requester_name=payload.requester_name,
+                requester_email=payload.requester_email,
+                reason=payload.reason,
+                device_info=payload.device_info,
+            )
+    except service.EnrollmentError as exc:
+        raise HTTPException(status_code=exc.http_status, detail=str(exc)) from exc
+
+    base = str(request.base_url).rstrip("/")
+    logger.info(
+        "enrollment_started",
+        extra={
+            "session_id": started.session_id,
+            "requester_email": payload.requester_email,
+        },
+    )
+    return EnrollmentStartResponse(
+        session_id=started.session_id,
+        status="pending",
+        poll_url=f"{base}/v1/enrollment/{started.session_id}/status",
+        enroll_url=f"{base}/enroll?session={started.session_id}",
+        poll_interval_s=service.POLL_INTERVAL_S,
+        expires_at=started.expires_at.isoformat(timespec="seconds"),
+    )
+
+
+@router.get(
+    "/v1/enrollment/{session_id}/status",
+    response_model=EnrollmentStatusResponse,
+)
+async def enrollment_status(session_id: str) -> EnrollmentStatusResponse:
+    try:
+        async with get_db() as conn:
+            record = await service.get_record(conn, session_id)
+    except service.EnrollmentError as exc:
+        raise HTTPException(status_code=exc.http_status, detail=str(exc)) from exc
+
+    response = EnrollmentStatusResponse(
+        session_id=record["session_id"],
+        status=record["status"],  # type: ignore[arg-type]
+    )
+    if record["status"] == "approved":
+        response.agent_id = record["agent_id_assigned"]
+        response.cert_pem = record["cert_pem"]
+        caps_raw = record.get("capabilities_assigned") or "[]"
+        try:
+            response.capabilities = json.loads(caps_raw)
+        except json.JSONDecodeError:
+            response.capabilities = []
+    elif record["status"] == "rejected":
+        response.rejection_reason = record["rejection_reason"]
+    return response
+
+
+# ── Admin-facing (dashboard session required + CSRF) ─────────────────────
+
+
+@router.get(
+    "/v1/admin/enrollments",
+    response_model=list[PendingEnrollmentSummary],
+)
+async def admin_list_pending(request: Request) -> list[PendingEnrollmentSummary]:
+    _require_logged_in(request)
+    async with get_db() as conn:
+        rows = await service.list_pending(conn)
+    return [
+        PendingEnrollmentSummary(
+            session_id=r["session_id"],
+            requester_name=r["requester_name"],
+            requester_email=r["requester_email"],
+            reason=r.get("reason"),
+            device_info=r.get("device_info"),
+            pubkey_fingerprint=r["pubkey_fingerprint"],
+            created_at=r["created_at"],
+            expires_at=r["expires_at"],
+        )
+        for r in rows
+    ]
+
+
+@router.post("/v1/admin/enrollments/{session_id}/approve")
+async def admin_approve(
+    session_id: str,
+    payload: EnrollmentApproveRequest,
+    request: Request,
+) -> dict[str, str]:
+    session = _require_logged_in(request)
+    _verify_csrf_header(request, session)
+    agent_manager = _require_agent_manager(request)
+
+    try:
+        async with get_db() as conn:
+            record = await service.approve(
+                conn,
+                session_id=session_id,
+                agent_id=payload.agent_id,
+                capabilities=payload.capabilities,
+                groups=payload.groups,
+                admin_name=session.role or "admin",
+                agent_manager=agent_manager,
+            )
+    except service.EnrollmentError as exc:
+        raise HTTPException(status_code=exc.http_status, detail=str(exc)) from exc
+
+    logger.info(
+        "enrollment_approved",
+        extra={
+            "session_id": session_id,
+            "agent_id": record["agent_id_assigned"],
+            "admin": session.role,
+        },
+    )
+    return {"status": "approved", "agent_id": record["agent_id_assigned"] or ""}
+
+
+@router.post("/v1/admin/enrollments/{session_id}/reject")
+async def admin_reject(
+    session_id: str,
+    payload: EnrollmentRejectRequest,
+    request: Request,
+) -> dict[str, str]:
+    session = _require_logged_in(request)
+    _verify_csrf_header(request, session)
+
+    try:
+        async with get_db() as conn:
+            await service.reject(
+                conn,
+                session_id=session_id,
+                reason=payload.reason,
+                admin_name=session.role or "admin",
+            )
+    except service.EnrollmentError as exc:
+        raise HTTPException(status_code=exc.http_status, detail=str(exc)) from exc
+
+    logger.info(
+        "enrollment_rejected",
+        extra={"session_id": session_id, "admin": session.role},
+    )
+    return {"status": "rejected"}
