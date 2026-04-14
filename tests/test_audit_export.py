@@ -120,8 +120,11 @@ async def test_export_hash_chain_intact(client, seed_audit):
     )
     lines = [json.loads(line) for line in resp.text.strip().split("\n") if line]
     # Filter down to only this test's seeded entries (order preserved by id).
-    seeded = [l for l in lines if l.get("agent_id") == f"{_EXPORT_ORG}::agent1"
-              or l.get("session_id") == "sess-export-1"]
+    seeded = [
+        entry for entry in lines
+        if entry.get("agent_id") == f"{_EXPORT_ORG}::agent1"
+        or entry.get("session_id") == "sess-export-1"
+    ]
     assert len(seeded) >= 3
     for i, entry in enumerate(seeded):
         assert entry["entry_hash"] is not None

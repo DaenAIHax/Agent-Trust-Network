@@ -152,10 +152,10 @@ async def test_verify_chain_per_org_filter(audit_db):
 
 async def test_tamper_in_one_org_does_not_break_other(audit_db):
     """A broken chain in org A does not invalidate org B's chain."""
-    a1 = await log_event(audit_db, "e1", "ok", org_id="acme")
+    await log_event(audit_db, "e1", "ok", org_id="acme")
     a2 = await log_event(audit_db, "e2", "ok", org_id="acme")
-    b1 = await log_event(audit_db, "e1", "ok", org_id="bravo")
-    b2 = await log_event(audit_db, "e2", "ok", org_id="bravo")
+    await log_event(audit_db, "e1", "ok", org_id="bravo")
+    await log_event(audit_db, "e2", "ok", org_id="bravo")
 
     # Tamper acme's row 2
     await audit_db.execute(

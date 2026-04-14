@@ -18,8 +18,6 @@ import asyncio
 import hashlib
 import json
 from datetime import datetime, timezone
-from typing import Any
-
 from sqlalchemy import Column, Integer, String, DateTime, Text, and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
