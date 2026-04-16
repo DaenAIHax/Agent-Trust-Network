@@ -88,6 +88,13 @@ async def lifespan(app: FastAPI):
         org_id = settings.org_id
         app.state.reverse_proxy_broker_url = None
         app.state.reverse_proxy_client = None
+        # Explicit reset: the singleton ``app`` survives across test
+        # fixtures and background federation contexts, so standalone
+        # startup must actively clear a stale BrokerBridge left over
+        # from a previous federated run. Without this, /v1/egress/*
+        # routes fall through to a live bridge instead of the standalone
+        # 400 path (ADR-006 Fase 1 invariant).
+        app.state.broker_bridge = None
         _log.info("Standalone mode — broker uplink skipped.")
     else:
         broker_url = await get_config("broker_url") or settings.broker_url
@@ -436,6 +443,16 @@ async def pdp_health():
 # reverse-proxy catch-all so the sign endpoint wins route matching.
 from mcp_proxy.auth.sign_assertion import router as sign_assertion_router
 app.include_router(sign_assertion_router)
+
+# ADR-006 Fase 1 / PR #3 — proxy-native discovery + public-key endpoints.
+# Must precede the reverse-proxy catch-all: /v1/registry/agents/{id}/public-key
+# would otherwise fall into the `/v1/registry/*` forward prefix and never
+# reach the local handler. /v1/agents/* is not forwarded, but we keep the
+# ordering uniform for clarity.
+from mcp_proxy.agents.router import router as agents_router
+app.include_router(agents_router)
+from mcp_proxy.registry.public_key import router as registry_public_key_router
+app.include_router(registry_public_key_router)
 
 # ADR-004 PR A — reverse-proxy router for /v1/broker/*, /v1/auth/*,
 # /v1/registry/*. Registered before local handlers so the proxy owns these

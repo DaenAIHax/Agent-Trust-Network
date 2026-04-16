@@ -1,0 +1,131 @@
+"""Proxy-native public-key lookup (ADR-006 Fase 1 / PR #3).
+
+``GET /v1/registry/agents/{agent_id}/public-key`` returns the
+certificate PEM for an agent. This endpoint used to be forwarded to the
+broker via the reverse-proxy catch-all for ``/v1/registry/*``; in
+standalone mode the broker isn't there, and even in federated mode the
+proxy already holds the local agents' certs in ``local_agents.cert_pem``
+— so answering locally is faster and keeps the mini-broker mode
+fully autonomous.
+
+Lookup order:
+  1. ``local_agents`` — the proxy is authoritative for its own enrolled
+     agents. Hit here → return PEM + scope=local.
+  2. Forward to broker when the agent is not local AND the proxy is
+     federated. Standalone mode returns 404 outright.
+
+The ``cached_federated_agents`` table carries ``thumbprint`` but not the
+full PEM (by design — the cache is meant to be small and invalidatable).
+So "federated" responses go through the broker's live endpoint; there is
+no stale cert to serve from a cache.
+"""
+from __future__ import annotations
+
+import logging
+from typing import Literal
+
+import httpx
+from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel
+from sqlalchemy import text
+
+from mcp_proxy.config import get_settings
+from mcp_proxy.db import get_db
+
+_log = logging.getLogger("mcp_proxy.registry.public_key")
+
+router = APIRouter(prefix="/v1/registry/agents", tags=["registry"])
+
+
+class PublicKeyResponse(BaseModel):
+    agent_id: str
+    # Broker's equivalent endpoint (app/registry/router.py:185) returns
+    # this exact field name; SDKs already consume `public_key_pem`.
+    public_key_pem: str
+    cert_thumbprint: str | None = None
+    scope: Literal["local", "federated"]
+
+
+@router.get("/{agent_id}/public-key", response_model=PublicKeyResponse)
+async def get_public_key(agent_id: str, request: Request) -> PublicKeyResponse:
+    """Return the agent's cert PEM.
+
+    Unauthenticated on purpose: public keys are public. This mirrors the
+    broker's equivalent endpoint (``/v1/registry/agents/{id}/public-key``
+    is also unauthenticated there).
+    """
+    # Local-first.
+    async with get_db() as conn:
+        row = (await conn.execute(
+            text(
+                """
+                SELECT cert_pem, cert_thumbprint FROM local_agents
+                 WHERE agent_id = :aid AND is_active = 1
+                """
+            ),
+            {"aid": agent_id},
+        )).first()
+    if row and row[0]:
+        return PublicKeyResponse(
+            agent_id=agent_id,
+            public_key_pem=row[0],
+            cert_thumbprint=row[1],
+            scope="local",
+        )
+
+    # Not local — in standalone there's nothing else to try.
+    settings = get_settings()
+    if settings.standalone:
+        raise HTTPException(status_code=404, detail="agent not found")
+
+    # Federated: hit the broker's live endpoint. We intentionally do NOT
+    # serve from cached_federated_agents — the cache stores thumbprint
+    # only, and we don't want to return a stale PEM.
+    broker_url = getattr(request.app.state, "reverse_proxy_broker_url", None)
+    client: httpx.AsyncClient | None = getattr(
+        request.app.state, "reverse_proxy_client", None,
+    )
+    if not broker_url or client is None:
+        raise HTTPException(
+            status_code=503,
+            detail="broker uplink not configured — cannot resolve federated agent",
+        )
+
+    target = f"{broker_url.rstrip('/')}/v1/registry/agents/{agent_id}/public-key"
+    # Broker enforces org isolation + binding auth on this endpoint, so we
+    # must propagate the caller's Authorization / DPoP headers. Hop-by-hop
+    # headers are dropped for the same reason the reverse-proxy forwarder
+    # drops them.
+    _HOP = frozenset([
+        "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
+        "te", "trailer", "transfer-encoding", "upgrade", "content-length",
+        "host",
+    ])
+    forward_headers = {
+        k: v for k, v in request.headers.items() if k.lower() not in _HOP
+    }
+    try:
+        upstream = await client.get(target, headers=forward_headers)
+    except httpx.ConnectError as exc:
+        raise HTTPException(status_code=502, detail="broker unreachable") from exc
+    except httpx.TimeoutException as exc:
+        raise HTTPException(status_code=504, detail="broker timeout") from exc
+
+    if upstream.status_code == 404:
+        raise HTTPException(status_code=404, detail="agent not found")
+    if upstream.status_code >= 400:
+        raise HTTPException(
+            status_code=upstream.status_code,
+            detail=upstream.text or "broker error",
+        )
+
+    body = upstream.json()
+    pem = body.get("public_key_pem") or body.get("cert_pem") or body.get("public_key")
+    if not pem:
+        raise HTTPException(status_code=502, detail="broker returned empty public key")
+    return PublicKeyResponse(
+        agent_id=agent_id,
+        public_key_pem=pem,
+        cert_thumbprint=body.get("cert_thumbprint") or body.get("thumbprint"),
+        scope="federated",
+    )
