@@ -32,7 +32,8 @@ WORKDIR /src
 COPY . /src
 
 RUN python -m pip install --upgrade pip build \
- && python -m build --wheel --outdir /dist packaging/pypi
+ && bash packaging/pypi/build.sh \
+ && mv dist/cullis_connector-*.whl /dist/
 
 # ── Stage 2: runtime ────────────────────────────────────────────────────
 FROM python:3.12-slim AS runtime
