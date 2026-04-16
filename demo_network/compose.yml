@@ -354,8 +354,13 @@ services:
         condition: service_healthy
       broker:
         condition: service_healthy
+      # ADR-007 Phase 1 PR #5b — mcp-echo only needs to be *started*
+      # (port 9200 bound); its /healthz polling takes ~22s to mark
+      # Healthy which races compose `up --wait` on CI: the sender
+      # (restart: no) exits on exit(0) before the last healthcheck
+      # completes, and docker interprets that as an unhealthy outcome.
       mcp-echo:
-        condition: service_healthy
+        condition: service_started
     environment:
       # ADR-004 — sender reaches the broker via proxy-a (reverse-proxy).
       BROKER_URL:              "https://proxy-a.cullis.test:8443"
