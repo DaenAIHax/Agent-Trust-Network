@@ -300,42 +300,34 @@ class BrokerBridge:
         timestamp: int,
         signature: str,
         ttl_seconds: int = 300,
+        capabilities: list[str] | None = None,
     ) -> dict:
         """Forward a sessionless one-shot through the broker.
 
         Returns the broker's response body — ``{msg_id, duplicate}``.
         Uses the same auth-error retry pattern as session operations.
         """
+        kw = dict(
+            recipient_agent_id=recipient_agent_id,
+            correlation_id=correlation_id,
+            reply_to_correlation_id=reply_to_correlation_id,
+            payload=payload,
+            nonce=nonce,
+            timestamp=timestamp,
+            signature=signature,
+            ttl_seconds=ttl_seconds,
+            capabilities=capabilities or [],
+        )
         client = await self.get_client(agent_id)
         try:
-            return await asyncio.to_thread(
-                client.forward_oneshot,
-                recipient_agent_id=recipient_agent_id,
-                correlation_id=correlation_id,
-                reply_to_correlation_id=reply_to_correlation_id,
-                payload=payload,
-                nonce=nonce,
-                timestamp=timestamp,
-                signature=signature,
-                ttl_seconds=ttl_seconds,
-            )
+            return await asyncio.to_thread(client.forward_oneshot, **kw)
         except Exception as exc:
             if _is_auth_error(exc):
                 logger.warning(
                     "Auth error for %s, re-authenticating: %s", agent_id, exc,
                 )
                 client = await self._evict_and_retry(agent_id)
-                return await asyncio.to_thread(
-                    client.forward_oneshot,
-                    recipient_agent_id=recipient_agent_id,
-                    correlation_id=correlation_id,
-                    reply_to_correlation_id=reply_to_correlation_id,
-                    payload=payload,
-                    nonce=nonce,
-                    timestamp=timestamp,
-                    signature=signature,
-                    ttl_seconds=ttl_seconds,
-                )
+                return await asyncio.to_thread(client.forward_oneshot, **kw)
             raise
 
     async def poll_oneshot_inbox(self, agent_id: str) -> list[dict]:

@@ -79,6 +79,12 @@ class SendOneShotRequest(BaseModel):
         None,
         description="Unix timestamp seconds. Server enforces freshness.",
     )
+    capabilities: list[str] = Field(
+        default_factory=list,
+        description="Requested capabilities verified against both parties' "
+                    "binding scopes at the broker. Empty list falls back to "
+                    "the sentinel 'oneshot.message'.",
+    )
     ttl_seconds: int = Field(
         300,
         ge=10,
@@ -226,6 +232,7 @@ async def send_oneshot(
                 timestamp=body.timestamp or 0,
                 signature=body.signature or "",
                 ttl_seconds=body.ttl_seconds,
+                capabilities=body.capabilities,
             )
         except HTTPException:
             raise

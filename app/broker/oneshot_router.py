@@ -87,6 +87,12 @@ class ForwardOneShotRequest(BaseModel):
                     "is verified on whichever form is present (outer signature "
                     "for envelope mode).",
     )
+    capabilities: list[str] = Field(
+        default_factory=list,
+        description="Requested capabilities — verified against both sender "
+                    "and recipient binding scopes. Empty list falls back to "
+                    "the sentinel 'oneshot.message'.",
+    )
     ttl_seconds: int = Field(
         300, ge=10, le=3600,
         description="Broker-side TTL for offline recipients.",
@@ -209,7 +215,62 @@ async def forward_oneshot(
             detail="Recipient has no approved binding",
         )
 
-    # ── Policy (synthetic session with oneshot.message capability) ────
+    # ── Capability scope check (mirrors session scope verification) ──
+    effective_caps = body.capabilities or [_ONESHOT_CAPABILITY]
+    from app.config import get_settings as _get_settings
+    _settings = _get_settings()
+    if _settings.policy_enforcement:
+        initiator_scope = set(current_agent.scope)
+        target_scope = set(recipient_binding.scope)
+        target_caps = set(recipient.capabilities)
+        for cap in effective_caps:
+            if cap not in initiator_scope:
+                await log_event(
+                    db, "broker.oneshot_denied", "denied",
+                    agent_id=current_agent.agent_id,
+                    org_id=current_agent.org,
+                    details={
+                        "correlation_id": body.correlation_id,
+                        "cap": cap,
+                        "reason": "capability_not_in_sender_scope",
+                    },
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Capability '{cap}' not authorized in your scope",
+                )
+            if cap not in target_scope:
+                await log_event(
+                    db, "broker.oneshot_denied", "denied",
+                    agent_id=current_agent.agent_id,
+                    org_id=current_agent.org,
+                    details={
+                        "correlation_id": body.correlation_id,
+                        "cap": cap,
+                        "reason": "capability_not_in_recipient_scope",
+                    },
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Capability '{cap}' not authorized in the recipient's scope",
+                )
+            if cap not in target_caps:
+                await log_event(
+                    db, "broker.oneshot_denied", "denied",
+                    agent_id=current_agent.agent_id,
+                    org_id=current_agent.org,
+                    details={
+                        "correlation_id": body.correlation_id,
+                        "cap": cap,
+                        "reason": "recipient_does_not_advertise_capability",
+                    },
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Recipient does not advertise capability '{cap}'",
+                )
+
+    # ── PDP policy ────────────────────────────────────────────────────
     initiator_org = await get_org_by_id(db, current_agent.org)
     target_org = await get_org_by_id(db, recipient.org_id)
 
@@ -220,7 +281,7 @@ async def forward_oneshot(
         target_webhook_url=target_org.webhook_url if target_org else None,
         initiator_agent_id=current_agent.agent_id,
         target_agent_id=recipient.agent_id,
-        capabilities=[_ONESHOT_CAPABILITY],
+        capabilities=effective_caps,
     )
     if not pdp_decision.allowed:
         await log_event(

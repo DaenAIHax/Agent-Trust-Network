@@ -84,6 +84,7 @@ def _build_forward_body(
     reply_to: str | None = None,
     timestamp: int | None = None,
     tamper_signature: bool = False,
+    capabilities: list[str] | None = None,
 ) -> tuple[dict, str, str]:
     """Return (body, correlation_id, nonce)."""
     corr = correlation_id or str(uuid.uuid4())
@@ -111,6 +112,7 @@ def _build_forward_body(
         "timestamp": ts,
         "mode": "mtls-only",
         "ttl_seconds": 300,
+        "capabilities": capabilities or [],
     }
     return body, corr, nonce
 
@@ -414,3 +416,129 @@ async def test_sweeper_expires_ttl_rows(client: AsyncClient, monkeypatch):
             )
         ).scalar_one()
     assert status_after == 2
+
+
+# ── Capability scope checks ──────────────────────────────────────────
+
+
+async def _register_and_login_with_caps(
+    client: AsyncClient, dpop: DPoPHelper, agent_id: str, org_id: str,
+    caps: list[str],
+) -> str:
+    """Like _register_and_login but lets the caller choose capabilities."""
+    org_secret = org_id + "-secret"
+    await client.post(
+        "/v1/registry/orgs",
+        json={"org_id": org_id, "display_name": org_id, "secret": org_secret},
+        headers=ADMIN_HEADERS,
+    )
+    ca_pem = get_org_ca_pem(org_id)
+    await client.post(
+        f"/v1/registry/orgs/{org_id}/certificate",
+        json={"ca_certificate": ca_pem},
+        headers={"x-org-id": org_id, "x-org-secret": org_secret},
+    )
+    await client.post(
+        "/v1/registry/agents",
+        json={
+            "agent_id": agent_id, "org_id": org_id,
+            "display_name": agent_id, "capabilities": caps,
+        },
+        headers={"x-org-id": org_id, "x-org-secret": org_secret},
+    )
+    resp = await client.post(
+        "/v1/registry/bindings",
+        json={"org_id": org_id, "agent_id": agent_id, "scope": caps},
+        headers={"x-org-id": org_id, "x-org-secret": org_secret},
+    )
+    binding_id = resp.json()["id"]
+    await client.post(
+        f"/v1/registry/bindings/{binding_id}/approve",
+        headers={"x-org-id": org_id, "x-org-secret": org_secret},
+    )
+    return await dpop.get_token(client, agent_id, org_id)
+
+
+async def test_capability_in_scope_accepted(client: AsyncClient):
+    """Both sender and recipient have 'order.read' in scope → 202."""
+    dpop_a, dpop_b = DPoPHelper(), DPoPHelper()
+    token_a = await _register_and_login_with_caps(
+        client, dpop_a, "cap1::alice", "cap1", ["order.read", "oneshot.message"],
+    )
+    await _register_and_login_with_caps(
+        client, dpop_b, "capt1::bob", "capt1", ["order.read", "oneshot.message"],
+    )
+    body, _, _ = _build_forward_body(
+        "cap1::alice", "cap1", "capt1::bob", {"x": 1},
+        capabilities=["order.read"],
+    )
+    r = await client.post(
+        "/v1/broker/oneshot/forward", json=body,
+        headers=dpop_a.headers("POST", "/v1/broker/oneshot/forward", token_a),
+    )
+    assert r.status_code == 202, r.text
+
+
+async def test_capability_not_in_sender_scope_rejected(client: AsyncClient):
+    """Sender binding lacks 'kyc.write' → 403."""
+    dpop_a, dpop_b = DPoPHelper(), DPoPHelper()
+    token_a = await _register_and_login_with_caps(
+        client, dpop_a, "cap2::alice", "cap2", ["order.read"],
+    )
+    await _register_and_login_with_caps(
+        client, dpop_b, "capt2::bob", "capt2", ["order.read", "kyc.write"],
+    )
+    body, _, _ = _build_forward_body(
+        "cap2::alice", "cap2", "capt2::bob", {"x": 1},
+        capabilities=["kyc.write"],
+    )
+    r = await client.post(
+        "/v1/broker/oneshot/forward", json=body,
+        headers=dpop_a.headers("POST", "/v1/broker/oneshot/forward", token_a),
+    )
+    assert r.status_code == 403
+    assert "kyc.write" in r.text
+    assert "your scope" in r.text.lower()
+
+
+async def test_capability_not_in_recipient_scope_rejected(client: AsyncClient):
+    """Recipient binding lacks 'kyc.write' → 403."""
+    dpop_a, dpop_b = DPoPHelper(), DPoPHelper()
+    token_a = await _register_and_login_with_caps(
+        client, dpop_a, "cap3::alice", "cap3", ["order.read", "kyc.write"],
+    )
+    await _register_and_login_with_caps(
+        client, dpop_b, "capt3::bob", "capt3", ["order.read"],
+    )
+    body, _, _ = _build_forward_body(
+        "cap3::alice", "cap3", "capt3::bob", {"x": 1},
+        capabilities=["kyc.write"],
+    )
+    r = await client.post(
+        "/v1/broker/oneshot/forward", json=body,
+        headers=dpop_a.headers("POST", "/v1/broker/oneshot/forward", token_a),
+    )
+    assert r.status_code == 403
+    assert "kyc.write" in r.text
+    assert "recipient" in r.text.lower()
+
+
+async def test_empty_capabilities_falls_back_to_sentinel(client: AsyncClient):
+    """Empty capabilities list uses sentinel 'oneshot.message' → still works
+    when both sides have it in their binding scope (or policy enforcement off).
+    """
+    dpop_a, dpop_b = DPoPHelper(), DPoPHelper()
+    token_a = await _register_and_login(
+        client, dpop_a, "cap4::alice", "cap4",
+    )
+    await _register_and_login(client, dpop_b, "capt4::bob", "capt4")
+
+    body, _, _ = _build_forward_body(
+        "cap4::alice", "cap4", "capt4::bob", {"x": 1},
+        capabilities=[],
+    )
+    r = await client.post(
+        "/v1/broker/oneshot/forward", json=body,
+        headers=dpop_a.headers("POST", "/v1/broker/oneshot/forward", token_a),
+    )
+    assert r.status_code == 202

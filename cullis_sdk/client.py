@@ -733,6 +733,7 @@ class CullisClient:
         correlation_id: str | None = None,
         reply_to: str | None = None,
         ttl_seconds: int = 300,
+        capabilities: list[str] | None = None,
     ) -> dict:
         """Send a sessionless one-shot message via the local proxy.
 
@@ -827,6 +828,7 @@ class CullisClient:
             "nonce": nonce,
             "timestamp": timestamp,
             "ttl_seconds": ttl_seconds,
+            "capabilities": capabilities or [],
         }
         resp = self._http.post(
             f"{self.base}/v1/egress/message/send",
@@ -982,6 +984,7 @@ class CullisClient:
         timestamp: int,
         signature: str,
         ttl_seconds: int = 300,
+        capabilities: list[str] | None = None,
     ) -> dict:
         """Forward a one-shot envelope to the broker's cross-org queue.
 
@@ -1000,6 +1003,7 @@ class CullisClient:
             "timestamp": timestamp,
             "mode": "mtls-only",
             "ttl_seconds": ttl_seconds,
+            "capabilities": capabilities or [],
         }
         resp = self._authed_request(
             "POST", "/v1/broker/oneshot/forward", json=body,
