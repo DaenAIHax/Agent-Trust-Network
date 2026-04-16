@@ -538,6 +538,10 @@ app.include_router(link_broker_admin_router)
 from mcp_proxy.dashboard.policies_local import router as local_policies_router
 app.include_router(local_policies_router)
 
+# ADR-007 Phase 1 PR #5a — dashboard CRUD for MCP resources + bindings.
+from mcp_proxy.dashboard.mcp_resources import router as mcp_resources_dashboard_router
+app.include_router(mcp_resources_dashboard_router)
+
 from mcp_proxy.dashboard.downloads import router as downloads_router
 app.include_router(downloads_router)
 
