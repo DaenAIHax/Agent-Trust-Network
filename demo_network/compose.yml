@@ -346,6 +346,14 @@ services:
     restart: "no"
 
   sender:
+    # ADR-007 Phase 1 PR #5b follow-up: `profiles: [drive]` excludes the
+    # sender from the default `up --wait` pool. `up --wait` treats any
+    # container that exits (even 0) during the wait as a failure; the
+    # sender is a *driver* (runs the 6 phases and exits), not a long-
+    # lived service. smoke.sh first brings up the fleet with `up --wait`
+    # (no sender), then explicitly `docker compose run --rm sender` to
+    # execute the scenarios and surface the exit code.
+    profiles: ["drive"]
     build:
       context: ..
       dockerfile: demo_network/sender/Dockerfile
@@ -354,11 +362,6 @@ services:
         condition: service_healthy
       broker:
         condition: service_healthy
-      # ADR-007 Phase 1 PR #5b — mcp-echo only needs to be *started*
-      # (port 9200 bound); its /healthz polling takes ~22s to mark
-      # Healthy which races compose `up --wait` on CI: the sender
-      # (restart: no) exits on exit(0) before the last healthcheck
-      # completes, and docker interprets that as an unhealthy outcome.
       mcp-echo:
         condition: service_started
     environment:

@@ -72,13 +72,30 @@ cmd_up() {
     local nonce; nonce="$(gen_nonce)"
     echo "$nonce" > "$NONCE_FILE"
     say "demo_network: starting with SMOKE_NONCE=$nonce"
-    # --wait blocks until healthchecks pass or a one-shot exits. If the
-    # bootstrap or sender crashes, compose returns non-zero and we surface
-    # logs immediately.
+    # Phase A — bring up the service fleet (sender excluded via
+    # `profiles: [drive]` in compose.yml). `up --wait` treats any
+    # container exit as failure, so the transient driver containers
+    # can't live here.
     if ! SMOKE_NONCE="$nonce" $COMPOSE up -d --build --wait 2>&1; then
         dump_failure_logs
         die "demo_network: services failed to reach healthy state"
     fi
+
+    # Phase B — drive the scenarios (A1 round-trip + A5/A6/A8 via
+    # sender phases). `run --rm` propagates the sender's exit code:
+    # a non-zero return means one of the phases SystemExited and we
+    # surface logs for the post-mortem.
+    #
+    # `--no-deps` is critical: without it, compose re-starts every
+    # dependency in the chain — bootstrap in particular has already
+    # exited(0), and re-running it replays the /onboarding/join for
+    # orgs already registered → HTTP 409. The fleet from Phase A is
+    # still running; we just need compose to spawn the sender in it.
+    if ! SMOKE_NONCE="$nonce" $COMPOSE --profile drive run --rm --no-deps --build sender 2>&1; then
+        dump_failure_logs
+        die "demo_network: sender driver failed"
+    fi
+
     ok "demo_network: up (nonce persisted to $NONCE_FILE)"
     cmd_dashboard
 }
