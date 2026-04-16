@@ -54,7 +54,6 @@ from cullis_connector.ide_config import (
     mcp_entry_snippet,
 )
 from cullis_connector.identity import (
-    IdentityBundle,
     generate_keypair,
     has_identity,
     load_identity,
