@@ -358,6 +358,10 @@ v1.include_router(admin_router)
 from app.broker.federation_router import router as federation_router
 v1.include_router(federation_router)
 
+# ADR-008 Phase 1 PR #2 — cross-org sessionless one-shot forwarding.
+from app.broker.oneshot_router import router as oneshot_router
+v1.include_router(oneshot_router)
+
 # ADR-002 Phase 2a — A2A protocol adapter (read-only AgentCard + directory).
 # Gated on settings.a2a_adapter (default False) so existing deployments
 # see no surface change.

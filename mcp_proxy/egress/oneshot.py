@@ -172,19 +172,6 @@ async def send_oneshot(
         "mode": body.mode,
     }
 
-    if path == "cross":
-        await append_local_audit(
-            event_type="oneshot_denied",
-            result="error",
-            agent_id=agent.agent_id,
-            org_id=local_org,
-            details={**audit_details, "reason": "cross_org_not_implemented"},
-        )
-        raise HTTPException(
-            status_code=501,
-            detail="Cross-org one-shot messaging not implemented (Phase 2).",
-        )
-
     # Policy: evaluate the payload the same way session /send does.
     decision = await evaluate_local_message(
         org_id=local_org,
@@ -201,6 +188,78 @@ async def send_oneshot(
         raise HTTPException(
             status_code=403,
             detail=f"Policy: {decision.reason or 'message blocked'}",
+        )
+
+    if path == "cross":
+        bridge = getattr(request.app.state, "broker_bridge", None)
+        if bridge is None:
+            await append_local_audit(
+                event_type="oneshot_denied",
+                result="error",
+                agent_id=agent.agent_id,
+                org_id=local_org,
+                details={**audit_details, "reason": "broker_bridge_unavailable"},
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="Broker uplink not configured — cross-org one-shot unavailable",
+            )
+
+        # The broker stores agent_id in "{org}::{agent}" form (same as
+        # open_session). Translate SPIFFE URIs to that canonical shape;
+        # pass the "::" form through unchanged.
+        if body.recipient_id.startswith("spiffe://"):
+            from mcp_proxy.spiffe import parse_spiffe
+            _, rec_org, rec_bare = parse_spiffe(body.recipient_id)
+            broker_recipient_id = f"{rec_org}::{rec_bare}"
+        else:
+            broker_recipient_id = body.recipient_id
+
+        try:
+            result = await bridge.send_oneshot(
+                agent.agent_id,
+                recipient_agent_id=broker_recipient_id,
+                correlation_id=corr_id,
+                reply_to_correlation_id=body.reply_to,
+                payload=body.payload,
+                nonce=body.nonce or "",
+                timestamp=body.timestamp or 0,
+                signature=body.signature or "",
+                ttl_seconds=body.ttl_seconds,
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            await append_local_audit(
+                event_type="oneshot_denied",
+                result="error",
+                agent_id=agent.agent_id,
+                org_id=local_org,
+                details={**audit_details, "reason": f"broker_forward_failed: {exc}"},
+            )
+            raise HTTPException(
+                status_code=502,
+                detail=f"Broker forward failed: {exc}",
+            ) from exc
+
+        broker_msg_id = result.get("msg_id", "")
+        duplicate = bool(result.get("duplicate", False))
+        await append_local_audit(
+            event_type="oneshot_sent",
+            result="ok",
+            agent_id=agent.agent_id,
+            org_id=local_org,
+            details={
+                **audit_details,
+                "msg_id": broker_msg_id,
+                "duplicate": duplicate,
+                "broker_forwarded": True,
+            },
+        )
+        return SendOneShotResponse(
+            correlation_id=corr_id,
+            msg_id=broker_msg_id,
+            status="duplicate" if duplicate else "enqueued",
         )
 
     # Recipient must match the internal_agents.agent_id format the
@@ -278,7 +337,63 @@ async def receive_oneshot_inbox(
     then narrows to ``is_oneshot = 1``. Session messages stay on
     ``/v1/egress/messages/{session_id}`` — keeping the two surfaces
     disjoint simplifies callers' mental model.
+
+    ADR-008 Phase 1 PR #2: before reading locally, drain any cross-org
+    one-shots pending on the broker side for this agent, mirror each
+    into ``local_messages`` (lazy materialization), and ack back to the
+    broker. The mirror step is idempotent thanks to
+    ``idempotency_key = f"oneshot:<corr>"``.
     """
+    settings = get_settings()
+    local_org = settings.org_id or ""
+
+    bridge = getattr(request.app.state, "broker_bridge", None)
+    if bridge is not None:
+        try:
+            remote_inbox = await bridge.poll_oneshot_inbox(agent.agent_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("broker one-shot poll failed: %s", exc)
+            remote_inbox = []
+
+        for r in remote_inbox:
+            try:
+                _, inserted = await local_queue.enqueue_oneshot(
+                    sender_agent_id=r["sender_agent_id"],
+                    recipient_agent_id=agent.agent_id,
+                    correlation_id=r["correlation_id"],
+                    reply_to_correlation_id=r.get("reply_to_correlation_id"),
+                    payload_ciphertext=r["envelope_json"],
+                    ttl_seconds=300,
+                )
+            except Exception:
+                logger.exception(
+                    "failed to mirror broker one-shot msg_id=%s",
+                    r.get("msg_id"),
+                )
+                continue
+
+            try:
+                await bridge.ack_oneshot(agent.agent_id, r["msg_id"])
+            except Exception:
+                logger.exception(
+                    "broker one-shot ack failed for msg_id=%s", r.get("msg_id"),
+                )
+
+            if inserted:
+                await append_local_audit(
+                    event_type="oneshot_delivered",
+                    result="ok",
+                    agent_id=agent.agent_id,
+                    org_id=local_org,
+                    details={
+                        "msg_id": r.get("msg_id"),
+                        "correlation_id": r.get("correlation_id"),
+                        "sender_agent_id": r.get("sender_agent_id"),
+                        "sender_org_id": r.get("sender_org_id"),
+                        "cross_org": True,
+                    },
+                )
+
     all_pending = await local_queue.fetch_pending_for_recipient(
         agent.agent_id,
     )

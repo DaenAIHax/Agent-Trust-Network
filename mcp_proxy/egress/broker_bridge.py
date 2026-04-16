@@ -260,6 +260,86 @@ class BrokerBridge:
                 return [_agent_info_to_dict(a) for a in agents]
             raise
 
+    # ── One-shot (ADR-008 Phase 1 PR #2) ────────────────────────────
+
+    async def send_oneshot(
+        self,
+        agent_id: str,
+        *,
+        recipient_agent_id: str,
+        correlation_id: str,
+        reply_to_correlation_id: str | None,
+        payload: dict,
+        nonce: str,
+        timestamp: int,
+        signature: str,
+        ttl_seconds: int = 300,
+    ) -> dict:
+        """Forward a sessionless one-shot through the broker.
+
+        Returns the broker's response body — ``{msg_id, duplicate}``.
+        Uses the same auth-error retry pattern as session operations.
+        """
+        client = await self.get_client(agent_id)
+        try:
+            return await asyncio.to_thread(
+                client.forward_oneshot,
+                recipient_agent_id=recipient_agent_id,
+                correlation_id=correlation_id,
+                reply_to_correlation_id=reply_to_correlation_id,
+                payload=payload,
+                nonce=nonce,
+                timestamp=timestamp,
+                signature=signature,
+                ttl_seconds=ttl_seconds,
+            )
+        except Exception as exc:
+            if _is_auth_error(exc):
+                logger.warning(
+                    "Auth error for %s, re-authenticating: %s", agent_id, exc,
+                )
+                client = await self._evict_and_retry(agent_id)
+                return await asyncio.to_thread(
+                    client.forward_oneshot,
+                    recipient_agent_id=recipient_agent_id,
+                    correlation_id=correlation_id,
+                    reply_to_correlation_id=reply_to_correlation_id,
+                    payload=payload,
+                    nonce=nonce,
+                    timestamp=timestamp,
+                    signature=signature,
+                    ttl_seconds=ttl_seconds,
+                )
+            raise
+
+    async def poll_oneshot_inbox(self, agent_id: str) -> list[dict]:
+        """Drain pending cross-org one-shots from the broker for ``agent_id``."""
+        client = await self.get_client(agent_id)
+        try:
+            return await asyncio.to_thread(client.poll_oneshot_inbox)
+        except Exception as exc:
+            if _is_auth_error(exc):
+                logger.warning(
+                    "Auth error for %s, re-authenticating: %s", agent_id, exc,
+                )
+                client = await self._evict_and_retry(agent_id)
+                return await asyncio.to_thread(client.poll_oneshot_inbox)
+            raise
+
+    async def ack_oneshot(self, agent_id: str, msg_id: str) -> bool:
+        """Ack a broker-side one-shot row as delivered."""
+        client = await self.get_client(agent_id)
+        try:
+            return await asyncio.to_thread(client.ack_oneshot, msg_id)
+        except Exception as exc:
+            if _is_auth_error(exc):
+                logger.warning(
+                    "Auth error for %s, re-authenticating: %s", agent_id, exc,
+                )
+                client = await self._evict_and_retry(agent_id)
+                return await asyncio.to_thread(client.ack_oneshot, msg_id)
+            raise
+
     # ── Shutdown ────────────────────────────────────────────────────
 
     async def shutdown(self) -> None:
