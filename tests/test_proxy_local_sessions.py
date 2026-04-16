@@ -29,7 +29,7 @@ def test_create_and_get():
     s = store.create("alice", "bob", ["cap.read"])
     assert s.status == SessionStatus.pending
     assert s.initiator_agent_id == "alice"
-    assert s.responder_agent_id == "bob"
+    assert s.target_agent_id == "bob"
     assert store.get(s.session_id) is s
 
 
@@ -162,7 +162,7 @@ async def test_save_and_restore_roundtrip(proxy_db):
     s2 = store2.get(s.session_id)
     assert s2 is not None
     assert s2.initiator_agent_id == "alice"
-    assert s2.responder_agent_id == "bob"
+    assert s2.target_agent_id == "bob"
     assert s2.status == SessionStatus.active
 
 
@@ -244,7 +244,7 @@ async def test_router_opens_local_session_for_intra_target(proxy_app):
     session = store.get(session_id)
     assert session is not None
     assert session.status == SessionStatus.pending
-    assert session.responder_agent_id == "acme::peer-bot"
+    assert session.target_agent_id == "acme::peer-bot"
 
 
 @pytest.mark.asyncio

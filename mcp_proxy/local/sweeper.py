@@ -74,7 +74,7 @@ async def sweep_once(
                 "session_id": session.session_id,
                 "reason": reason.value,
             }
-            for agent_id in (session.initiator_agent_id, session.responder_agent_id):
+            for agent_id in (session.initiator_agent_id, session.target_agent_id):
                 try:
                     await ws_manager.send_to_agent(agent_id, payload)
                 except Exception as exc:

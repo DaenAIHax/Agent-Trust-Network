@@ -20,8 +20,10 @@ from sqlalchemy import (
     Index,
     Integer,
     MetaData,
+    SmallInteger,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import declarative_base
 
@@ -122,57 +124,91 @@ class PendingEnrollment(Base):
 
 
 class LocalAgent(Base):
-    """Agents with scope=local. Owned by the proxy, broker never sees them."""
+    """Agents with scope=local. Owned by the proxy, broker never sees them.
+
+    Schema aligned with broker ``registry.agents`` (ADR-006 Fase 0) so a row
+    can be exported / promoted to federated visibility without field mapping.
+    """
     __tablename__ = "local_agents"
 
     agent_id = Column(Text, primary_key=True)
+    org_id = Column(Text, nullable=True)
     display_name = Column(Text, nullable=False)
     capabilities = Column(Text, nullable=False, server_default="[]")  # JSON array
     cert_pem = Column(Text, nullable=True)
+    cert_thumbprint = Column(Text, nullable=True)
     api_key_hash = Column(Text, nullable=True)
     scope = Column(Text, nullable=False, server_default="local")  # reserved: "local" | "federated-cache"
+    metadata_json = Column(Text, nullable=False, server_default="{}")
     created_at = Column(Text, nullable=False)
     is_active = Column(Integer, nullable=False, server_default="1")
 
+    __table_args__ = (
+        Index("idx_local_agents_org", "org_id"),
+        Index("idx_local_agents_thumbprint", "cert_thumbprint"),
+    )
+
 
 class LocalSession(Base):
-    """Intra-org sessions. Phase 4 wires routing; Phase 1 schema-only."""
+    """Intra-org sessions. Column names match broker ``sessions`` table."""
     __tablename__ = "local_sessions"
 
     session_id = Column(Text, primary_key=True)
     initiator_agent_id = Column(Text, nullable=False)
-    responder_agent_id = Column(Text, nullable=False)
+    initiator_org_id = Column(Text, nullable=True)
+    target_agent_id = Column(Text, nullable=False)
+    target_org_id = Column(Text, nullable=True)
     status = Column(Text, nullable=False)  # pending | active | closed
+    requested_capabilities = Column(Text, nullable=False, server_default="[]")
     created_at = Column(Text, nullable=False)
+    expires_at = Column(Text, nullable=True)
+    closed_at = Column(Text, nullable=True)
     last_activity_at = Column(Text, nullable=True)
     close_reason = Column(Text, nullable=True)
 
     __table_args__ = (
         Index("idx_local_sessions_initiator", "initiator_agent_id"),
-        Index("idx_local_sessions_responder", "responder_agent_id"),
+        Index("idx_local_sessions_target", "target_agent_id"),
         Index("idx_local_sessions_status", "status"),
+        Index("idx_local_sessions_initiator_org", "initiator_org_id"),
+        Index("idx_local_sessions_target_org", "target_org_id"),
     )
 
 
 class LocalMessage(Base):
-    """M3-twin queue for intra-org messages (Phase 4)."""
+    """M3-twin queue for intra-org messages.
+
+    ``delivery_status`` mirrors broker ``ProxyMessageQueueRecord``:
+    0 = pending, 1 = delivered, 2 = expired.
+    """
     __tablename__ = "local_messages"
 
     msg_id = Column(Text, primary_key=True)
     session_id = Column(Text, nullable=False)
+    seq = Column(Integer, nullable=True)
     sender_agent_id = Column(Text, nullable=False)
     recipient_agent_id = Column(Text, nullable=False)
     payload_ciphertext = Column(Text, nullable=False)
+    nonce = Column(Text, nullable=True)
+    signature = Column(Text, nullable=True)
     idempotency_key = Column(Text, nullable=True)
-    status = Column(Text, nullable=False)  # queued | delivered | expired
+    delivery_status = Column(SmallInteger, nullable=False, server_default="0")
+    attempts = Column(Integer, nullable=False, server_default="0")
     enqueued_at = Column(Text, nullable=False)
     delivered_at = Column(Text, nullable=True)
+    expired_at = Column(Text, nullable=True)
     expires_at = Column(Text, nullable=True)
 
     __table_args__ = (
         Index("idx_local_messages_session", "session_id"),
-        Index("idx_local_messages_recipient_status", "recipient_agent_id", "status"),
+        Index(
+            "idx_local_messages_recipient_delivery_status",
+            "recipient_agent_id",
+            "delivery_status",
+        ),
         Index("idx_local_messages_idempotency", "idempotency_key"),
+        UniqueConstraint("session_id", "seq", name="uq_local_messages_session_seq"),
+        UniqueConstraint("nonce", name="uq_local_messages_nonce"),
     )
 
 
@@ -181,6 +217,8 @@ class LocalPolicy(Base):
     __tablename__ = "local_policies"
 
     policy_id = Column(Text, primary_key=True)
+    org_id = Column(Text, nullable=True)
+    policy_type = Column(Text, nullable=True)  # session | message
     name = Column(Text, nullable=False)
     scope = Column(Text, nullable=False, server_default="intra")  # reserved: "intra" | "egress"
     rules_json = Column(Text, nullable=False, server_default="{}")
@@ -188,26 +226,43 @@ class LocalPolicy(Base):
     created_at = Column(Text, nullable=False)
     updated_at = Column(Text, nullable=False)
 
+    __table_args__ = (
+        Index("idx_local_policies_org", "org_id"),
+        Index("idx_local_policies_type", "policy_type"),
+    )
+
 
 class LocalAudit(Base):
     """Append-only, hash-chained intra-org audit log.
 
-    Hash chain (computed Phase 4): row_hash = SHA-256(prev_hash || canonical_json(row)).
-    Phase 1 defines the columns; chain enforcement happens later with a DB
-    trigger / application-level guard.
+    Column names and hash canonical form match broker ``app/db/audit.py``
+    (``AuditLog`` + ``compute_entry_hash``). Rows are byte-for-byte
+    portable: export on the proxy and verify on the broker without schema
+    translation. Cross-org dual-write columns (``peer_org_id``,
+    ``peer_row_hash``) are present for schema parity — the proxy never
+    dual-writes in standalone mode, they stay NULL.
     """
     __tablename__ = "local_audit"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     timestamp = Column(Text, nullable=False)
-    actor_agent_id = Column(Text, nullable=True)
-    action = Column(Text, nullable=False)
-    subject = Column(Text, nullable=True)
-    detail_json = Column(Text, nullable=True)
-    prev_hash = Column(Text, nullable=True)
-    row_hash = Column(Text, nullable=True)
+    event_type = Column(Text, nullable=False)
+    agent_id = Column(Text, nullable=True)
+    session_id = Column(Text, nullable=True)
+    org_id = Column(Text, nullable=True)
+    details = Column(Text, nullable=True)
+    result = Column(Text, nullable=False, server_default="ok")
+    entry_hash = Column(Text, nullable=True)
+    previous_hash = Column(Text, nullable=True)
+    chain_seq = Column(Integer, nullable=True)
+    peer_org_id = Column(Text, nullable=True)
+    peer_row_hash = Column(Text, nullable=True)
 
     __table_args__ = (
         Index("idx_local_audit_timestamp", "timestamp"),
-        Index("idx_local_audit_actor", "actor_agent_id"),
+        Index("idx_local_audit_event_type", "event_type"),
+        Index("idx_local_audit_agent", "agent_id"),
+        Index("idx_local_audit_session", "session_id"),
+        Index("idx_local_audit_org", "org_id"),
+        Index("idx_local_audit_peer_org", "peer_org_id"),
     )

@@ -52,7 +52,7 @@ LOCAL_SESSION_CAP_ACTIVE_PER_AGENT = _env_int("PROXY_LOCAL_SESSION_CAP_ACTIVE_PE
 class LocalSession:
     session_id: str
     initiator_agent_id: str
-    responder_agent_id: str
+    target_agent_id: str
     requested_capabilities: list[str]
     status: SessionStatus = SessionStatus.pending
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
@@ -75,7 +75,7 @@ class LocalSession:
         self.last_activity_at = datetime.now(timezone.utc)
 
     def involves(self, agent_id: str) -> bool:
-        return agent_id in (self.initiator_agent_id, self.responder_agent_id)
+        return agent_id in (self.initiator_agent_id, self.target_agent_id)
 
 
 class LocalAgentSessionCapExceeded(Exception):
@@ -137,7 +137,7 @@ class LocalSessionStore:
     def create(
         self,
         initiator_agent_id: str,
-        responder_agent_id: str,
+        target_agent_id: str,
         requested_capabilities: list[str],
     ) -> LocalSession:
         self._evict_terminated()
@@ -160,7 +160,7 @@ class LocalSessionStore:
         session = LocalSession(
             session_id=session_id,
             initiator_agent_id=initiator_agent_id,
-            responder_agent_id=responder_agent_id,
+            target_agent_id=target_agent_id,
             requested_capabilities=list(requested_capabilities),
             created_at=now,
             expires_at=now + self._ttl,
