@@ -46,12 +46,22 @@ jobs:
           - name: "demo_network smoke (rsa)"
             key_type: rsa
             proxy_db: sqlite
+            script: "./smoke.sh full"
           - name: "demo_network smoke (ec)"
             key_type: ec
             proxy_db: sqlite
+            script: "./smoke.sh full"
           - name: "demo_network smoke (rsa, postgres)"
             key_type: rsa
             proxy_db: postgres
+            script: "./smoke.sh full"
+          # ADR-006 Fase 1 / PR #4 — Trojan Horse acceptance gate.
+          # Zero broker, just the proxy container + two seeded agents
+          # exercising the full intra-org lifecycle end-to-end.
+          - name: "standalone smoke"
+            key_type: rsa
+            proxy_db: sqlite
+            script: "./standalone_smoke.sh full"
 
     steps:
       - uses: actions/checkout@v4
@@ -87,14 +97,14 @@ jobs:
         if: steps.filter.outputs.code == 'true'
         uses: docker/setup-buildx-action@v3
 
-      - name: Run smoke (./demo_network/smoke.sh full)
+      - name: Run smoke
         if: steps.filter.outputs.code == 'true'
         working-directory: demo_network
         env:
           PKI_KEY_TYPE: ${{ matrix.key_type }}
           PROXY_DB: ${{ matrix.proxy_db }}
         run: |
-          ./smoke.sh full
+          ${{ matrix.script }}
         # smoke.sh already dumps the last 100 lines of each critical
         # service on failure, so no separate post-step log collection
         # is needed.
@@ -117,3 +127,4 @@ jobs:
         working-directory: demo_network
         run: |
           ./smoke.sh down || true
+          ./standalone_smoke.sh down || true
