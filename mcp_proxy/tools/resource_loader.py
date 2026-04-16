@@ -21,6 +21,25 @@ from mcp_proxy.tools.registry import ToolDefinition, ToolRegistry
 _log = logging.getLogger("mcp_proxy.tools.resource_loader")
 
 
+async def reload_resources(registry: ToolRegistry) -> int:
+    """Drop every MCP-resource ToolDefinition and reload from the DB.
+
+    Called by the dashboard CRUD after any mutation to
+    ``local_mcp_resources`` so the live registry reflects the new state
+    without a proxy restart. Builtin tools (``is_mcp_resource is False``)
+    are untouched.
+
+    Returns the count of resources re-registered.
+    """
+    stale = [
+        name for name, td in registry._tools.items()
+        if td.is_mcp_resource
+    ]
+    for name in stale:
+        registry._tools.pop(name, None)
+    return await load_resources_into_registry(registry)
+
+
 async def _noop_placeholder(ctx):
     """Unreachable placeholder — real handler is attached via closure below.
 
