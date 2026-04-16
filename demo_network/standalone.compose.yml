@@ -1,0 +1,39 @@
+# ADR-006 Fase 1 / PR #4 — standalone mini-broker smoke topology.
+#
+# A single proxy container running with MCP_PROXY_STANDALONE=true and
+# zero uplink config. The accompanying ``standalone_smoke.sh`` seeds two
+# internal agents directly into the container's DB, then exercises the
+# full intra-org lifecycle (discover → open → accept → send → poll →
+# ack → close → audit verify) over HTTP without touching any broker.
+#
+# This is the acceptance gate for the "Trojan Horse" claim: install the
+# proxy in a customer's infra and it works on its own.
+services:
+  proxy:
+    build:
+      context: ..
+      dockerfile: mcp_proxy/Dockerfile
+    environment:
+      MCP_PROXY_STANDALONE: "true"
+      MCP_PROXY_ADMIN_SECRET: "standalone-smoke-admin"
+      MCP_PROXY_ORG_ID: "acme"
+      MCP_PROXY_DATABASE_URL: "sqlite+aiosqlite:////data/mcp_proxy.db"
+      MCP_PROXY_ENVIRONMENT: "development"
+      # Keep the local sweeper running (idle/TTL cleanup) — the smoke
+      # exercises only short-lived sessions so the sweeper won't evict
+      # anything, but we want realistic lifecycle wiring.
+    ports:
+      # Expose on an unusual host port to avoid colliding with the
+      # federated smoke's proxy-a / proxy-b.
+      - "9110:9100"
+    volumes:
+      - proxy-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request,sys; sys.exit(0 if urllib.request.urlopen(\"http://localhost:9100/health\").status==200 else 1)'"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+
+volumes:
+  proxy-data:
