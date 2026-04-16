@@ -96,6 +96,57 @@ class ProxyMessageQueueRecord(Base):
     expired_at          = Column(DateTime(timezone=True), nullable=True)
 
 
+class BrokerOneShotMessageRecord(Base):
+    """ADR-008 Phase 1 PR #2 — cross-org sessionless one-shot queue.
+
+    A sender proxy forwards a one-shot envelope via
+    ``POST /broker/oneshot/forward``; the row stays here until the
+    recipient's proxy pulls it through ``GET /broker/oneshot/inbox``
+    and acks delivery via ``POST /broker/oneshot/{msg_id}/ack``.
+
+    ``delivery_status`` values mirror ``ProxyMessageQueueRecord``:
+      0 = pending   — enqueued, recipient has not yet ack'd
+      1 = delivered — recipient proxy ack'd, eligible for pruning
+      2 = expired   — TTL passed before ack (sweeper-driven)
+
+    Dedup is scoped ``(sender_agent_id, correlation_id)`` so a sender
+    retry collapses without the recipient ever observing a duplicate.
+    """
+
+    __tablename__ = "broker_oneshot_messages"
+    __table_args__ = (
+        UniqueConstraint(
+            "sender_agent_id", "correlation_id",
+            name="uq_oneshot_sender_corr",
+        ),
+        UniqueConstraint("nonce", name="uq_oneshot_nonce"),
+        Index(
+            "ix_oneshot_recipient_pending",
+            "recipient_agent_id", "delivery_status",
+        ),
+        Index("ix_oneshot_ttl", "ttl_expires_at"),
+    )
+
+    msg_id                   = Column(String(64), primary_key=True)
+    correlation_id           = Column(String(128), nullable=False)
+    reply_to_correlation_id  = Column(String(128), nullable=True)
+    sender_agent_id          = Column(String(256), nullable=False)
+    sender_org_id            = Column(String(128), nullable=False)
+    recipient_agent_id       = Column(String(256), nullable=False)
+    recipient_org_id         = Column(String(128), nullable=False)
+    envelope_json            = Column(Text, nullable=False)
+    nonce                    = Column(String(128), nullable=False)
+    enqueued_at              = Column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    ttl_expires_at           = Column(DateTime(timezone=True), nullable=False)
+    delivery_status          = Column(
+        SmallInteger, nullable=False, default=0,
+    )
+    delivered_at             = Column(DateTime(timezone=True), nullable=True)
+
+
 class RfqRecord(Base):
     __tablename__ = "rfq_requests"
 

@@ -120,6 +120,52 @@ async def _sweep_message_queue() -> int:
     return len(notices)
 
 
+async def _sweep_oneshot_queue() -> int:
+    """Expire TTL-lapsed cross-org one-shots (ADR-008 Phase 1 PR #2).
+
+    Flips ``delivery_status`` from 0 (pending) to 2 (expired) on rows
+    whose ``ttl_expires_at`` has passed. Pure DB sweep — no WS nudge,
+    since the one-shot sender already fire-and-forgot the envelope and
+    relies on reply semantics rather than per-message ack notifications.
+    """
+    if os.environ.get("CULLIS_DISABLE_QUEUE_OPS") == "1":
+        return 0
+
+    try:
+        from datetime import datetime, timezone
+        from sqlalchemy import update
+        from app.broker.db_models import BrokerOneShotMessageRecord
+        from app.db.database import AsyncSessionLocal
+    except Exception:
+        return 0
+
+    try:
+        async with AsyncSessionLocal() as db:
+            now_dt = datetime.now(timezone.utc)
+            result = await asyncio.wait_for(
+                db.execute(
+                    update(BrokerOneShotMessageRecord)
+                    .where(
+                        BrokerOneShotMessageRecord.delivery_status == 0,
+                        BrokerOneShotMessageRecord.ttl_expires_at < now_dt,
+                    )
+                    .values(delivery_status=2)
+                ),
+                timeout=5.0,
+            )
+            await db.commit()
+    except asyncio.TimeoutError:
+        _log.warning(
+            "sweeper: one-shot queue sweep exceeded 5s — skipping this cycle"
+        )
+        return 0
+    except Exception:
+        _log.exception("sweeper: one-shot queue sweep failed")
+        return 0
+
+    return int(result.rowcount or 0) if result is not None else 0
+
+
 async def _persist_closed(session: Session) -> None:
     """Persist the close to the DB. Isolated so failures don't kill the sweep."""
     try:
@@ -176,6 +222,9 @@ async def sweep_once(
 
     # M3.6 — also sweep TTL-expired queued messages (independent of session close).
     await _sweep_message_queue()
+
+    # ADR-008 Phase 1 PR #2 — expire stale broker-side one-shots.
+    await _sweep_oneshot_queue()
 
     SESSION_SWEEPER_CYCLES_COUNTER.add(1, {"closed": str(closed)})
     return closed

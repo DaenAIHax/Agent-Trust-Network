@@ -758,16 +758,15 @@ class CullisClient:
         transport = decision["transport"]
         target_agent_id = decision["target_agent_id"]
 
-        if transport != "mtls-only":
+        if transport not in ("mtls-only", "envelope"):
             raise NotImplementedError(
-                "cross-org one-shot is not wired in this revision — "
-                "Phase 2 adds broker-forwarded envelopes"
+                f"one-shot transport '{transport}' not supported"
             )
 
         if not self._signing_key_pem:
             raise RuntimeError(
-                "mtls-only transport requires a signing key — initialize "
-                "the client via login() or from_spiffe_workload_api()"
+                "one-shot send requires a signing key — initialize the "
+                "client via login() or from_spiffe_workload_api()"
             )
 
         corr_id = correlation_id or str(uuid.uuid4())
@@ -793,7 +792,7 @@ class CullisClient:
             "payload": payload,
             "correlation_id": corr_id,
             "reply_to": reply_to,
-            "mode": "mtls-only",
+            "mode": transport,
             "signature": signature,
             "nonce": nonce,
             "timestamp": timestamp,
@@ -838,6 +837,68 @@ class CullisClient:
         )
         resp.raise_for_status()
         return resp.json().get("messages", [])
+
+    # ── Broker one-shot forwarding (used by proxy BrokerBridge) ────
+
+    def forward_oneshot(
+        self,
+        *,
+        recipient_agent_id: str,
+        correlation_id: str,
+        reply_to_correlation_id: str | None,
+        payload: dict,
+        nonce: str,
+        timestamp: int,
+        signature: str,
+        ttl_seconds: int = 300,
+    ) -> dict:
+        """Forward a one-shot envelope to the broker's cross-org queue.
+
+        Used by the sender proxy's ``BrokerBridge`` after it has already
+        verified the local policy. The proxy signs the canonical payload
+        with ``session_id='oneshot:<correlation_id>'`` on the sender's
+        key before calling this; the broker re-verifies and persists.
+        """
+        body = {
+            "recipient_agent_id": recipient_agent_id,
+            "correlation_id": correlation_id,
+            "reply_to_correlation_id": reply_to_correlation_id,
+            "payload": payload,
+            "signature": signature,
+            "nonce": nonce,
+            "timestamp": timestamp,
+            "mode": "mtls-only",
+            "ttl_seconds": ttl_seconds,
+        }
+        resp = self._authed_request(
+            "POST", "/v1/broker/oneshot/forward", json=body,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def poll_oneshot_inbox(self) -> list[dict]:
+        """Drain pending cross-org one-shots addressed to this agent.
+
+        The broker does NOT flip delivery status on read — the caller
+        acks via :meth:`ack_oneshot` once the row has been mirrored
+        locally. Returns the raw row dicts (see broker
+        ``InboxOneShotItem``).
+        """
+        resp = self._authed_request("GET", "/v1/broker/oneshot/inbox")
+        resp.raise_for_status()
+        return resp.json().get("messages", [])
+
+    def ack_oneshot(self, msg_id: str) -> bool:
+        """Mark a broker one-shot row as delivered. Returns False on 404/409."""
+        resp = self._authed_request(
+            "POST", f"/v1/broker/oneshot/{msg_id}/ack",
+        )
+        if resp.status_code == 204:
+            return True
+        if resp.status_code in (404, 409):
+            return False
+        resp.raise_for_status()
+        return False
 
     def ack_via_proxy(self, session_id: str, msg_id: str) -> bool:
         """Acknowledge a local-queue message to the proxy (at-least-once)."""

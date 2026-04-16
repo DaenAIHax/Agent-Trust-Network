@@ -298,7 +298,15 @@ async def test_duplicate_correlation_id_idempotent(proxy_app):
 
 
 @pytest.mark.asyncio
-async def test_cross_org_returns_501(proxy_app):
+async def test_cross_org_without_broker_returns_503(proxy_app):
+    """When the proxy has no broker uplink configured (as in this fixture),
+    a cross-org send should fail fast with 503.
+
+    ADR-008 Phase 1 PR #2 replaced the hardcoded 501 with a live broker
+    forward path; 501 no longer applies. A deployment that never wires
+    the bridge surfaces the gap as 503 ("broker uplink not configured").
+    Cross-org happy path is covered in tests/test_oneshot_cross.py.
+    """
     _, client = proxy_app
     alice_key, alice_cert, alice_priv = await _provision_agent("alice")
     await _provision_local_target("alice", alice_cert)
@@ -314,8 +322,8 @@ async def test_cross_org_returns_501(proxy_app):
         headers={"X-API-Key": alice_key},
         json=body,
     )
-    assert r.status_code == 501
-    assert "not implemented" in r.text.lower()
+    assert r.status_code == 503
+    assert "broker" in r.text.lower()
 
 
 @pytest.mark.asyncio
