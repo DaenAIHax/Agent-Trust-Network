@@ -736,9 +736,10 @@ class CullisClient:
     ) -> dict:
         """Send a sessionless one-shot message via the local proxy.
 
-        Intra-org only in this revision — cross-org recipients raise
-        ``NotImplementedError`` (the proxy returns 501; Phase 2 wires
-        the broker forwarder).
+        Intra-org resolves to ``mtls-only`` (signed plaintext); cross-org
+        resolves to ``envelope`` (AES-256-GCM + RSA-OAEP/ECDH key wrap,
+        signed outer by the sender, inner signature carried inside the
+        cipher_blob for recipient non-repudiation).
 
         ``correlation_id`` defaults to a new UUID; pass the original
         request's correlation_id plus ``reply_to`` to send a reply.
@@ -777,7 +778,7 @@ class CullisClient:
         # Domain separation: signature binding substitutes the session_id
         # slot with 'oneshot:<correlation_id>' so a session signature
         # cannot be replayed as a one-shot signature and vice versa.
-        signature = sign_message(
+        inner_signature = sign_message(
             self._signing_key_pem,
             f"oneshot:{corr_id}",
             sender_agent_id,
@@ -787,13 +788,42 @@ class CullisClient:
             client_seq=0,
         )
 
+        if transport == "envelope":
+            # ADR-008 Phase 1 PR #3 — cross-org: encrypt with recipient pubkey.
+            # The broker sees only the cipher_blob and verifies the outer
+            # signature. The recipient decrypts and verifies the inner
+            # signature for non-repudiation.
+            recipient_pubkey = decision.get("target_cert_pem")
+            if not recipient_pubkey:
+                raise RuntimeError(
+                    "cross-org one-shot requires a recipient public key — "
+                    "proxy /resolve did not return target_cert_pem"
+                )
+            cipher_blob = encrypt_for_agent(
+                recipient_pubkey, payload, inner_signature,
+                f"oneshot:{corr_id}", sender_agent_id, client_seq=0,
+            )
+            wire_payload: dict[str, Any] = cipher_blob
+            wire_signature = sign_message(
+                self._signing_key_pem,
+                f"oneshot:{corr_id}",
+                sender_agent_id,
+                nonce,
+                timestamp,
+                cipher_blob,
+                client_seq=0,
+            )
+        else:
+            wire_payload = payload
+            wire_signature = inner_signature
+
         body: dict[str, Any] = {
             "recipient_id": target_agent_id,
-            "payload": payload,
+            "payload": wire_payload,
             "correlation_id": corr_id,
             "reply_to": reply_to,
             "mode": transport,
-            "signature": signature,
+            "signature": wire_signature,
             "nonce": nonce,
             "timestamp": timestamp,
             "ttl_seconds": ttl_seconds,
@@ -837,6 +867,107 @@ class CullisClient:
         )
         resp.raise_for_status()
         return resp.json().get("messages", [])
+
+    def decrypt_oneshot(self, inbox_row: dict) -> dict:
+        """Decrypt a one-shot envelope row returned by :meth:`receive_oneshot`.
+
+        For ``mtls-only`` rows the payload is already plaintext —
+        returned as-is with ``sender_verified=False`` (the mTLS transport
+        already guaranteed sender identity at proxy-to-proxy level).
+
+        For ``envelope`` rows: AES-GCM decrypt with the caller's private
+        key, then verify the inner signature against the sender's cert
+        from the broker registry. Raises ``ValueError`` on decrypt or
+        signature failure.
+
+        Returns ``{"payload": <plaintext_dict>, "sender_verified": bool,
+        "mode": "mtls-only" | "envelope"}``.
+        """
+        import json as _json
+        from cullis_sdk.crypto.e2e import verify_inner_signature
+
+        envelope = _json.loads(inbox_row["payload_ciphertext"])
+        mode = envelope.get("mode", "mtls-only")
+        sender = inbox_row["sender_agent_id"]
+        corr = inbox_row["correlation_id"]
+
+        if mode == "mtls-only":
+            return {
+                "payload": envelope.get("payload", {}),
+                "sender_verified": False,
+                "mode": mode,
+            }
+
+        if not self._signing_key_pem:
+            raise RuntimeError(
+                "envelope decrypt requires a private signing key — "
+                "initialize the client via login() or from_spiffe_workload_api()"
+            )
+
+        cipher_blob = envelope["payload"]
+        plaintext, inner_sig = decrypt_from_agent(
+            self._signing_key_pem, cipher_blob,
+            f"oneshot:{corr}", sender, client_seq=0,
+        )
+
+        sender_cert_pem = self.get_agent_public_key(sender)
+        verify_inner_signature(
+            sender_cert_pem, inner_sig,
+            f"oneshot:{corr}", sender,
+            envelope["nonce"], envelope["timestamp"], plaintext,
+            client_seq=0,
+        )
+        return {
+            "payload": plaintext,
+            "sender_verified": True,
+            "mode": mode,
+        }
+
+    def send_oneshot_and_wait(
+        self,
+        recipient_id: str,
+        payload: dict,
+        *,
+        timeout: float = 30.0,
+        poll_interval: float = 1.0,
+        ttl_seconds: int = 300,
+    ) -> dict:
+        """Request-response convenience: send a one-shot, block until a
+        reply tagged with the same ``correlation_id`` is in the caller's
+        inbox, or ``TimeoutError`` after ``timeout`` seconds.
+
+        Returns ``{"correlation_id", "msg_id", "reply_to", "reply",
+        "sender", "mode", "sender_verified"}``. ``reply`` is the
+        decrypted + signature-verified plaintext for envelope mode, or
+        the passthrough payload for mtls-only.
+        """
+        import json as _json
+
+        sent = self.send_oneshot(
+            recipient_id, payload, ttl_seconds=ttl_seconds,
+        )
+        corr = sent["correlation_id"]
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            inbox = self.receive_oneshot()
+            for row in inbox:
+                envelope = _json.loads(row["payload_ciphertext"])
+                if envelope.get("reply_to") != corr:
+                    continue
+                decoded = self.decrypt_oneshot(row)
+                return {
+                    "correlation_id": row["correlation_id"],
+                    "msg_id": row["msg_id"],
+                    "reply_to": corr,
+                    "reply": decoded["payload"],
+                    "sender": row["sender_agent_id"],
+                    "mode": decoded["mode"],
+                    "sender_verified": decoded["sender_verified"],
+                }
+            time.sleep(poll_interval)
+        raise TimeoutError(
+            f"no reply for correlation_id={corr} within {timeout:.1f}s"
+        )
 
     # ── Broker one-shot forwarding (used by proxy BrokerBridge) ────
 

@@ -858,6 +858,28 @@ async def resolve_recipient(
             target_cert_pem=target_cert_pem,
         )
 
+    # ADR-008 Phase 1 PR #3 — best-effort peer public key for envelope
+    # encryption cross-org. If the broker uplink is present but the fetch
+    # fails, fail the resolve (502) so the sender doesn't silently fall
+    # back to plaintext. If no bridge is configured at all the proxy is
+    # intra-only and callers that actually try to send will still get
+    # the legacy behaviour at /v1/egress/send.
+    target_cert_pem: str | None = None
+    bridge = getattr(request.app.state, "broker_bridge", None)
+    if bridge is not None:
+        broker_peer_id = f"{target_org}::{target_agent}"
+        try:
+            target_cert_pem = await bridge.get_peer_public_key(
+                agent.agent_id, broker_peer_id,
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"unable to resolve peer public key: {exc}",
+            ) from exc
+
     return ResolveResponse(
         path="cross-org",
         target_agent_id=target_agent,
@@ -865,7 +887,7 @@ async def resolve_recipient(
         target_spiffe=target_spiffe,
         transport="envelope",
         egress_inspection=settings.egress_inspection_enabled,
-        target_cert_pem=None,
+        target_cert_pem=target_cert_pem,
     )
 
 

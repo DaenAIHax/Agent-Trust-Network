@@ -260,6 +260,32 @@ class BrokerBridge:
                 return [_agent_info_to_dict(a) for a in agents]
             raise
 
+    # ── Peer discovery (ADR-008 Phase 1 PR #3) ──────────────────────
+
+    async def get_peer_public_key(
+        self, agent_id: str, peer_agent_id: str,
+    ) -> str:
+        """Fetch a peer agent's current public key from the broker.
+
+        ``agent_id`` is this proxy's caller (used to pick the authenticated
+        CullisClient); ``peer_agent_id`` is the broker-side key to query.
+        """
+        client = await self.get_client(agent_id)
+        try:
+            return await asyncio.to_thread(
+                client.get_agent_public_key, peer_agent_id,
+            )
+        except Exception as exc:
+            if _is_auth_error(exc):
+                logger.warning(
+                    "Auth error for %s, re-authenticating: %s", agent_id, exc,
+                )
+                client = await self._evict_and_retry(agent_id)
+                return await asyncio.to_thread(
+                    client.get_agent_public_key, peer_agent_id,
+                )
+            raise
+
     # ── One-shot (ADR-008 Phase 1 PR #2) ────────────────────────────
 
     async def send_oneshot(

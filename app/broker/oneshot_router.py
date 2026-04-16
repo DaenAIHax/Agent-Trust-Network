@@ -80,9 +80,12 @@ class ForwardOneShotRequest(BaseModel):
     )
     nonce: str = Field(..., description="Globally-unique nonce for this envelope.")
     timestamp: int = Field(..., description="Unix timestamp seconds.")
-    mode: Literal["mtls-only"] = Field(
+    mode: Literal["mtls-only", "envelope"] = Field(
         "mtls-only",
-        description="Phase 1 supports mtls-only; E2E envelope lands in Phase 2.",
+        description="mtls-only: payload is plaintext dict; envelope: payload "
+                    "is a cipher_blob the broker never decrypts. Signature "
+                    "is verified on whichever form is present (outer signature "
+                    "for envelope mode).",
     )
     ttl_seconds: int = Field(
         300, ge=10, le=3600,
