@@ -4,13 +4,13 @@ Twin of `app/broker/message_queue.py` targeting the proxy-local
 `local_messages` table. Same public behavior: at-least-once delivery
 with TTL + idempotency, drained on recipient WS reconnect.
 
-Schema differences vs the broker queue (kept intentionally lean for
-single-org proxy use):
-  - `status` is a TEXT enum ('pending' | 'delivered' | 'expired')
-    instead of an int for readability at the SQL prompt.
-  - No `seq` or `attempts` columns — delivery order is by enqueued_at
-    and a retry counter isn't needed for the simpler single-process
-    delivery path.
+Schema aligned with broker ``ProxyMessageQueueRecord`` as of ADR-006 Fase 0
+— ``delivery_status`` is a SMALLINT enum (0=pending, 1=delivered, 2=expired)
+matching ``app/broker/db_models.py``, so a row exported from the proxy is
+byte-compatible with the broker durable queue.
+
+Remaining intentional deltas vs the broker queue (kept lean for single-org
+proxy use):
   - No DB-level UNIQUE constraint on (recipient, idempotency_key) —
     single-process proxy, app-level dedupe is sufficient. When proxy
     HA lands (Redis + Postgres), the migration will add the unique
@@ -30,9 +30,10 @@ from mcp_proxy.db import get_db
 _log = logging.getLogger("mcp_proxy.local.message_queue")
 
 
-STATUS_PENDING = "pending"
-STATUS_DELIVERED = "delivered"
-STATUS_EXPIRED = "expired"
+# SMALLINT values aligned with broker ProxyMessageQueueRecord.delivery_status.
+STATUS_PENDING = 0
+STATUS_DELIVERED = 1
+STATUS_EXPIRED = 2
 
 DEFAULT_TTL_SECONDS = 300  # mirror broker M3 default
 
@@ -112,12 +113,12 @@ async def enqueue(
                 """
                 INSERT INTO local_messages
                     (msg_id, session_id, sender_agent_id, recipient_agent_id,
-                     payload_ciphertext, idempotency_key, status, enqueued_at,
-                     delivered_at, expires_at)
+                     payload_ciphertext, idempotency_key, delivery_status,
+                     enqueued_at, delivered_at, expires_at)
                 VALUES
                     (:msg_id, :session_id, :sender, :recipient,
-                     :payload, :ikey, :status, :enqueued_at,
-                     NULL, :expires_at)
+                     :payload, :ikey, :delivery_status,
+                     :enqueued_at, NULL, :expires_at)
                 """
             ),
             {
@@ -127,7 +128,7 @@ async def enqueue(
                 "recipient": recipient_agent_id,
                 "payload": payload_ciphertext,
                 "ikey": idempotency_key,
-                "status": STATUS_PENDING,
+                "delivery_status": STATUS_PENDING,
                 "enqueued_at": _iso(now),
                 "expires_at": _iso(expires),
             },
@@ -149,14 +150,14 @@ async def fetch_pending_for_recipient(
                        payload_ciphertext, idempotency_key, enqueued_at, expires_at
                   FROM local_messages
                  WHERE recipient_agent_id = :recipient
-                   AND status = :status
+                   AND delivery_status = :delivery_status
                  ORDER BY enqueued_at ASC
                  LIMIT :limit
                 """
             ),
             {
                 "recipient": recipient_agent_id,
-                "status": STATUS_PENDING,
+                "delivery_status": STATUS_PENDING,
                 "limit": limit,
             },
         )
@@ -186,11 +187,11 @@ async def mark_delivered(msg_id: str, recipient_agent_id: str) -> bool:
             text(
                 """
                 UPDATE local_messages
-                   SET status = :delivered,
+                   SET delivery_status = :delivered,
                        delivered_at = :now
                  WHERE msg_id = :msg_id
                    AND recipient_agent_id = :recipient
-                   AND status = :pending
+                   AND delivery_status = :pending
                 """
             ),
             {
@@ -250,8 +251,8 @@ async def fetch_for_session(
 async def sweep_expired(
     *, limit: int = 1000
 ) -> list[ExpiredLocalMessageNotice]:
-    """Flip TTL-expired pending rows to status=expired and return the
-    set so callers can notify senders. Used by the Phase 3d sweeper."""
+    """Flip TTL-expired pending rows to delivery_status=expired and return
+    the set so callers can notify senders. Used by the Phase 3d sweeper."""
     async with get_db() as conn:
         now_iso = _iso(datetime.now(timezone.utc))
         result = await conn.execute(
@@ -259,7 +260,7 @@ async def sweep_expired(
                 """
                 SELECT msg_id, session_id, sender_agent_id, recipient_agent_id
                   FROM local_messages
-                 WHERE status = :pending
+                 WHERE delivery_status = :pending
                    AND expires_at IS NOT NULL
                    AND expires_at < :now
                  LIMIT :limit
@@ -282,8 +283,8 @@ async def sweep_expired(
             text(
                 """
                 UPDATE local_messages
-                   SET status = :expired
-                 WHERE status = :pending
+                   SET delivery_status = :expired
+                 WHERE delivery_status = :pending
                    AND expires_at IS NOT NULL
                    AND expires_at < :now
                 """

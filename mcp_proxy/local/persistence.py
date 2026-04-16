@@ -2,7 +2,7 @@
 non-terminal rows at startup so the in-memory store survives restarts.
 
 Schema (alembic 0002_local_tables.py): session_id, initiator_agent_id,
-responder_agent_id, status, created_at, last_activity_at, close_reason.
+target_agent_id, status, created_at, last_activity_at, close_reason.
 Capabilities and expires_at are NOT persisted — they're reconstructed
 in-memory (see LocalSession / LocalSessionStore).
 """
@@ -44,10 +44,10 @@ async def save_session(session: LocalSession) -> None:
             text(
                 """
                 INSERT INTO local_sessions
-                    (session_id, initiator_agent_id, responder_agent_id,
+                    (session_id, initiator_agent_id, target_agent_id,
                      status, created_at, last_activity_at, close_reason)
                 VALUES
-                    (:session_id, :initiator_agent_id, :responder_agent_id,
+                    (:session_id, :initiator_agent_id, :target_agent_id,
                      :status, :created_at, :last_activity_at, :close_reason)
                 ON CONFLICT(session_id) DO UPDATE SET
                     status = excluded.status,
@@ -58,7 +58,7 @@ async def save_session(session: LocalSession) -> None:
             {
                 "session_id": session.session_id,
                 "initiator_agent_id": session.initiator_agent_id,
-                "responder_agent_id": session.responder_agent_id,
+                "target_agent_id": session.target_agent_id,
                 "status": session.status.value,
                 "created_at": _iso(session.created_at),
                 "last_activity_at": _iso(session.last_activity_at),
@@ -80,7 +80,7 @@ async def restore_sessions(store: LocalSessionStore) -> int:
         result = await conn.execute(
             text(
                 """
-                SELECT session_id, initiator_agent_id, responder_agent_id,
+                SELECT session_id, initiator_agent_id, target_agent_id,
                        status, created_at, last_activity_at, close_reason
                   FROM local_sessions
                  WHERE status IN ('pending', 'active')
@@ -98,7 +98,7 @@ async def restore_sessions(store: LocalSessionStore) -> int:
         session = LocalSession(
             session_id=row["session_id"],
             initiator_agent_id=row["initiator_agent_id"],
-            responder_agent_id=row["responder_agent_id"],
+            target_agent_id=row["target_agent_id"],
             requested_capabilities=[],
             status=SessionStatus(row["status"]),
             created_at=created_at,

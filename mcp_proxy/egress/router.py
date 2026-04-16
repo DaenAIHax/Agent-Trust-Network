@@ -161,7 +161,7 @@ def _local_session_to_dict(session: LocalSession) -> dict:
     return {
         "session_id": session.session_id,
         "initiator_agent_id": session.initiator_agent_id,
-        "target_agent_id": session.responder_agent_id,
+        "target_agent_id": session.target_agent_id,
         "status": session.status.value,
         "requested_capabilities": list(session.requested_capabilities),
         "created_at": session.created_at.isoformat(),
@@ -197,7 +197,7 @@ async def open_session(
         try:
             session = local_store.create(
                 initiator_agent_id=agent.agent_id,
-                responder_agent_id=body.target_agent_id,
+                target_agent_id=body.target_agent_id,
                 requested_capabilities=body.capabilities,
             )
             await save_local_session(session)
@@ -299,8 +299,8 @@ async def accept_session(
         async with local_store._lock:
             session = local_store.get(session_id)
             if session is not None:
-                if session.responder_agent_id != agent.agent_id:
-                    raise HTTPException(status_code=403, detail="not the responder")
+                if session.target_agent_id != agent.agent_id:
+                    raise HTTPException(status_code=403, detail="not the target")
                 session = local_store.activate(session_id)
                 await save_local_session(session)
                 await log_audit(
@@ -407,7 +407,7 @@ async def send_message(
         if not local_session.involves(agent.agent_id):
             raise HTTPException(status_code=403, detail="not a participant")
         if agent.agent_id == local_session.initiator_agent_id:
-            recipient = local_session.responder_agent_id
+            recipient = local_session.target_agent_id
         else:
             recipient = local_session.initiator_agent_id
 

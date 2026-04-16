@@ -65,7 +65,7 @@ async def test_init_db_fresh_sqlite_runs_alembic_upgrade(tmp_path):
         rows = conn.execute("SELECT version_num FROM alembic_version").fetchall()
     finally:
         conn.close()
-    assert rows == [("0004_add_federation_cache",)]
+    assert rows == [("0005_schema_parity_with_broker",)]
 
 
 @pytest.mark.asyncio
@@ -125,7 +125,7 @@ async def test_init_db_stamps_legacy_sqlite_then_upgrades(tmp_path):
         conn.close()
 
     assert rows == [("legacy-agent",)], "pre-existing row lost during stamp+upgrade"
-    assert version == [("0004_add_federation_cache",)]
+    assert version == [("0005_schema_parity_with_broker",)]
 
 
 @pytest.mark.asyncio
@@ -181,6 +181,75 @@ async def test_proxy_db_url_env_overrides_settings(monkeypatch, tmp_path):
 
     settings = ProxySettings()
     assert settings.database_url.endswith("override.db")
+
+
+def _column_names_sqlite(path: str, table: str) -> set[str]:
+    conn = sqlite3.connect(path)
+    try:
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    finally:
+        conn.close()
+    return {r[1] for r in rows}
+
+
+@pytest.mark.asyncio
+async def test_schema_parity_with_broker_columns_present(tmp_path):
+    """ADR-006 Fase 0: local_* tables must carry broker-parity columns."""
+    db_file = tmp_path / "parity.db"
+    url = f"sqlite+aiosqlite:///{db_file}"
+    await init_db(url)
+    await dispose_db()
+
+    path = str(db_file)
+
+    agents_cols = _column_names_sqlite(path, "local_agents")
+    assert {"org_id", "cert_thumbprint", "metadata_json"}.issubset(agents_cols)
+
+    sessions_cols = _column_names_sqlite(path, "local_sessions")
+    assert {
+        "target_agent_id",
+        "initiator_org_id",
+        "target_org_id",
+        "requested_capabilities",
+        "expires_at",
+        "closed_at",
+    }.issubset(sessions_cols)
+    assert "responder_agent_id" not in sessions_cols
+
+    messages_cols = _column_names_sqlite(path, "local_messages")
+    assert {
+        "seq",
+        "nonce",
+        "signature",
+        "attempts",
+        "expired_at",
+        "delivery_status",
+    }.issubset(messages_cols)
+    assert "status" not in messages_cols
+
+    policies_cols = _column_names_sqlite(path, "local_policies")
+    assert {"org_id", "policy_type"}.issubset(policies_cols)
+
+    audit_cols = _column_names_sqlite(path, "local_audit")
+    assert {
+        "event_type",
+        "agent_id",
+        "session_id",
+        "org_id",
+        "details",
+        "result",
+        "entry_hash",
+        "previous_hash",
+        "chain_seq",
+        "peer_org_id",
+        "peer_row_hash",
+    }.issubset(audit_cols)
+    assert "action" not in audit_cols
+    assert "actor_agent_id" not in audit_cols
+    assert "row_hash" not in audit_cols
+    assert "prev_hash" not in audit_cols
+    assert "detail_json" not in audit_cols
+    assert "subject" not in audit_cols
 
 
 @pytest.mark.skipif(
