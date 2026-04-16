@@ -41,6 +41,12 @@ from cullis_connector.enrollment import (
     _generate_api_key,
     _start,
 )
+from cullis_connector.autostart import (
+    autostart_status,
+    install_autostart,
+    recommend_command as autostart_recommend_command,
+    uninstall_autostart,
+)
 from cullis_connector.ide_config import (
     IDEStatus,
     detect_all as ide_detect_all,
@@ -324,6 +330,7 @@ def build_app(config: ConnectorConfig) -> FastAPI:
         identity = load_identity(config.config_dir)
         meta = identity.metadata
         site_host = _host_of(meta.site_url)
+        astatus = autostart_status()
 
         return templates.TemplateResponse(
             request,
@@ -337,7 +344,37 @@ def build_app(config: ConnectorConfig) -> FastAPI:
                 "issued_at": meta.issued_at or "—",
                 "ides": _detect_ides(),
                 "mcp_snippet": mcp_entry_snippet(),
+                "autostart_enabled": astatus.installed,
+                "autostart_platform": astatus.platform,
             },
+        )
+
+    @app.post("/autostart/toggle")
+    def autostart_toggle() -> JSONResponse:
+        """Flip autostart on or off — server is the source of truth for
+        current state so the UI stays consistent across reloads."""
+        current = autostart_status()
+        if current.installed:
+            result = uninstall_autostart()
+            if result.status in ("uninstalled", "missing"):
+                return JSONResponse({"enabled": False, "status": "disabled"})
+            return JSONResponse(
+                {"enabled": True, "status": "error", "error": result.error},
+                status_code=500,
+            )
+        result = install_autostart(autostart_recommend_command())
+        if result.status in ("installed", "already_configured"):
+            return JSONResponse(
+                {
+                    "enabled": True,
+                    "status": "enabled",
+                    "note": result.note,
+                    "service_path": str(result.service_path) if result.service_path else None,
+                }
+            )
+        return JSONResponse(
+            {"enabled": False, "status": "error", "error": result.error},
+            status_code=500,
         )
 
     @app.post("/configure/{ide_id}")

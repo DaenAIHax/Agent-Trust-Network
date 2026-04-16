@@ -140,6 +140,24 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Remove the Cullis entry from each IDE's MCP config.",
     )
 
+    install_autostart = subparsers.add_parser(
+        "install-autostart",
+        help="Start the connector dashboard at login (LaunchAgent / Task / systemd).",
+    )
+    _add_shared_args(install_autostart)
+    install_autostart.add_argument(
+        "--uninstall",
+        dest="autostart_uninstall",
+        action="store_true",
+        help="Remove the autostart entry instead of installing it.",
+    )
+    install_autostart.add_argument(
+        "--status",
+        dest="autostart_status_only",
+        action="store_true",
+        help="Report current autostart status without changing anything.",
+    )
+
     dashboard = subparsers.add_parser(
         "dashboard",
         help="Run the local onboarding web UI (http://127.0.0.1:7777).",
@@ -312,6 +330,50 @@ def _cmd_install_mcp(cfg: ConnectorConfig, args: argparse.Namespace) -> int:
     return 1 if any_error else 0
 
 
+def _cmd_install_autostart(cfg: ConnectorConfig, args: argparse.Namespace) -> int:
+    from cullis_connector.autostart import (
+        autostart_status,
+        install_autostart,
+        recommend_command,
+        uninstall_autostart,
+    )
+
+    if args.autostart_status_only:
+        status = autostart_status()
+        state = "enabled" if status.installed else "disabled"
+        print(f"{state:<10} platform={status.platform}  path={status.service_path or '—'}")
+        if status.note:
+            print(f"           ↳ {status.note}")
+        return 0
+
+    if args.autostart_uninstall:
+        result = uninstall_autostart()
+        if result.status == "uninstalled":
+            print(f"[ok]   removed {result.service_path}")
+            return 0
+        if result.status == "missing":
+            print("[skip] nothing to remove — autostart was not registered.")
+            return 0
+        print(f"[err]  {result.error or 'unknown failure'}")
+        return 1
+
+    command = recommend_command()
+    result = install_autostart(command)
+    if result.status == "installed":
+        print(f"[ok]   autostart registered for {result.platform}")
+        print(f"       ↳ command: {' '.join(command)}")
+        if result.service_path:
+            print(f"       ↳ service: {result.service_path}")
+        if result.note:
+            print(f"       ↳ note: {result.note}")
+        return 0
+    if result.status == "already_configured":
+        print(f"[skip] already registered at {result.service_path}")
+        return 0
+    print(f"[err]  {result.error or 'unknown failure'}")
+    return 1
+
+
 def _cmd_dashboard(cfg: ConnectorConfig, args: argparse.Namespace) -> int:
     try:
         import uvicorn
@@ -373,6 +435,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _cmd_enroll(cfg, args)
     if command == "install-mcp":
         return _cmd_install_mcp(cfg, args)
+    if command == "install-autostart":
+        return _cmd_install_autostart(cfg, args)
     if command == "dashboard":
         return _cmd_dashboard(cfg, args)
     return _cmd_serve(cfg)
