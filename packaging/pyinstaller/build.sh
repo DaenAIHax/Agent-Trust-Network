@@ -102,8 +102,8 @@ pyinstaller \
   --workpath "build/pyinstaller" \
   --specpath "build/pyinstaller" \
   ${STRIP_FLAG} \
-  --add-data "cullis_connector/templates${DATA_SEP}cullis_connector/templates" \
-  --add-data "cullis_connector/static${DATA_SEP}cullis_connector/static" \
+  --add-data "${REPO_ROOT}/cullis_connector/templates${DATA_SEP}cullis_connector/templates" \
+  --add-data "${REPO_ROOT}/cullis_connector/static${DATA_SEP}cullis_connector/static" \
   --collect-submodules cullis_connector \
   --collect-submodules mcp \
   --collect-submodules fastapi \
