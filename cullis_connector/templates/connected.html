@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block title %}Connected{% endblock %}
+{% block content %}
+
+<div class="steps" aria-label="Enrollment progress">
+    <div class="step done">
+        <span class="step-circle">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        </span>
+        <span class="step-label">Connect</span>
+    </div>
+    <div class="step-sep done"></div>
+    <div class="step done">
+        <span class="step-circle">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        </span>
+        <span class="step-label">Approve</span>
+    </div>
+    <div class="step-sep done"></div>
+    <div class="step active">
+        <span class="step-circle">03</span>
+        <span class="step-label">Online</span>
+    </div>
+</div>
+
+<section class="panel">
+    <div class="success-hero">
+        <div class="check-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="20 6 9 17 4 12"/>
+            </svg>
+        </div>
+        <div style="text-align: center;">
+            <div class="panel-eyebrow">Identity issued</div>
+            <h1 class="panel-title" style="margin: 6px 0 0;">You are on the network</h1>
+        </div>
+    </div>
+
+    <div class="identity-card">
+        <div class="identity-row">
+            <span class="identity-k">Agent ID</span>
+            <span class="identity-v">{{ agent_id or '—' }}</span>
+        </div>
+        <div class="identity-row">
+            <span class="identity-k">Organization</span>
+            <span class="identity-v">{{ site_host or '—' }}</span>
+        </div>
+        <div class="identity-row">
+            <span class="identity-k">Capabilities</span>
+            <span class="identity-v">
+                {% if capabilities %}
+                    {{ capabilities | join(', ') }}
+                {% else %}
+                    <span class="muted">none · minimal role</span>
+                {% endif %}
+            </span>
+        </div>
+        <div class="identity-row">
+            <span class="identity-k">Issued at</span>
+            <span class="identity-v">{{ issued_at or '—' }}</span>
+        </div>
+    </div>
+</section>
+
+<section class="panel">
+    <div class="panel-head">
+        <div class="panel-eyebrow">Step 03 · Wire up your tools</div>
+        <h2 class="panel-title" style="font-size: 18px;">Connect your IDE</h2>
+        <p class="panel-sub">
+            Pick the apps where you want Cullis tools to appear. We'll write
+            the MCP config for you — restart the app after to see them.
+        </p>
+    </div>
+
+    <div class="ide-grid">
+        {% for ide in ides %}
+        <button
+            type="button"
+            class="ide-card"
+            data-status="{{ ide.status }}"
+            {% if ide.status != 'missing' %}
+            hx-post="/configure/{{ ide.id }}"
+            hx-swap="none"
+            hx-on::after-request="if(event.detail.successful){ this.setAttribute('data-status','installed'); this.querySelector('.ide-card-status').textContent='Configured · restart app'; showToast('{{ ide.name }} configured'); }"
+            {% else %}
+            disabled
+            {% endif %}>
+            <span class="ide-card-name">{{ ide.name }}</span>
+            <span class="ide-card-status">
+                {% if ide.status == 'installed' %}Already configured{% elif ide.status == 'detected' %}Ready to configure{% else %}Not detected{% endif %}
+            </span>
+        </button>
+        {% endfor %}
+    </div>
+
+    <div class="btn-row">
+        <button type="button" class="btn btn-secondary" onclick="copyText('{\n  &quot;mcpServers&quot;: {\n    &quot;cullis&quot;: {\n      &quot;command&quot;: &quot;cullis-connector&quot;,\n      &quot;args&quot;: [&quot;serve&quot;]\n    }\n  }\n}')">
+            Copy MCP config
+        </button>
+        <a class="btn btn-ghost" href="https://cullis.io/docs/connector/ide" target="_blank" rel="noopener">
+            Manual setup docs
+        </a>
+    </div>
+</section>
+
+<p class="footer-hint">
+    You can close this window — the connector keeps running in the background.
+</p>
+
+{% endblock %}

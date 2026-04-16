@@ -1,6 +1,6 @@
 """Command-line entry point for cullis-connector.
 
-Two top-level modes:
+Three top-level modes:
 
 * ``cullis-connector serve`` (default when no subcommand is given) — run
   the MCP stdio server. Requires a valid identity on disk; fails with a
@@ -9,6 +9,11 @@ Two top-level modes:
 * ``cullis-connector enroll`` — one-shot device-code enrollment: generate
   keypair, submit to the Site, print the admin URL, poll until approved,
   persist cert + metadata under ``~/.cullis/identity/``.
+
+* ``cullis-connector dashboard`` — local web UI on http://127.0.0.1:7777
+  that wraps enrollment in a three-screen wizard and (from Day 2) can
+  auto-configure Claude Desktop / Cursor / Cline. Intended as the
+  default onboarding path for end users who shouldn't need the CLI.
 """
 from __future__ import annotations
 
@@ -103,6 +108,34 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Free-form host/OS string recorded in the enrollment audit.",
     )
 
+    dashboard = subparsers.add_parser(
+        "dashboard",
+        help="Run the local onboarding web UI (http://127.0.0.1:7777).",
+    )
+    _add_shared_args(dashboard)
+    dashboard.add_argument(
+        "--host",
+        dest="web_host",
+        default="127.0.0.1",
+        help="Bind address for the dashboard. Defaults to 127.0.0.1 — do "
+             "not expose to the network without a reason.",
+    )
+    dashboard.add_argument(
+        "--port",
+        dest="web_port",
+        type=int,
+        default=7777,
+        help="Dashboard port (default 7777). Increment if something else "
+             "already holds the port.",
+    )
+    dashboard.add_argument(
+        "--no-open-browser",
+        dest="open_browser",
+        action="store_false",
+        default=True,
+        help="Do not auto-open a browser tab on startup.",
+    )
+
     # Shared args also live on the root parser so the default (no
     # subcommand) behaviour stays backward-compatible with Phase 1.
     _add_shared_args(parser)
@@ -187,6 +220,43 @@ def _cmd_enroll(cfg: ConnectorConfig, args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_dashboard(cfg: ConnectorConfig, args: argparse.Namespace) -> int:
+    try:
+        import uvicorn
+    except ImportError:
+        _log.error(
+            "dashboard requires extra deps — install with "
+            "`pip install 'cullis-connector[dashboard]'` (adds fastapi, "
+            "uvicorn, jinja2)."
+        )
+        return 2
+
+    # Import late so the dashboard deps stay optional for serve/enroll.
+    from cullis_connector.web import build_app
+
+    app = build_app(cfg)
+
+    host = getattr(args, "web_host", "127.0.0.1")
+    port = int(getattr(args, "web_port", 7777))
+    url = f"http://{host}:{port}"
+
+    if getattr(args, "open_browser", True):
+        import threading
+        import webbrowser
+
+        threading.Timer(0.6, lambda: webbrowser.open(url)).start()
+
+    _log.info("dashboard listening on %s — open it in a browser to enroll", url)
+    uvicorn.run(
+        app,
+        host=host,
+        port=port,
+        log_level=cfg.log_level if cfg.log_level != "debug" else "info",
+        access_log=False,
+    )
+    return 0
+
+
 # ── Entry point ──────────────────────────────────────────────────────────
 
 
@@ -209,6 +279,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if command == "enroll":
         return _cmd_enroll(cfg, args)
+    if command == "dashboard":
+        return _cmd_dashboard(cfg, args)
     return _cmd_serve(cfg)
 
 
