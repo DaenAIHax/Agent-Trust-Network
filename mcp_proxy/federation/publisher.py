@@ -1,0 +1,179 @@
+"""ADR-010 Phase 3 — Mastio federation publisher.
+
+Background task that pushes agents marked ``federated=True`` in
+``internal_agents`` to the Court's ``POST /v1/federation/publish-agent``
+endpoint (Phase 1). Uses the ADR-009 counter-signature so the Court can
+identify which Mastio is pushing. Tracks progress via
+``last_pushed_revision`` so every mutation (patch federated, cert
+rotation, deactivation) gets exactly one push.
+
+Flow per tick:
+  1. Query all rows where ``federated=1`` OR ``federated_at IS NOT NULL``
+     (the second lets us push revocations for rows that were federated
+     and later flipped off) AND
+     ``federation_revision > last_pushed_revision``.
+  2. For each row, build the JSON payload, sign the raw bytes with the
+     Mastio leaf key via ``AgentManager.countersign()``, POST to the
+     Court.
+  3. On 2xx, bump ``last_pushed_revision = federation_revision`` +
+     ``federated_at = now()``.
+  4. On 4xx/5xx, log + skip (next tick will retry; Phase 3 avoids infinite
+     retries by design — pathological rows are visible in the audit log).
+
+The Court is contacted via ``app.state.reverse_proxy_broker_url``
+(already initialized in the lifespan when the proxy is federated).
+Standalone proxies never reach here because ``federated_at`` stays NULL
+and revisions never go above ``last_pushed_revision=0``.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+from datetime import datetime, timezone
+
+import httpx
+from sqlalchemy import text
+
+
+_log = logging.getLogger("mcp_proxy.federation.publisher")
+
+
+POLL_INTERVAL_S = 30.0
+HTTP_TIMEOUT_S = 10.0
+
+
+async def _fetch_pending(conn) -> list[dict]:
+    """Rows that need a push on this tick."""
+    result = await conn.execute(
+        text(
+            """
+            SELECT agent_id, display_name, capabilities, cert_pem,
+                   is_active, federated, federation_revision,
+                   last_pushed_revision
+              FROM internal_agents
+             WHERE (federated = 1 OR federated_at IS NOT NULL)
+               AND federation_revision > last_pushed_revision
+            """
+        ),
+    )
+    return [dict(row) for row in result.mappings().all()]
+
+
+async def _mark_pushed(conn, agent_id: str, revision: int) -> None:
+    await conn.execute(
+        text(
+            """
+            UPDATE internal_agents
+               SET last_pushed_revision = :rev,
+                   federated_at = :now
+             WHERE agent_id = :aid
+            """
+        ),
+        {
+            "rev": revision,
+            "now": datetime.now(timezone.utc).isoformat(),
+            "aid": agent_id,
+        },
+    )
+
+
+def _build_body(row: dict) -> bytes:
+    """Canonical JSON body for signing + sending. Revoked iff
+    inactive — an admin can deactivate without clearing the federated
+    flag and we still want the Court to hear about it."""
+    payload = {
+        "agent_id": row["agent_id"],
+        "cert_pem": row["cert_pem"] or "",
+        "capabilities": json.loads(row["capabilities"] or "[]"),
+        "display_name": row["display_name"] or "",
+        "revoked": not bool(row["is_active"]),
+    }
+    return json.dumps(payload).encode()
+
+
+async def _publish_one(
+    *, row: dict, broker_url: str, countersign, client: httpx.AsyncClient,
+) -> bool:
+    body = _build_body(row)
+    signature = countersign(body)
+    url = f"{broker_url.rstrip('/')}/v1/federation/publish-agent"
+    try:
+        resp = await client.post(
+            url,
+            content=body,
+            headers={
+                "Content-Type": "application/json",
+                "X-Cullis-Mastio-Signature": signature,
+            },
+            timeout=HTTP_TIMEOUT_S,
+        )
+    except (httpx.ConnectError, httpx.TimeoutException) as exc:
+        _log.warning(
+            "federation publish: broker unreachable for %s (%s) — will retry",
+            row["agent_id"], exc,
+        )
+        return False
+
+    if resp.is_success:
+        _log.info(
+            "federation publish OK: %s rev=%d status=%s",
+            row["agent_id"], row["federation_revision"],
+            (resp.json() or {}).get("status"),
+        )
+        return True
+
+    _log.warning(
+        "federation publish %s → HTTP %d: %s",
+        row["agent_id"], resp.status_code, resp.text[:200],
+    )
+    # 4xx means the Court rejected the payload (bad sig, unpinned pubkey,
+    # unknown org, cert not chaining). Re-pushing won't fix it — mark as
+    # pushed so we don't spin forever. 5xx transient, retry next tick.
+    return 400 <= resp.status_code < 500
+
+
+async def _tick(app_state) -> int:
+    """One iteration: enumerate pending rows, push each, update state.
+    Returns the number of rows successfully acknowledged by the Court."""
+    broker_url = getattr(app_state, "reverse_proxy_broker_url", None)
+    mgr = getattr(app_state, "agent_manager", None)
+    http = getattr(app_state, "reverse_proxy_client", None)
+
+    if not broker_url or mgr is None or http is None:
+        return 0
+    if not getattr(mgr, "mastio_loaded", False):
+        return 0
+
+    from mcp_proxy.db import get_db
+    acked = 0
+    async with get_db() as conn:
+        rows = await _fetch_pending(conn)
+
+    for row in rows:
+        ok = await _publish_one(
+            row=row, broker_url=broker_url,
+            countersign=mgr.countersign, client=http,
+        )
+        if ok:
+            async with get_db() as conn:
+                await _mark_pushed(conn, row["agent_id"], row["federation_revision"])
+            acked += 1
+    return acked
+
+
+async def run_publisher(app_state, *, stop_event: asyncio.Event) -> None:
+    """Background task body. Exits when ``stop_event`` is set."""
+    _log.info("federation publisher started (poll=%.1fs)", POLL_INTERVAL_S)
+    try:
+        while not stop_event.is_set():
+            try:
+                await _tick(app_state)
+            except Exception as exc:  # defensive — never let the loop die
+                _log.exception("federation publisher tick failed: %s", exc)
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=POLL_INTERVAL_S)
+            except asyncio.TimeoutError:
+                continue
+    finally:
+        _log.info("federation publisher stopped")

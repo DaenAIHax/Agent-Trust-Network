@@ -259,6 +259,21 @@ async def lifespan(app: FastAPI):
             app.state.federation_subscriber_stats = sub_cfg.stats
             _log.info("federation subscriber started (org=%s)", org_id)
 
+    # ADR-010 Phase 3 — federation publisher loop. Only makes sense when
+    # the proxy is federated (broker_url set) and the mastio identity
+    # is loaded (pubkey pinned at the Court so counter-sig verification
+    # succeeds). Standalone proxies skip entirely.
+    if broker_url and getattr(agent_mgr, "mastio_loaded", False):
+        from mcp_proxy.federation.publisher import run_publisher
+        pub_stop = asyncio.Event()
+        pub_task = asyncio.create_task(
+            run_publisher(app.state, stop_event=pub_stop),
+            name="federation_publisher",
+        )
+        app.state.federation_publisher_stop = pub_stop
+        app.state.federation_publisher_task = pub_task
+        _log.info("federation publisher started (org=%s)", org_id)
+
     _log.info(
         "MCP Proxy started (host=%s, port=%d, env=%s)",
         settings.host, settings.port, settings.environment,
@@ -292,6 +307,20 @@ async def lifespan(app: FastAPI):
             sub_task.cancel()
             try:
                 await sub_task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+    pub_stop = getattr(app.state, "federation_publisher_stop", None)
+    pub_task = getattr(app.state, "federation_publisher_task", None)
+    if pub_stop is not None:
+        pub_stop.set()
+    if pub_task is not None:
+        try:
+            await asyncio.wait_for(pub_task, timeout=5.0)
+        except asyncio.TimeoutError:
+            pub_task.cancel()
+            try:
+                await pub_task
             except (asyncio.CancelledError, Exception):
                 pass
 
