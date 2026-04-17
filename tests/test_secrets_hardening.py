@@ -197,3 +197,38 @@ def test_dpop_jti_init_uses_in_memory_in_development(monkeypatch):
     finally:
         get_settings.cache_clear()
         jti_mod.reset_dpop_jti_store()
+
+
+# ── F-B-12: Mastio Redis warning (not a hard refusal) ──────────────
+#
+# Unlike the broker, Mastio has a legitimate single-instance production
+# mode (single-tenant intra-org). validate_config warns rather than
+# refusing when REDIS_URL is empty in production — operators deploying
+# multi-worker/HA must set it to avoid the cross-worker DPoP replay +
+# rate-limit budget multiplication.
+
+def test_proxy_validate_config_warns_on_prod_without_redis(caplog):
+    settings = _prod_proxy_settings(redis_url="")
+    with caplog.at_level("WARNING", logger="mcp_proxy"):
+        # Must NOT raise — single-instance Mastio prod is supported.
+        proxy_validate_config(settings)
+    messages = " ".join(rec.message for rec in caplog.records)
+    assert "MCP_PROXY_REDIS_URL" in messages
+    assert "single-instance" in messages or "multi-worker" in messages
+    assert "F-B-12" in messages
+
+
+def test_proxy_validate_config_prod_with_redis_no_warning(caplog):
+    settings = _prod_proxy_settings(redis_url="redis://redis:6379/0")
+    with caplog.at_level("WARNING", logger="mcp_proxy"):
+        proxy_validate_config(settings)
+    messages = " ".join(rec.message for rec in caplog.records)
+    assert "F-B-12" not in messages
+
+
+def test_proxy_validate_config_dev_without_redis_no_warning(caplog):
+    settings = ProxySettings(environment="development", redis_url="")
+    with caplog.at_level("WARNING", logger="mcp_proxy"):
+        proxy_validate_config(settings)
+    messages = " ".join(rec.message for rec in caplog.records)
+    assert "F-B-12" not in messages
