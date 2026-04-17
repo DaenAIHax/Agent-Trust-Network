@@ -180,10 +180,14 @@ services:
       broker:
         condition: service_healthy
     environment:
-      BROKER_URL:   "http://broker:8000"
-      ADMIN_SECRET: "sandbox-admin-secret-change-me"
-      STATE_DIR:    /state
-      POSTGRES_DSN: "postgresql://atn:atn-sandbox@postgres:5432/agent_trust"
+      BROKER_URL:       "http://broker:8000"
+      ADMIN_SECRET:     "sandbox-admin-secret-change-me"
+      STATE_DIR:        /state
+      POSTGRES_DSN:     "postgresql://atn:atn-sandbox@postgres:5432/agent_trust"
+      # ADR-009 sandbox: BOOTSTRAP_SCOPE=up (default) keeps orga unregistered
+      # on the Court so the user walks through it in the guided flow;
+      # demo.sh full exports BOOTSTRAP_SCOPE=full.
+      BOOTSTRAP_SCOPE:  "${BOOTSTRAP_SCOPE:-up}"
       # Per PR #88 the broker no longer has per-org OIDC login — OIDC is
       # configured per-proxy via proxy-init below. Bootstrap just creates
       # the orgs on the broker and writes CA/secret to /state.
@@ -336,6 +340,10 @@ services:
       start_period: 15s
 
   agent-a:
+    # ADR-009 sandbox — orga workloads only start in ``full`` mode; with
+    # the default ``demo.sh up`` the user bootstraps orga themselves
+    # via the guided walkthrough.
+    profiles: ["full"]
     build:
       context: ..
       dockerfile: enterprise_sandbox/agent/Dockerfile
@@ -375,6 +383,7 @@ services:
   # mode: same org, one trust_domain, different agents pick different
   # auth methods.
   byoca-a:
+    profiles: ["full"]
     build:
       context: ..
       dockerfile: enterprise_sandbox/agent/Dockerfile
@@ -569,6 +578,7 @@ services:
   # ── MCP servers (ADR-007) ──────────────────────────────────────────────────
 
   mcp-catalog:
+    profiles: ["full"]
     build:
       context: ./mcp-catalog
       dockerfile: ../mcp-server.Dockerfile
@@ -613,5 +623,8 @@ services:
       PROXY_A_ADMIN_SECRET:  "sandbox-proxy-admin-a"
       PROXY_B_URL:           "http://proxy-b:9200"
       PROXY_B_ADMIN_SECRET:  "sandbox-proxy-admin-b"
+      # Must match bootstrap's scope — in ``up`` only orgb is patched;
+      # orga doesn't exist on the Court yet.
+      BOOTSTRAP_SCOPE:       "${BOOTSTRAP_SCOPE:-up}"
     networks: [public-wan]
     restart: "no"

@@ -1,63 +1,88 @@
 #!/usr/bin/env bash
+# Cullis Enterprise Sandbox — 3-mode driver (ADR-009 sandbox restructure).
+#
+#   demo.sh up        Tier 1: Court + Org B complete + Mastio A standalone
+#                              (user completes Org A via the guided flow)
+#   demo.sh full      Tier 2: everything wired — two orgs, three agents,
+#                              two MCP servers, scenarios ready to replay
+#   demo.sh down      Teardown (containers + volumes)
+#   demo.sh status    List running services
+#   demo.sh logs [S]  Tail compose logs
+#   demo.sh dashboard Print dashboard URLs
+#   demo.sh help      This message
+#
 set -euo pipefail
-
 cd "$(dirname "$0")"
 
-# ANSI
 BOLD='\033[1m'
 GREEN='\033[32m'
 CYAN='\033[36m'
+YELLOW='\033[33m'
 RESET='\033[0m'
 
 _header() { echo -e "\n${BOLD}${CYAN}═══ $1 ═══${RESET}\n"; }
+_ok()     { echo -e "  ${GREEN}✓${RESET} $1"; }
+_note()   { echo -e "  ${YELLOW}•${RESET} $1"; }
+
+_print_dashboards() {
+    _header "Dashboard URLs"
+    echo -e "  ${GREEN}Court (broker)${RESET}      http://localhost:8000/dashboard/login"
+    echo -e "                       admin / sandbox-admin-secret-change-me"
+    echo -e "  ${GREEN}Mastio A (proxy-a)${RESET}  http://localhost:9100/proxy"
+    echo -e "                       admin secret: sandbox-proxy-admin-a"
+    echo -e "  ${GREEN}Mastio B (proxy-b)${RESET}  http://localhost:9200/proxy"
+    echo -e "                       admin secret: sandbox-proxy-admin-b"
+    echo -e "  ${GREEN}Keycloak A${RESET}          http://localhost:8180 (alice / alice-sandbox)"
+    echo -e "  ${GREEN}Keycloak B${RESET}          http://localhost:8280 (bob / bob-sandbox)"
+}
 
 case "${1:-help}" in
   up)
-    _header "Enterprise Sandbox — Starting"
-    echo "Building and starting all services..."
+    _header "Enterprise Sandbox — Tier 1 (you onboard Org A)"
+    _note "Org B (Globex Inc) is fully wired."
+    _note "Org A (Acme Corp) has Mastio A running in standalone mode but"
+    _note "is NOT registered on the Court — you will do that from the guide."
+    export BOOTSTRAP_SCOPE=up
     docker compose build --quiet
     docker compose up -d --wait
-    echo ""
     _header "Services Running"
     docker compose ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}"
+    _print_dashboards
     echo ""
-    _header "Dashboard URLs"
-    echo -e "  ${GREEN}Court (broker)${RESET}     http://localhost:8000/dashboard/login"
-    echo -e "                      admin / sandbox-admin-secret-change-me"
-    echo -e "  ${GREEN}Mastio A (proxy-a)${RESET} http://localhost:9100/proxy"
-    echo -e "                      admin secret: sandbox-proxy-admin-a"
-    echo -e "  ${GREEN}Mastio B (proxy-b)${RESET} http://localhost:9200/proxy"
-    echo -e "                      admin secret: sandbox-proxy-admin-b"
-    echo -e "  ${GREEN}Keycloak A${RESET}         http://localhost:8180  (alice / alice-sandbox)"
-    echo -e "  ${GREEN}Keycloak B${RESET}         http://localhost:8280  (bob / bob-sandbox)"
+    _ok "Sandbox ready. Run ${BOLD}demo.sh help${RESET} to see commands."
+    ;;
+
+  full)
+    _header "Enterprise Sandbox — Tier 2 (everything wired)"
+    _note "Both orgs registered, three agents enrolled, two MCP servers online."
+    export BOOTSTRAP_SCOPE=full
+    docker compose --profile full build --quiet
+    docker compose --profile full up -d --wait
+    _header "Services Running"
+    docker compose --profile full ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}"
+    _print_dashboards
     echo ""
-    echo -e "Bootstrap logs:  docker compose -f enterprise_sandbox/docker-compose.yml logs bootstrap"
-    echo -e "Agent logs:      docker compose -f enterprise_sandbox/docker-compose.yml logs agent-a agent-b byoca-a"
+    _ok "Full sandbox ready."
     ;;
 
   down)
     _header "Enterprise Sandbox — Teardown"
-    docker compose down -v --remove-orphans
-    echo -e "${GREEN}✓ sandbox down${RESET}"
+    docker compose --profile full down -v --remove-orphans
+    _ok "sandbox down"
     ;;
 
   status)
     _header "Enterprise Sandbox — Status"
-    docker compose ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}"
+    docker compose --profile full ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}"
     ;;
 
   logs)
     shift
-    docker compose logs "${@:---tail=50}"
+    docker compose --profile full logs "${@:---tail=50}"
     ;;
 
   dashboard)
-    _header "Dashboard URLs"
-    echo -e "  Court (broker)     http://localhost:8000/dashboard/login"
-    echo -e "  Mastio A (proxy-a) http://localhost:9100/proxy"
-    echo -e "  Mastio B (proxy-b) http://localhost:9200/proxy"
-    echo -e "  Keycloak A         http://localhost:8180"
-    echo -e "  Keycloak B         http://localhost:8280"
+    _print_dashboards
     ;;
 
   bootstrap-logs)
@@ -65,16 +90,20 @@ case "${1:-help}" in
     ;;
 
   help|*)
-    echo "Usage: demo.sh <command>"
-    echo ""
-    echo "Lifecycle:"
-    echo "  up              Build + start all services, show dashboard URLs"
-    echo "  down            Teardown (remove containers + volumes)"
-    echo "  status          Show running services"
-    echo "  logs [service]  Show logs (default: last 50 lines)"
-    echo ""
-    echo "Info:"
-    echo "  dashboard       Print dashboard URLs"
-    echo "  bootstrap-logs  Show bootstrap verbose output"
+    cat <<EOF
+Usage: demo.sh <command>
+
+Lifecycle:
+  up              Tier 1 — Court + Org B wired + Mastio A standalone.
+                  Org A is left for you to onboard via the guided flow.
+  full            Tier 2 — both orgs + all agents + MCP servers wired.
+  down            Stop everything + drop volumes.
+
+Inspection:
+  status          List services + health.
+  logs [svc]      Tail compose logs (default: --tail=50).
+  dashboard       Print dashboard URLs + admin secrets.
+  bootstrap-logs  Replay the verbose Phase 1-7 bootstrap output.
+EOF
     ;;
 esac

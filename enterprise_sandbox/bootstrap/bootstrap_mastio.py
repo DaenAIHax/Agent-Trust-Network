@@ -27,9 +27,16 @@ import httpx
 BROKER_URL   = os.environ.get("BROKER_URL", "http://broker:8000")
 ADMIN_SECRET = os.environ["ADMIN_SECRET"]
 
+# ADR-009 sandbox — scope=up has only orgb on the Court. Patching orga
+# would fail with 404 because the bootstrap container skipped its
+# registration. scope=full pins both.
+SCOPE = os.environ.get("BOOTSTRAP_SCOPE", "full").strip().lower()
+if SCOPE not in ("up", "full"):
+    SCOPE = "full"
+
 # Per-org proxy URL + proxy admin secret. Sandbox uses the broker's
 # admin secret for simplicity — in prod each proxy carries its own.
-PROXIES = [
+_ALL_PROXIES = [
     {
         "org_id":       "orga",
         "proxy_url":    os.environ.get("PROXY_A_URL", "http://proxy-a:9100"),
@@ -40,6 +47,9 @@ PROXIES = [
         "proxy_url":    os.environ.get("PROXY_B_URL", "http://proxy-b:9200"),
         "admin_secret": os.environ.get("PROXY_B_ADMIN_SECRET", ADMIN_SECRET),
     },
+]
+PROXIES = [
+    p for p in _ALL_PROXIES if SCOPE == "full" or p["org_id"] != "orga"
 ]
 
 RESET = "\033[0m"
