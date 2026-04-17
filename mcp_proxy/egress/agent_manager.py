@@ -8,7 +8,6 @@ Each internal agent gets:
   - A local API key (sk_local_{name}_{hex}) for authenticating to the proxy
 """
 import hashlib
-import json
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -23,7 +22,7 @@ from cryptography.x509 import (
 from cryptography.x509.oid import NameOID
 
 from mcp_proxy.auth.api_key import generate_api_key, hash_api_key
-from mcp_proxy.config import broker_tls_verify, get_settings, vault_tls_verify
+from mcp_proxy.config import get_settings, vault_tls_verify
 from mcp_proxy.db import (
     create_agent as db_create_agent,
     deactivate_agent as db_deactivate_agent,

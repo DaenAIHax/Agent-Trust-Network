@@ -7,7 +7,7 @@ Covers:
   #24 — EC curve whitelist in x509 verifier
   #31 — Input validation on onboarding JoinRequest
   #32 — Input validation on registry AgentRegisterRequest
-  #34 — Pending orgs cannot register agents
+  #34 — Pending orgs cannot register agents (endpoint removed in ADR-010 6a-4)
   #36 — Revocation cleanup 30-min buffer
   #44 — get_client_ip helper
 """
@@ -16,7 +16,6 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import patch, MagicMock
 
 import pytest
-from httpx import AsyncClient
 
 pytestmark = pytest.mark.asyncio
 

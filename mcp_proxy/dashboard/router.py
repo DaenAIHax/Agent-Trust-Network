@@ -1315,7 +1315,7 @@ async def agent_delete(request: Request, agent_id: str):
 
     from sqlalchemy import text
 
-    from mcp_proxy.db import get_agent, get_config, get_db, log_audit
+    from mcp_proxy.db import get_agent, get_db, log_audit
 
     agent = await get_agent(agent_id)
     if agent is None:
