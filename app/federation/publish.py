@@ -24,7 +24,6 @@ import logging
 from cryptography import x509
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric import ec, rsa, padding
-from cryptography.hazmat.primitives import hashes
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,7 +33,7 @@ from app.db.database import get_db
 from app.db.audit import log_event
 from app.registry.org_store import get_org_by_id
 from app.registry.store import (
-    AgentRecord, get_agent_by_id, register_agent, update_agent_cert,
+    get_agent_by_id, register_agent, update_agent_cert,
     compute_cert_thumbprint,
 )
 
@@ -182,9 +181,8 @@ async def publish_agent(
     #    need to re-verify since the row already exists).
     existing = await get_agent_by_id(db, body.agent_id)
 
-    cert: x509.Certificate | None = None
     if not body.revoked:
-        cert = _verify_cert_chain(body.cert_pem, org.ca_certificate)
+        _verify_cert_chain(body.cert_pem, org.ca_certificate)
 
     # 4. Revocation path: update the existing row and audit.
     if body.revoked:
