@@ -20,7 +20,6 @@ with that PR.
 """
 from __future__ import annotations
 
-from unittest.mock import patch
 from urllib.parse import urlparse
 
 import pytest
