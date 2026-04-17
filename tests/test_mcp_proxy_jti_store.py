@@ -114,43 +114,34 @@ async def test_factory_allows_in_memory_in_production_single_instance(monkeypatc
     prod + no Redis; it logs a warning and returns in-memory so
     single-worker deploys keep working.
 
-    The ``mcp_proxy`` logger is configured with ``propagate=False``
-    (see ``mcp_proxy/logging_setup.py``), which makes pytest's ``caplog``
-    miss records on CI runners where logging is already set up. Capture
-    via a dedicated handler on the target logger instead.
+    Intercept ``_log.warning`` directly on the module under test —
+    pytest's caplog misses records on CI because the ``mcp_proxy``
+    logger is configured with ``propagate=False`` (see
+    ``mcp_proxy/logging_setup.py``). A module-level monkeypatch has no
+    dependency on logging framework behaviour.
     """
-    import logging
-
     from mcp_proxy.config import get_settings
 
     monkeypatch.setattr(redis_pool, "get_redis", lambda: None)
     monkeypatch.setenv("MCP_PROXY_ENVIRONMENT", "production")
     get_settings.cache_clear()
 
-    captured: list[logging.LogRecord] = []
+    warnings: list[str] = []
 
-    class _Collector(logging.Handler):
-        def emit(self, record: logging.LogRecord) -> None:
-            captured.append(record)
+    def _record(msg, *args, **kwargs):
+        warnings.append(str(msg) % args if args else str(msg))
 
-    handler = _Collector(level=logging.WARNING)
-    logger = logging.getLogger("mcp_proxy")
-    previous_level = logger.level
-    logger.addHandler(handler)
-    logger.setLevel(logging.WARNING)
+    monkeypatch.setattr(jti_mod._log, "warning", _record)
 
     jti_mod.reset_dpop_jti_store()
     try:
         store = jti_mod._init_store()
         assert isinstance(store, jti_mod.InMemoryDpopJtiStore)
         # Warning must be emitted so operators see the single-instance constraint.
-        messages = [r.getMessage() for r in captured]
-        assert any("single-instance" in msg for msg in messages), (
-            f"expected single-instance warning, got: {messages}"
+        assert any("single-instance" in msg for msg in warnings), (
+            f"expected single-instance warning, got: {warnings}"
         )
     finally:
-        logger.removeHandler(handler)
-        logger.setLevel(previous_level)
         get_settings.cache_clear()
         jti_mod.reset_dpop_jti_store()
 
