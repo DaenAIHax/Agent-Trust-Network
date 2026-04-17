@@ -19,7 +19,7 @@ audit actually requires — no need to instantiate the full lifespan.
 """
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
