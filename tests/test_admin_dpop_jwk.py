@@ -19,7 +19,6 @@ populate the column. Tests cover:
 from __future__ import annotations
 
 import base64
-import json
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
