@@ -29,7 +29,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -49,6 +49,7 @@ from app.rate_limit.limiter import rate_limiter
 from app.registry.binding_store import get_approved_binding
 from app.registry.org_store import get_org_by_id
 from app.registry.store import get_agent_by_id
+from app.utils.validation import validate_payload_depth
 
 _log = logging.getLogger("agent_trust")
 
@@ -105,6 +106,17 @@ class ForwardOneShotRequest(BaseModel):
         description="One-shot envelope protocol version. Audit F-A-1/F-A-3: "
                     "v2 signature covers full envelope; v1 is hard-rejected.",
     )
+
+    @field_validator("payload")
+    @classmethod
+    def _bound_payload(cls, v: dict) -> dict:
+        # Audit F-C-1: reject pathologically deep / wide payloads before
+        # the signature-verify CPU cost on the handler path. Depth cap is
+        # 8 (same as MessageEnvelope) and key-count cap 1024. Byte-size
+        # cap is already enforced at the HTTP layer (nginx 2 MB) and by
+        # the ``envelope`` field on persistence.
+        validate_payload_depth(v, max_depth=8, max_keys=1024)
+        return v
 
 
 class ForwardOneShotResponse(BaseModel):
