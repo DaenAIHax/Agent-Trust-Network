@@ -67,7 +67,7 @@ async def test_init_db_fresh_sqlite_runs_alembic_upgrade(tmp_path):
         rows = conn.execute("SELECT version_num FROM alembic_version").fetchall()
     finally:
         conn.close()
-    assert rows == [("0011_internal_agents_last_pushed_revision",)]
+    assert rows == [("0011_last_pushed_revision",)]
 
 
 @pytest.mark.asyncio
@@ -127,7 +127,7 @@ async def test_init_db_stamps_legacy_sqlite_then_upgrades(tmp_path):
         conn.close()
 
     assert rows == [("legacy-agent",)], "pre-existing row lost during stamp+upgrade"
-    assert version == [("0011_internal_agents_last_pushed_revision",)]
+    assert version == [("0011_last_pushed_revision",)]
 
 
 @pytest.mark.asyncio
