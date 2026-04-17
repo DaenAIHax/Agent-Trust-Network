@@ -95,7 +95,10 @@ async def get_public_key(agent_id: str, request: Request) -> PublicKeyResponse:
     # Broker enforces org isolation + binding auth on this endpoint, so we
     # must propagate the caller's Authorization / DPoP headers. Hop-by-hop
     # headers are dropped for the same reason the reverse-proxy forwarder
-    # drops them.
+    # drops them. Host is stripped separately so the broker's ``build_htu``
+    # can reconstruct the URL the SDK originally signed — otherwise the
+    # DPoP proof fails verification with 401 because the broker sees its
+    # own hostname in ``request.url`` while the proof carries the proxy's.
     _HOP = frozenset([
         "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
         "te", "trailer", "transfer-encoding", "upgrade", "content-length",
@@ -104,6 +107,21 @@ async def get_public_key(agent_id: str, request: Request) -> PublicKeyResponse:
     forward_headers = {
         k: v for k, v in request.headers.items() if k.lower() not in _HOP
     }
+    # Same X-Forwarded-* propagation the generic reverse-proxy does in
+    # mcp_proxy/reverse_proxy/forwarder.py — the broker's DPoP htu builder
+    # reads these to rebuild the URL the SDK signed. Without them the
+    # verification fails and the call 401s even though DPoP proof itself
+    # is structurally valid.
+    inbound_host = request.headers.get("host")
+    if inbound_host and "x-forwarded-host" not in {h.lower() for h in forward_headers}:
+        forward_headers["x-forwarded-host"] = inbound_host
+    forward_headers.setdefault("x-forwarded-proto", request.url.scheme)
+    client_host = request.client.host if request.client else None
+    if client_host:
+        existing = forward_headers.get("x-forwarded-for")
+        forward_headers["x-forwarded-for"] = (
+            f"{existing}, {client_host}" if existing else client_host
+        )
     try:
         upstream = await client.get(target, headers=forward_headers)
     except httpx.ConnectError as exc:
