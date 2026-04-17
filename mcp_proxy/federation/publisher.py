@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from datetime import datetime, timezone
 
 import httpx
@@ -39,13 +40,33 @@ from sqlalchemy import text
 _log = logging.getLogger("mcp_proxy.federation.publisher")
 
 
-POLL_INTERVAL_S = 30.0
+def _env_float(name: str, default: float) -> float:
+    """Parse a positive-float env var, fall back to ``default`` on junk."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        _log.warning("invalid %s=%r — using default %.1fs", name, raw, default)
+        return default
+    if value <= 0:
+        _log.warning("non-positive %s=%r — using default %.1fs", name, raw, default)
+        return default
+    return value
+
+
+# Production defaults match ADR-010 Phase 3. The demo_network smoke pins
+# these tighter via ``MCP_PROXY_FEDERATION_POLL_INTERVAL_S`` so the first
+# push lands seconds after ``bootstrap-mastio`` seeds ``/v1/admin/agents``,
+# instead of blocking the CI smoke on a 30-second tick.
+POLL_INTERVAL_S = _env_float("MCP_PROXY_FEDERATION_POLL_INTERVAL_S", 30.0)
 HTTP_TIMEOUT_S = 10.0
 
 # Aggregate-stats push is less time-critical than per-agent revisions
 # (the Court dashboard tolerates a few minutes of staleness), so the
 # stats loop runs an order of magnitude slower than the agent loop.
-STATS_INTERVAL_S = 300.0
+STATS_INTERVAL_S = _env_float("MCP_PROXY_FEDERATION_STATS_INTERVAL_S", 300.0)
 
 
 async def _fetch_pending(conn) -> list[dict]:
