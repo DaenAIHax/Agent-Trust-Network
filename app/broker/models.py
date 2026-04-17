@@ -2,6 +2,8 @@ from datetime import datetime
 from enum import Enum
 from pydantic import BaseModel, Field, field_validator
 
+from app.utils.validation import validate_payload_depth
+
 
 class InboxMessage(BaseModel):
     seq: int
@@ -45,19 +47,9 @@ class SessionRequest(BaseModel):
     def validate_context(cls, v: dict) -> dict:
         import json
 
-        def _check_depth(obj: object, depth: int = 0) -> None:
-            if depth > 4:
-                raise ValueError("context nesting exceeds maximum depth of 4")
-            if isinstance(obj, dict):
-                for key, val in obj.items():
-                    if not isinstance(key, str):
-                        raise ValueError("context keys must be strings")
-                    _check_depth(val, depth + 1)
-            elif isinstance(obj, list):
-                for item in obj:
-                    _check_depth(item, depth + 1)
-
-        _check_depth(v)
+        # Session context stays stricter than message payloads — 4 levels,
+        # 256 keys — because it's consumed synchronously by policy checks.
+        validate_payload_depth(v, max_depth=4, max_keys=256)
         if len(json.dumps(v, default=str)) > 16384:
             raise ValueError("context exceeds 16 KB limit")
         return v
@@ -90,6 +82,9 @@ class MessageEnvelope(BaseModel):
     @classmethod
     def limit_payload_size(cls, v: dict) -> dict:
         import json
+        # Audit F-C-1: bound depth + key fan-out BEFORE we serialize, so a
+        # pathological payload cannot stall the worker in json.dumps either.
+        validate_payload_depth(v, max_depth=8, max_keys=1024)
         serialized = json.dumps(v, default=str)
         if len(serialized) > 1_048_576:  # 1 MB
             raise ValueError("payload exceeds 1 MB limit")
@@ -113,6 +108,7 @@ class RfqRequest(BaseModel):
     @classmethod
     def limit_rfq_payload(cls, v: dict) -> dict:
         import json
+        validate_payload_depth(v, max_depth=8, max_keys=1024)
         if len(json.dumps(v, default=str)) > 65536:  # 64 KB
             raise ValueError("RFQ payload exceeds 64 KB limit")
         return v
@@ -126,6 +122,7 @@ class RfqRespondRequest(BaseModel):
     @classmethod
     def limit_response_payload(cls, v: dict) -> dict:
         import json
+        validate_payload_depth(v, max_depth=8, max_keys=1024)
         if len(json.dumps(v, default=str)) > 65536:
             raise ValueError("RFQ response payload exceeds 64 KB limit")
         return v
