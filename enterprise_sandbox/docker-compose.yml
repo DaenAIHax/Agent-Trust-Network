@@ -350,6 +350,10 @@ services:
     depends_on:
       spire-agent-a:
         condition: service_healthy
+      # Post-Phase-4: /v1/auth/token refuses orgs with NULL mastio_pubkey,
+      # so the agent must wait until bootstrap-mastio pinned it on the Court.
+      bootstrap-mastio:
+        condition: service_completed_successfully
       broker:
         condition: service_healthy
     environment:
@@ -389,6 +393,8 @@ services:
       dockerfile: enterprise_sandbox/agent/Dockerfile
     depends_on:
       bootstrap:
+        condition: service_completed_successfully
+      bootstrap-mastio:
         condition: service_completed_successfully
       broker:
         condition: service_healthy
@@ -553,6 +559,8 @@ services:
     depends_on:
       spire-agent-b:
         condition: service_healthy
+      bootstrap-mastio:
+        condition: service_completed_successfully
       broker:
         condition: service_healthy
     environment:
@@ -615,16 +623,24 @@ services:
         condition: service_healthy
       proxy-b:
         condition: service_healthy
-    command: ["python", "/app/bootstrap_mastio.py"]
+    # Override ENTRYPOINT, not just command — the Dockerfile pins
+    # ``ENTRYPOINT ["python", "/app/bootstrap.py"]`` and compose's
+    # ``command:`` only replaces CMD, so without this the service
+    # re-runs the main bootstrap instead of the pin_mastio step.
+    entrypoint: ["python", "/app/bootstrap_mastio.py"]
     environment:
       BROKER_URL:            "http://broker:8000"
       ADMIN_SECRET:          "sandbox-admin-secret-change-me"
       PROXY_A_URL:           "http://proxy-a:9100"
       PROXY_A_ADMIN_SECRET:  "sandbox-proxy-admin-a"
-      PROXY_B_URL:           "http://proxy-b:9200"
+      # Proxy B listens on 9100 inside the compose network (9200 is only
+      # the host-side port mapping).
+      PROXY_B_URL:           "http://proxy-b:9100"
       PROXY_B_ADMIN_SECRET:  "sandbox-proxy-admin-b"
       # Must match bootstrap's scope — in ``up`` only orgb is patched;
       # orga doesn't exist on the Court yet.
       BOOTSTRAP_SCOPE:       "${BOOTSTRAP_SCOPE:-up}"
-    networks: [public-wan]
+    # Needs all three networks: Court via public-wan, Mastio A via
+    # orga-internal, Mastio B via orgb-internal (per-org isolation).
+    networks: [public-wan, orga-internal, orgb-internal]
     restart: "no"
