@@ -359,3 +359,110 @@ async def deactivate_agent_endpoint(agent_id: str):
         detail=f"agent_id={agent_id}",
     )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# ── F-B-11 Phase 3a — DPoP JWK registration ─────────────────────────
+
+class DpopJwkRequest(BaseModel):
+    """Public JWK the agent will use to sign DPoP proofs.
+
+    Must be a PUBLIC key — presence of the ``d`` (private component)
+    field is a hard reject. The server stores only the RFC 7638
+    thumbprint; the JWK itself is not retained.
+    """
+    jwk: dict = Field(
+        ...,
+        description="Public JWK (EC P-256 or RSA). ``d`` field rejected.",
+    )
+
+
+class DpopJwkResponse(BaseModel):
+    agent_id: str
+    dpop_jkt: str
+
+
+@router.post(
+    "/{agent_id}/dpop-jwk",
+    response_model=DpopJwkResponse,
+    dependencies=[Depends(_require_admin_secret)],
+)
+async def register_agent_dpop_jwk(
+    agent_id: str,
+    body: DpopJwkRequest,
+) -> DpopJwkResponse:
+    """Register or rotate the DPoP JWK bound to an existing agent.
+
+    Audit F-B-11 Phase 3a (#181). Populates ``internal_agents.dpop_jkt``
+    so the egress DPoP dep (#199 + #204) can enforce key-possession
+    proofs against this agent specifically. Before the Phase 3b SDK
+    lands, this endpoint is how operators bind agents: the agent (or
+    the operator on its behalf) generates a keypair, POSTs the public
+    JWK here, and from then on proofs signed by the matching private
+    key are accepted.
+
+    Input validation:
+      * ``d`` field must be absent — we never accept a private JWK.
+      * ``kty`` must be ``EC`` (P-256) or ``RSA``; the verifier only
+        supports those curves today.
+      * The thumbprint must be computable. A malformed JWK is rejected
+        as 400 — the caller can pinpoint the field from the message.
+
+    Effect:
+      * UPDATE ``internal_agents.dpop_jkt`` where ``agent_id`` matches
+        and the row is active.
+      * No federation impact — ``dpop_jkt`` is Mastio-local and does
+        not flow through the Court push loop.
+    """
+    from mcp_proxy.auth.dpop import compute_jkt
+
+    jwk = body.jwk or {}
+    if not isinstance(jwk, dict) or not jwk:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="jwk must be a non-empty object",
+        )
+    if "d" in jwk:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="private key material ('d') rejected — send the "
+                   "public JWK only",
+        )
+    kty = jwk.get("kty")
+    if kty not in ("EC", "RSA"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"unsupported kty {kty!r} — expected 'EC' (P-256) or 'RSA'",
+        )
+
+    try:
+        jkt = compute_jkt(jwk)
+    except (ValueError, KeyError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"malformed JWK: {exc}",
+        ) from exc
+
+    async with get_db() as conn:
+        result = await conn.execute(
+            text(
+                """
+                UPDATE internal_agents
+                   SET dpop_jkt = :jkt
+                 WHERE agent_id = :aid AND is_active = 1
+                """
+            ),
+            {"jkt": jkt, "aid": agent_id},
+        )
+        if result.rowcount == 0:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="agent not found or inactive",
+            )
+
+    await log_audit(
+        agent_id="admin",
+        action="agent.dpop_jwk_set",
+        status="success",
+        detail=f"agent_id={agent_id} jkt={jkt}",
+    )
+    return DpopJwkResponse(agent_id=agent_id, dpop_jkt=jkt)
