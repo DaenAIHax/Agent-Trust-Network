@@ -837,17 +837,22 @@ async def resolve_recipient(
 
         target_cert_pem: str | None = None
         if transport == "mtls-only":
-            # ``internal_agents.agent_id`` is stored as ``<org>::<name>``;
-            # ``parse_recipient`` returns just the short name, so the
-            # lookup must reassemble the full key before querying.
+            # ``internal_agents.agent_id`` is ``<org>::<name>`` in
+            # production (ADR-010 invariant) but legacy rows + some
+            # test fixtures still use the bare ``<name>`` form. Try
+            # full first, then bare — picking the first row via
+            # ``ORDER BY`` so the full-form match wins when both
+            # exist. 404 only if neither is found.
             full_agent_id = f"{target_org}::{target_agent}"
             async with get_db() as conn:
                 result = await conn.execute(
                     text(
                         "SELECT cert_pem, is_active FROM internal_agents "
-                        "WHERE agent_id = :agent_id"
+                        "WHERE agent_id IN (:full_id, :bare_id) "
+                        "ORDER BY CASE WHEN agent_id = :full_id "
+                        "THEN 0 ELSE 1 END LIMIT 1"
                     ),
-                    {"agent_id": full_agent_id},
+                    {"full_id": full_agent_id, "bare_id": target_agent},
                 )
                 row = result.mappings().first()
                 if row is None or not row["is_active"]:

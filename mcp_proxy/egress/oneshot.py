@@ -289,28 +289,23 @@ async def send_oneshot(
             status="duplicate" if duplicate else "enqueued",
         )
 
-    # ADR-011 Phase 4b — persist the full ``<org>::<agent>`` form so the
-    # ``/inbox`` lookup (keyed on ``agent.agent_id`` from the DPoP dep,
-    # which carries the full form) matches. Session /send used to store
-    # only the bare agent name which worked because the session was
-    # already scoped to this org by the session row itself — one-shots
-    # have no such scope, so the bare form dropped rows on the floor
-    # during intra-org delivery.
-    recipient_full: str
+    # Recipient must match the internal_agents.agent_id format the
+    # receiver presents at /inbox. Session /send stores the bare agent
+    # name (recipient=session.target_agent_id); align here.
+    recipient_bare: str
     if body.recipient_id.startswith("spiffe://"):
         from mcp_proxy.spiffe import parse_spiffe
-        _, rec_org, rec_bare = parse_spiffe(body.recipient_id)
-        recipient_full = f"{rec_org}::{rec_bare}"
+        _, _, recipient_bare = parse_spiffe(body.recipient_id)
     elif "::" in body.recipient_id:
-        recipient_full = body.recipient_id
+        recipient_bare = body.recipient_id.split("::", 1)[1]
     else:
-        recipient_full = f"{local_org}::{body.recipient_id}" if local_org else body.recipient_id
+        recipient_bare = body.recipient_id
 
     envelope = _serialize_envelope(body)
 
     msg_id, inserted = await local_queue.enqueue_oneshot(
         sender_agent_id=agent.agent_id,
-        recipient_agent_id=recipient_full,
+        recipient_agent_id=recipient_bare,
         correlation_id=corr_id,
         reply_to_correlation_id=body.reply_to,
         payload_ciphertext=envelope,
@@ -324,7 +319,7 @@ async def send_oneshot(
     if ws_manager is not None and inserted:
         try:
             await ws_manager.send_to_agent(
-                recipient_full,
+                recipient_bare,
                 {
                     "type": "oneshot_message",
                     "msg_id": msg_id,
@@ -426,9 +421,17 @@ async def receive_oneshot_inbox(
                     },
                 )
 
-    all_pending = await local_queue.fetch_pending_for_recipient(
-        agent.agent_id,
-    )
+    # ADR-011 Phase 4b — match recipient in both forms. Legacy oneshot
+    # rows + session /send store the bare ``<name>``; admin + Connector
+    # enrollment under ADR-010/011 write ``<org>::<name>`` into
+    # ``internal_agents.agent_id`` so the DPoP dep presents the full
+    # form here. Union both so neither path drops rows on the floor.
+    bare_name = agent.agent_id.split("::", 1)[-1] if "::" in agent.agent_id else agent.agent_id
+    all_pending = list(await local_queue.fetch_pending_for_recipient(agent.agent_id))
+    if bare_name != agent.agent_id:
+        extras = await local_queue.fetch_pending_for_recipient(bare_name)
+        seen_ids = {m.msg_id for m in all_pending}
+        all_pending.extend(m for m in extras if m.msg_id not in seen_ids)
     one_shots = [m for m in all_pending if m.is_oneshot]
 
     return InboxResponse(
