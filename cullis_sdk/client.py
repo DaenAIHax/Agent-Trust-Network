@@ -383,6 +383,299 @@ class CullisClient:
             self._egress_dpop_nonce = rotated
         return resp
 
+    # ── ADR-011 — unified enrollment + runtime auth ───────────────────
+
+    @classmethod
+    def from_api_key_file(
+        cls,
+        mastio_url: str,
+        *,
+        api_key_path: "str | Path",
+        dpop_key_path: "str | Path | None" = None,
+        agent_id: str | None = None,
+        org_id: str | None = None,
+        verify_tls: bool = True,
+        timeout: float = 10.0,
+    ) -> "CullisClient":
+        """Primary runtime constructor under ADR-011.
+
+        Reads the API key + (optional) DPoP JWK the agent was enrolled
+        with and returns a client pre-configured for the Mastio's egress
+        API. Authentication from here on is **API-key + DPoP**, never
+        a direct login to the Court. See ADR-011 for the enrollment
+        methods that produce these files (``enroll_via_byoca``,
+        ``enroll_via_spiffe``, ``enroll_via_admin_token``,
+        ``enroll_via_connector``).
+
+        Args:
+            mastio_url: base URL of the Mastio (``http://proxy-a:9100``).
+            api_key_path: file that holds the plaintext API key.
+            dpop_key_path: file holding the private DPoP JWK. Omit to
+                run without DPoP binding — only accepted while the
+                server's ``egress_dpop_mode`` is ``off`` or ``optional``.
+            agent_id, org_id: optional identity metadata. Populated on
+                the client instance; the Mastio doesn't require them on
+                egress calls but callers rely on them for logging.
+
+        Example::
+
+            client = CullisClient.from_api_key_file(
+                "http://proxy-a:9100",
+                api_key_path="/etc/cullis/agent/api-key",
+                dpop_key_path="/etc/cullis/agent/dpop.jwk",
+            )
+            client.send_oneshot("orgb::agent-b", {"hello": "world"})
+        """
+        api_key_path = Path(api_key_path)
+        api_key = api_key_path.read_text().strip()
+        if not api_key:
+            raise ValueError(f"{api_key_path} is empty — no API key to use")
+
+        instance = cls.__new__(cls)
+        instance.base = mastio_url.rstrip("/")
+        instance._verify_tls = verify_tls
+        instance._http = httpx.Client(timeout=timeout, verify=verify_tls)
+        instance.token = None
+        instance._label = agent_id or "(api-key-auth)"
+        instance._signing_key_pem = None
+        instance._pubkey_cache = {}
+        instance._client_seq = {}
+        instance._dpop_privkey = None
+        instance._dpop_pubkey_jwk = None
+        instance._dpop_nonce = None
+        instance._egress_dpop_key = None
+        instance._egress_dpop_nonce = None
+        instance._proxy_api_key = api_key
+        instance._proxy_agent_id = agent_id
+        instance._proxy_org_id = org_id
+
+        if dpop_key_path is not None:
+            from cullis_sdk.dpop import DpopKey
+            instance._egress_dpop_key = DpopKey.load(Path(dpop_key_path))
+            log("sdk", f"Loaded DPoP key from {dpop_key_path} "
+                       f"(jkt={instance._egress_dpop_key.thumbprint()[:16]}…)")
+
+        log("sdk", f"Runtime client ready (mastio={mastio_url}, "
+                   f"agent={instance._label})")
+        return instance
+
+    @classmethod
+    def enroll_via_byoca(
+        cls,
+        mastio_url: str,
+        *,
+        admin_secret: str,
+        agent_name: str,
+        cert_pem: str,
+        private_key_pem: str,
+        capabilities: list[str] | None = None,
+        display_name: str = "",
+        persist_to: "str | Path | None" = None,
+        enable_dpop: bool = True,
+        federated: bool = False,
+        verify_tls: bool = True,
+        timeout: float = 10.0,
+    ) -> "CullisClient":
+        """Operator-side helper: enroll an agent via BYOCA and return a
+        runtime-ready client.
+
+        Under ADR-011 BYOCA is an **enrollment** primitive, not a runtime
+        auth path — the Mastio verifies the cert chains to its Org CA,
+        emits an API key + pins an optional DPoP jkt. The returned client
+        is configured with those credentials for the agent's runtime.
+
+        Call this from provisioning code (Helm hook, Vault policy init,
+        CI/CD step), not from the agent's runtime entry point. The
+        agent itself should use :meth:`from_api_key_file` once the
+        credentials are on disk.
+
+        Persists to ``persist_to/{api-key, dpop.jwk, agent.json}`` when
+        supplied (mode 0600); otherwise the credentials stay in memory.
+
+        Requires admin access to the Mastio (``admin_secret``).
+        """
+        return cls._do_enroll(
+            mastio_url=mastio_url,
+            endpoint_path="/v1/admin/agents/enroll/byoca",
+            admin_secret=admin_secret,
+            body={
+                "agent_name": agent_name,
+                "display_name": display_name,
+                "capabilities": list(capabilities or []),
+                "cert_pem": cert_pem,
+                "private_key_pem": private_key_pem,
+                "federated": federated,
+            },
+            persist_to=persist_to,
+            enable_dpop=enable_dpop,
+            verify_tls=verify_tls,
+            timeout=timeout,
+        )
+
+    @classmethod
+    def enroll_via_spiffe(
+        cls,
+        mastio_url: str,
+        *,
+        admin_secret: str,
+        agent_name: str,
+        svid_pem: str,
+        svid_key_pem: str,
+        trust_bundle_pem: str | None = None,
+        capabilities: list[str] | None = None,
+        display_name: str = "",
+        persist_to: "str | Path | None" = None,
+        enable_dpop: bool = True,
+        federated: bool = False,
+        verify_tls: bool = True,
+        timeout: float = 10.0,
+    ) -> "CullisClient":
+        """Operator-side helper: enroll an agent via SPIFFE SVID and
+        return a runtime-ready client.
+
+        The Mastio verifies the SVID against the SPIRE trust bundle
+        (either the per-request ``trust_bundle_pem`` override or the
+        operator-configured ``proxy_config.spire_trust_bundle``), pins
+        the SPIFFE URI SAN as the agent's ``spiffe_id``, and emits the
+        API key + DPoP jkt. See :meth:`enroll_via_byoca` for the
+        persistence / runtime split.
+        """
+        body = {
+            "agent_name": agent_name,
+            "display_name": display_name,
+            "capabilities": list(capabilities or []),
+            "svid_pem": svid_pem,
+            "svid_key_pem": svid_key_pem,
+            "federated": federated,
+        }
+        if trust_bundle_pem is not None:
+            body["trust_bundle_pem"] = trust_bundle_pem
+        return cls._do_enroll(
+            mastio_url=mastio_url,
+            endpoint_path="/v1/admin/agents/enroll/spiffe",
+            admin_secret=admin_secret,
+            body=body,
+            persist_to=persist_to,
+            enable_dpop=enable_dpop,
+            verify_tls=verify_tls,
+            timeout=timeout,
+        )
+
+    @classmethod
+    def _do_enroll(
+        cls,
+        *,
+        mastio_url: str,
+        endpoint_path: str,
+        admin_secret: str,
+        body: dict,
+        persist_to: "str | Path | None",
+        enable_dpop: bool,
+        verify_tls: bool,
+        timeout: float,
+    ) -> "CullisClient":
+        """Shared machinery for every ``enroll_via_*`` helper.
+
+        Generates a DPoP keypair in memory, attaches its public JWK to
+        the enrollment body, POSTs to the Mastio endpoint, persists the
+        credentials and returns a runtime-ready client. Kept private —
+        the public surface is ``enroll_via_byoca`` / ``enroll_via_spiffe``
+        so the method names read as the user's intent, not as the
+        underlying transport.
+        """
+        from cullis_sdk.dpop import DpopKey
+
+        _check_insecure_tls(verify_tls)
+        dpop_key: "DpopKey | None" = None
+        if enable_dpop:
+            dpop_key = DpopKey.generate(path=None)
+            body = {**body, "dpop_jwk": dict(dpop_key.public_jwk)}
+
+        url = f"{mastio_url.rstrip('/')}{endpoint_path}"
+        headers = {
+            "X-Admin-Secret": admin_secret,
+            "Content-Type": "application/json",
+        }
+
+        http = httpx.Client(timeout=timeout, verify=verify_tls)
+        try:
+            resp = http.post(url, json=body, headers=headers)
+        finally:
+            http.close()
+        if resp.status_code not in (200, 201):
+            raise PermissionError(
+                f"Enrollment failed (HTTP {resp.status_code}): {resp.text}"
+            )
+        enrolled = resp.json()
+        api_key = enrolled["api_key"]
+        agent_id = enrolled["agent_id"]
+        org_id = agent_id.split("::", 1)[0] if "::" in agent_id else None
+
+        if persist_to is not None:
+            cls._persist_enrollment(
+                Path(persist_to),
+                api_key=api_key,
+                agent_id=agent_id,
+                org_id=org_id,
+                mastio_url=mastio_url,
+                dpop_key=dpop_key,
+            )
+
+        instance = cls.__new__(cls)
+        instance.base = mastio_url.rstrip("/")
+        instance._verify_tls = verify_tls
+        instance._http = httpx.Client(timeout=timeout, verify=verify_tls)
+        instance.token = None
+        instance._label = agent_id
+        instance._signing_key_pem = None
+        instance._pubkey_cache = {}
+        instance._client_seq = {}
+        instance._dpop_privkey = None
+        instance._dpop_pubkey_jwk = None
+        instance._dpop_nonce = None
+        instance._egress_dpop_key = dpop_key
+        instance._egress_dpop_nonce = None
+        instance._proxy_api_key = api_key
+        instance._proxy_agent_id = agent_id
+        instance._proxy_org_id = org_id
+
+        log("sdk", f"Enrolled {agent_id} via {endpoint_path}")
+        return instance
+
+    @staticmethod
+    def _persist_enrollment(
+        persist_to: "Path",
+        *,
+        api_key: str,
+        agent_id: str,
+        org_id: str | None,
+        mastio_url: str,
+        dpop_key,  # DpopKey | None
+    ) -> None:
+        """Write enrollment credentials under ``persist_to/`` with 0600
+        perms on secrets. Layout:
+
+            persist_to/api-key        — plaintext API key
+            persist_to/dpop.jwk       — private DPoP JWK (only if enabled)
+            persist_to/agent.json     — {agent_id, org_id, mastio_url}
+        """
+        import json as _json
+        import os as _os
+        persist_to.mkdir(parents=True, exist_ok=True)
+
+        api_key_path = persist_to / "api-key"
+        api_key_path.write_text(api_key)
+        _os.chmod(api_key_path, 0o600)
+
+        (persist_to / "agent.json").write_text(_json.dumps({
+            "agent_id": agent_id,
+            "org_id": org_id,
+            "mastio_url": mastio_url,
+        }, indent=2))
+
+        if dpop_key is not None:
+            dpop_key.save(persist_to / "dpop.jwk")
+
     @classmethod
     def from_connector(
         cls,
@@ -504,40 +797,41 @@ class CullisClient:
         verify_tls: bool = True,
         timeout: float = 10.0,
     ) -> CullisClient:
-        """Bootstrap a broker-connected client using a SPIFFE X.509-SVID.
+        """**Deprecated under ADR-011.** SPIFFE→Court direct login.
+
+        Under the unified model SPIFFE becomes an *enrollment* primitive:
+        operators use :meth:`enroll_via_spiffe` once (at provisioning
+        time) to exchange an SVID for an API key + DPoP jkt, then the
+        agent runs with :meth:`from_api_key_file` at runtime. The
+        Court's ``/v1/auth/token`` endpoint is sunset (see the
+        ``Deprecation`` / ``Sunset`` headers the server returns). This
+        method continues to work until the Court returns 410 Gone.
+
+        Bootstrap a broker-connected client using a SPIFFE X.509-SVID.
 
         Fetches the workload's SVID from the local SPIFFE Workload API
         (typically a SPIRE agent Unix socket), then authenticates to the
         broker using that certificate. Requires the ``[spiffe]`` extra.
-
-        The Org CA must be configured as the SPIRE server's UpstreamAuthority
-        so that SVIDs chain to a root the broker trusts.
-
-        Args:
-            broker_url: Cullis broker base URL.
-            org_id: Cullis org identifier (the broker's view of the org).
-            socket_path: Workload API socket. Defaults to
-                ``SPIFFE_ENDPOINT_SOCKET`` env var.
-            agent_id: Override the default SPIFFE ID → agent_id mapping.
-                If None, uses ``{org_id}::{last_spiffe_path_segment}``.
-            verify_tls: Whether to verify the broker's TLS cert.
-            timeout: HTTP timeout in seconds.
-
-        Example::
-
-            client = CullisClient.from_spiffe_workload_api(
-                "https://broker.cullis.test",
-                org_id="orga",
-                socket_path="/tmp/spire-agent/public/api.sock",
-            )
         """
+        import warnings
+        warnings.warn(
+            "CullisClient.from_spiffe_workload_api is deprecated under "
+            "ADR-011. Use CullisClient.enroll_via_spiffe(...) once at "
+            "provisioning time, then CullisClient.from_api_key_file(...) "
+            "at runtime. The Court's /v1/auth/token returns 410 Gone "
+            "after sunset (~90d).",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         from cullis_sdk.spiffe import fetch_x509_svid, default_agent_id
 
         svid = fetch_x509_svid(socket_path)
         resolved_agent_id = agent_id or default_agent_id(svid.spiffe_id, org_id)
 
         instance = cls(broker_url, verify_tls=verify_tls, timeout=timeout)
-        instance.login_from_pem(resolved_agent_id, org_id, svid.cert_pem, svid.key_pem)
+        instance._legacy_login_from_pem(
+            resolved_agent_id, org_id, svid.cert_pem, svid.key_pem,
+        )
         log("sdk", f"Authenticated {resolved_agent_id} via SPIFFE ({svid.spiffe_id})")
         return instance
 
@@ -558,7 +852,14 @@ class CullisClient:
                        cert_pem: str, key_pem: str,
                        *,
                        countersign_fn: Optional[Callable[[str], str]] = None) -> None:
-        """
+        """**Deprecated under ADR-011.** Direct BYOCA login to the Court.
+
+        Under the unified model BYOCA is an enrollment primitive, not a
+        runtime auth path: operators exchange cert+key for an API key +
+        DPoP jkt via :meth:`enroll_via_byoca`, and agents authenticate
+        with :meth:`from_api_key_file`. This method continues to work
+        until the Court's ``/v1/auth/token`` returns 410 Gone.
+
         Authenticate via x509 + DPoP using PEM strings directly.
 
         Use this when loading credentials from a secret manager (Vault,
@@ -570,6 +871,31 @@ class CullisClient:
         ``X-Cullis-Mastio-Signature``. The mastio proxy is the typical
         caller that wires this.
         """
+        import warnings
+        warnings.warn(
+            "CullisClient.login_from_pem is deprecated under ADR-011. "
+            "Use CullisClient.enroll_via_byoca(...) once at provisioning "
+            "time, then CullisClient.from_api_key_file(...) at runtime. "
+            "The Court's /v1/auth/token returns 410 Gone after sunset "
+            "(~90d).",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self._legacy_login_from_pem(
+            agent_id, org_id, cert_pem, key_pem,
+            countersign_fn=countersign_fn,
+        )
+
+    def _legacy_login_from_pem(
+        self, agent_id: str, org_id: str,
+        cert_pem: str, key_pem: str,
+        *,
+        countersign_fn: Optional[Callable[[str], str]] = None,
+    ) -> None:
+        """Internal impl shared by the deprecated ``login_from_pem`` and
+        ``from_spiffe_workload_api`` entry points. Kept around so the
+        deprecation warning fires exactly once per user call (the public
+        methods emit the warning before delegating here)."""
         self._label = agent_id
         try:
             self._signing_key_pem = key_pem
