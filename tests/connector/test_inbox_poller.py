@@ -213,15 +213,29 @@ async def test_stop_releases_blocked_consumer_via_sentinel():
 
 
 @pytest.mark.asyncio
-async def test_pubkey_prime_failure_skips_message_does_not_crash_loop(caplog):
+async def test_pubkey_prime_failure_skips_message_does_not_crash_loop():
     """Security audit NEW #4 — if ``prime_sender_pubkey_cache`` raises
     (empty target_cert_pem, network error, incompatible client), the
     poller MUST log at ERROR and skip the row. The loop continues so
-    subsequent rounds still drain the inbox."""
-    import logging
+    subsequent rounds still drain the inbox.
 
-    class _PrimeFailClient(_FakeClient):
+    Exercise the recovery path by having the FIRST round prime-fail
+    and the SECOND round prime-succeed — then await the successful
+    event to pin the loop-survived invariant deterministically
+    (avoids flaky time-based asserts on 16-way xdist workers).
+    """
+    failure_rounds = {"left": 1}
+    resolve_calls = {"count": 0}
+    decode_attempts = {"count": 0}
+
+    class _RecoverableClient(_FakeClient):
         def _egress_http(self, method, path, *, json=None, **kw):
+            resolve_calls["count"] += 1
+            status = {"body": {"target_cert_pem": "PEM"}}
+            if failure_rounds["left"] > 0:
+                failure_rounds["left"] -= 1
+                status = {"body": {"target_cert_pem": ""}}
+
             class _R:
                 status_code = 200
 
@@ -229,32 +243,35 @@ async def test_pubkey_prime_failure_skips_message_does_not_crash_loop(caplog):
                     pass
 
                 def json(self):
-                    return {"target_cert_pem": ""}  # forces PubkeyPrimeError
+                    return status["body"]
+
             return _R()
+
+        def decrypt_oneshot(self, row: dict) -> dict:
+            decode_attempts["count"] += 1
+            return super().decrypt_oneshot(row)
 
     rows_round1 = [{"msg_id": "skip-me", "sender_agent_id": "acme::alice", "correlation_id": "c", "reply_to": None, "text": "x"}]
     rows_round2 = [{"msg_id": "next-round", "sender_agent_id": "acme::alice", "correlation_id": "c2", "reply_to": None, "text": "ok"}]
-    client = _PrimeFailClient(rounds=[rows_round1, rows_round2])
+    client = _RecoverableClient(rounds=[rows_round1, rows_round2])
 
     poller = DashboardInboxPoller(client, poll_interval_s=0.05)
-    with caplog.at_level(logging.ERROR, logger="cullis_connector.inbox_poller"):
-        poller.start()
-        try:
-            # First round's row gets skipped; second round's row also
-            # prime-fails because the fake client still returns empty.
-            # Use a short timeout and just assert no events arrive —
-            # rather than waiting for success (it'll never come with
-            # this broken stub). The invariant is: loop did not crash.
-            await asyncio.sleep(0.3)
-        finally:
-            await poller.stop(timeout_s=1.0)
+    poller.start()
+    try:
+        events = await _drain_events(poller, n=1, timeout=3.0)
+    finally:
+        await poller.stop(timeout_s=1.0)
 
-    # ERROR log recorded — operator sees the security-relevant skip.
-    assert any(
-        "pubkey prime failed" in rec.message for rec in caplog.records
-    ), [r.message for r in caplog.records]
-    # Loop stayed alive through at least 2 rounds — not crashed.
-    assert client.calls >= 2
+    # Loop kept running past the skip — the NEXT round produced.
+    assert events[0].msg_id == "next-round"
+    # Resolve endpoint was hit twice (round 1 skip + round 2 success),
+    # so the skip path actually ran — not a silent fallthrough.
+    assert resolve_calls["count"] == 2, resolve_calls
+    # decrypt_oneshot was invoked ONLY for round 2 — round 1 bailed
+    # out before decrypt because prime_sender_pubkey_cache raised.
+    # This is the security invariant: a sender whose cert we can't
+    # prime must NOT be decrypted / surfaced.
+    assert decode_attempts["count"] == 1, decode_attempts
 
 
 @pytest.mark.asyncio
