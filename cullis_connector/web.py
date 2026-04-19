@@ -18,7 +18,9 @@ until the server has approved.
 """
 from __future__ import annotations
 
+import contextlib
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -41,6 +43,7 @@ from cullis_connector.enrollment import (
     _generate_api_key,
     _start,
 )
+from cullis_connector.inbox_poller import DashboardInboxPoller
 from cullis_connector.autostart import (
     autostart_status,
     install_autostart,
@@ -112,6 +115,59 @@ def _set_admin_secret(secret: str | None) -> None:
 # ── App factory ──────────────────────────────────────────────────────────
 
 
+@contextlib.asynccontextmanager
+async def _dashboard_lifespan(app: FastAPI):
+    """Start/stop the inbox poller alongside the dashboard process.
+
+    The poller only fires when an enrolled identity exists and the
+    operator hasn't disabled notifications via env. We intentionally
+    rebuild the CullisClient here (instead of sharing one with the
+    stdio MCP server) because the dashboard runs in a separate
+    process and on restart picks up whatever identity is on disk
+    right now.
+    """
+    config = app.state.connector_config
+    app.state.inbox_poller = None
+    if os.environ.get("CULLIS_CONNECTOR_NOTIFICATIONS", "on").lower() in ("0", "off", "false", "no"):
+        _log.info("inbox poller disabled via CULLIS_CONNECTOR_NOTIFICATIONS")
+        yield
+        return
+
+    poller = _start_inbox_poller(config)
+    app.state.inbox_poller = poller
+    if poller is not None:
+        poller.start()
+    try:
+        yield
+    finally:
+        if poller is not None:
+            await poller.stop()
+
+
+def _start_inbox_poller(config: ConnectorConfig) -> DashboardInboxPoller | None:
+    """Build the poller if the identity is ready, return None otherwise.
+
+    Pre-enrollment dashboards (the user is still on /setup) have no
+    identity to poll for — silently skip and let the operator install
+    the autostart later, after enrollment, with no extra work.
+    """
+    if not has_identity(config.config_dir):
+        _log.info("no identity at %s — inbox poller skipped", config.config_dir)
+        return None
+
+    interval_s = float(os.environ.get("CULLIS_CONNECTOR_POLL_S", "10"))
+    try:
+        from cullis_sdk import CullisClient
+        client = CullisClient.from_connector(config.config_dir, enable_dpop=False)
+        key_path = config.config_dir / "identity" / "agent.key"
+        if key_path.exists():
+            client._signing_key_pem = key_path.read_text()
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("inbox poller bootstrap failed: %s", exc)
+        return None
+    return DashboardInboxPoller(client, poll_interval_s=interval_s)
+
+
 def build_app(config: ConnectorConfig) -> FastAPI:
     """Return a FastAPI app bound to the given connector config.
 
@@ -119,7 +175,15 @@ def build_app(config: ConnectorConfig) -> FastAPI:
     admin approval. ``site_url`` / ``verify_tls`` act as defaults for the
     setup form so a preconfigured deploy can skip the URL step.
     """
-    app = FastAPI(title="Cullis Connector", docs_url=None, redoc_url=None)
+    app = FastAPI(
+        title="Cullis Connector",
+        docs_url=None,
+        redoc_url=None,
+        lifespan=_dashboard_lifespan,
+    )
+    # Stash for the lifespan handler to pick up — FastAPI doesn't pass
+    # build-time arguments through to the lifespan callable.
+    app.state.connector_config = config
 
     templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
