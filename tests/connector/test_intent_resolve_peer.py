@@ -6,8 +6,6 @@ semantics so the ``contact()`` MCP tool can present a clean choice.
 """
 from __future__ import annotations
 
-import pytest
-
 from cullis_connector.tools.intent import resolve_peer
 from cullis_sdk.types import AgentInfo
 
