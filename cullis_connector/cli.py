@@ -204,24 +204,74 @@ _KNOWN_SUBCOMMANDS = frozenset({
     "dashboard",
 })
 
+# Shared flags are parsed by the subparser that owns the chosen command.
+# When the caller wrote them *before* the subcommand (the pre-fix layout
+# some users already have persisted in MCP configs), we relocate them so
+# argparse finds them on the right subparser.
+_SHARED_VALUE_FLAGS = frozenset({"--site-url", "--config-dir", "--log-level"})
+_SHARED_STORE_FLAGS = frozenset({"--no-verify-tls"})
+
 
 def _ensure_subcommand(argv: list[str]) -> list[str]:
-    """Inject ``serve`` when the user didn't name any subcommand.
+    """Normalize argv so shared flags land on the correct subparser.
 
-    Shared flags (``--site-url`` etc.) now live only on the subparsers
-    so the subcommand-level ``dest`` doesn't get silently overwritten by
-    a duplicate root-level one. The tradeoff is that argparse needs the
-    subcommand name before those flags — git-style. To keep the Phase 1
-    "just run it" UX, we prepend ``serve`` whenever argv carries neither
-    a subcommand nor a CLI-terminating flag like ``--version``.
+    Shared flags (``--site-url`` etc.) live only on the subparsers so
+    the subcommand-level ``dest`` doesn't get silently clobbered back
+    to None by a duplicated root-level one. Two UX carve-outs keep the
+    older call conventions working:
+
+    * No subcommand at all → prepend ``serve`` (covers ``cullis-connector
+      --config-dir ~/foo``).
+    * Shared flag appears *before* the subcommand → move it after it
+      (covers MCP configs that list args as
+      ``[--site-url, X, --config-dir, Y, serve]``).
+
+    ``--version`` / ``--help`` on the root exit before dispatch, so
+    we leave argv alone when we see them.
     """
-    # --version / --help on the root exit before dispatch; leave argv alone.
     for tok in argv:
         if tok in ("--version", "-V", "-h", "--help"):
             return list(argv)
-    if any(tok in _KNOWN_SUBCOMMANDS for tok in argv):
+
+    sub_idx = next(
+        (i for i, tok in enumerate(argv) if tok in _KNOWN_SUBCOMMANDS),
+        None,
+    )
+    if sub_idx is None:
+        return ["serve", *argv]
+    if sub_idx == 0:
         return list(argv)
-    return ["serve", *argv]
+
+    # Harvest shared flags (and their values) from the run of tokens
+    # before the subcommand. Anything unrecognised is left in place so
+    # argparse still raises the usual "unrecognized arguments" error
+    # — we don't want to silently drop a typo.
+    extracted: list[str] = []
+    remainder: list[str] = []
+    i = 0
+    before = argv[:sub_idx]
+    while i < len(before):
+        tok = before[i]
+        base = tok.split("=", 1)[0]
+        if base in _SHARED_VALUE_FLAGS:
+            if "=" in tok:
+                extracted.append(tok)
+                i += 1
+            elif i + 1 < len(before):
+                extracted.extend([tok, before[i + 1]])
+                i += 2
+            else:
+                remainder.append(tok)
+                i += 1
+        elif tok in _SHARED_STORE_FLAGS:
+            extracted.append(tok)
+            i += 1
+        else:
+            remainder.append(tok)
+            i += 1
+
+    after = argv[sub_idx:]
+    return [*remainder, after[0], *extracted, *after[1:]]
 
 
 # ── Commands ─────────────────────────────────────────────────────────────
