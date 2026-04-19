@@ -168,7 +168,7 @@ def test_contact_index_pick_resolves_against_cache(tools):
     assert "intent.last_candidates" not in get_state().extra
     # Bare index without # also works.
     tools["contact"]("mar")
-    out = tools["contact"]("1")
+    tools["contact"]("1")
     assert get_state().last_peer_resolved is not None
 
 

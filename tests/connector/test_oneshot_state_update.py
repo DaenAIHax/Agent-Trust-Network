@@ -108,7 +108,6 @@ def test_receive_canonicalizes_bare_sender(receive_tool):
     # unchanged. Set up state.extra["identity"] with a fake cert
     # whose org name is "acme".
     from unittest.mock import MagicMock
-    from cryptography.x509 import NameOID
     fake_attr = MagicMock()
     fake_attr.value = "acme"
     fake_cert = MagicMock()
