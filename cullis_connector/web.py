@@ -18,7 +18,9 @@ until the server has approved.
 """
 from __future__ import annotations
 
+import contextlib
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -41,6 +43,9 @@ from cullis_connector.enrollment import (
     _generate_api_key,
     _start,
 )
+from cullis_connector.inbox_dispatcher import InboxDispatcher
+from cullis_connector.inbox_poller import DashboardInboxPoller
+from cullis_connector.notifier import build_notifier
 from cullis_connector.autostart import (
     autostart_status,
     install_autostart,
@@ -112,6 +117,81 @@ def _set_admin_secret(secret: str | None) -> None:
 # ── App factory ──────────────────────────────────────────────────────────
 
 
+@contextlib.asynccontextmanager
+async def _dashboard_lifespan(app: FastAPI):
+    """Start/stop the inbox poller alongside the dashboard process.
+
+    The poller only fires when an enrolled identity exists and the
+    operator hasn't disabled notifications via env. We intentionally
+    rebuild the CullisClient here (instead of sharing one with the
+    stdio MCP server) because the dashboard runs in a separate
+    process and on restart picks up whatever identity is on disk
+    right now.
+    """
+    config = app.state.connector_config
+    app.state.inbox_poller = None
+    app.state.inbox_dispatcher = None
+    if os.environ.get("CULLIS_CONNECTOR_NOTIFICATIONS", "on").lower() in ("0", "off", "false", "no"):
+        _log.info("inbox poller disabled via CULLIS_CONNECTOR_NOTIFICATIONS")
+        yield
+        return
+
+    poller = _start_inbox_poller(config)
+    app.state.inbox_poller = poller
+    dispatcher: InboxDispatcher | None = None
+    if poller is not None:
+        poller.start()
+        dispatcher = InboxDispatcher(poller, build_notifier())
+        dispatcher.start()
+        app.state.inbox_dispatcher = dispatcher
+    try:
+        yield
+    finally:
+        if dispatcher is not None:
+            await dispatcher.stop()
+        if poller is not None:
+            await poller.stop()
+
+
+def _start_inbox_poller(config: ConnectorConfig) -> DashboardInboxPoller | None:
+    """Build the poller if the identity is ready, return None otherwise.
+
+    Pre-enrollment dashboards (the user is still on /setup) have no
+    identity to poll for — silently skip and let the operator install
+    the autostart later, after enrollment, with no extra work.
+    """
+    if not has_identity(config.config_dir):
+        _log.info("no identity at %s — inbox poller skipped", config.config_dir)
+        return None
+
+    interval_s = float(os.environ.get("CULLIS_CONNECTOR_POLL_S", "10"))
+    try:
+        from cullis_sdk import CullisClient
+
+        # Mirror cli._cmd_serve: load the identity into the process-
+        # global state so helpers like own_org_id() / canonical_recipient
+        # can read the sender's org from the cert subject. Without this
+        # the prime_sender_pubkey_cache helper sends a bare recipient
+        # to /v1/egress/resolve and gets a 400 "internal id must be
+        # 'org::agent'" — which then cascades into the JWT-required
+        # fallback path in decrypt_oneshot and surfaces as
+        # "Not authenticated — call login() first" every poll tick.
+        from cullis_connector.state import get_state
+        identity = load_identity(config.config_dir)
+        state = get_state()
+        state.agent_id = identity.metadata.agent_id
+        state.extra["identity"] = identity
+
+        client = CullisClient.from_connector(config.config_dir, enable_dpop=False)
+        key_path = config.config_dir / "identity" / "agent.key"
+        if key_path.exists():
+            client._signing_key_pem = key_path.read_text()
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("inbox poller bootstrap failed: %s", exc)
+        return None
+    return DashboardInboxPoller(client, poll_interval_s=interval_s)
+
+
 def build_app(config: ConnectorConfig) -> FastAPI:
     """Return a FastAPI app bound to the given connector config.
 
@@ -119,7 +199,15 @@ def build_app(config: ConnectorConfig) -> FastAPI:
     admin approval. ``site_url`` / ``verify_tls`` act as defaults for the
     setup form so a preconfigured deploy can skip the URL step.
     """
-    app = FastAPI(title="Cullis Connector", docs_url=None, redoc_url=None)
+    app = FastAPI(
+        title="Cullis Connector",
+        docs_url=None,
+        redoc_url=None,
+        lifespan=_dashboard_lifespan,
+    )
+    # Stash for the lifespan handler to pick up — FastAPI doesn't pass
+    # build-time arguments through to the lifespan callable.
+    app.state.connector_config = config
 
     templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
@@ -333,6 +421,38 @@ def build_app(config: ConnectorConfig) -> FastAPI:
     def cancel() -> Response:
         _clear_pending()
         return RedirectResponse("/setup", status_code=303)
+
+    @app.get("/status/inbox")
+    def status_inbox(request: Request) -> JSONResponse:
+        """Statusline-friendly snapshot of the inbox state.
+
+        Designed to be polled cheaply (every few seconds) by a Claude
+        Code statusline command or any external script that wants
+        to render a "📨 N from Mario" badge. Always returns 200 with
+        a stable shape — when notifications are off or the dashboard
+        hasn't seen any messages yet, ``unread`` is 0 and the rest
+        is null.
+        """
+        dispatcher = getattr(request.app.state, "inbox_dispatcher", None)
+        if dispatcher is None:
+            return JSONResponse({
+                "unread": 0,
+                "last_sender": None,
+                "last_preview": None,
+                "last_received_at": None,
+                "total_seen": 0,
+            })
+        return JSONResponse(dispatcher.status_snapshot())
+
+    @app.post("/status/inbox/seen")
+    def status_inbox_seen(request: Request) -> JSONResponse:
+        """Reset the unread counter — call when the user has read the
+        latest batch (the dashboard's `/inbox` view does it on load,
+        statusline scripts can call it on click)."""
+        dispatcher = getattr(request.app.state, "inbox_dispatcher", None)
+        if dispatcher is not None:
+            dispatcher.ack()
+        return JSONResponse({"ok": True})
 
     @app.get("/connected", response_class=HTMLResponse)
     def connected_get(request: Request) -> Response:
