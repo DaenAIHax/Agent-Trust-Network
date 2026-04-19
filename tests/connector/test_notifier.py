@@ -7,12 +7,8 @@ delegation) using monkeypatching where needed.
 from __future__ import annotations
 
 import sys
-from io import StringIO
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-import pytest
-
-from cullis_connector import notifier as notifier_mod
 from cullis_connector.notifier import (
     PlyerNotifier,
     StderrNotifier,
