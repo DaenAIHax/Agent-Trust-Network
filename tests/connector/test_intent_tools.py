@@ -160,7 +160,7 @@ def test_contact_index_pick_resolves_against_cache(tools):
         _peer("maria", "Maria Bianchi"),
     ])
     tools["contact"]("mar")  # cache populated
-    out = tools["contact"]("#2")
+    tools["contact"]("#2")
     assert get_state().last_peer_resolved is not None
     assert get_state().last_peer_resolved.startswith("acme::")
     # Cache cleared after a successful pick so a stale '#2' doesn't
