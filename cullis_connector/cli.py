@@ -19,6 +19,13 @@ Three top-level modes:
   that wraps enrollment in a three-screen wizard and can auto-configure
   Claude Desktop / Cursor / Cline. Intended as the default onboarding
   path for end users who shouldn't need the CLI.
+
+Shared flags (``--site-url``, ``--config-dir``, ``--no-verify-tls``,
+``--log-level``) must be placed **after** the subcommand name — git-style.
+If you omit the subcommand we inject ``serve`` for you so
+``cullis-connector --config-dir ~/foo`` keeps working, but once a
+subcommand is present argparse parses its flags from that subparser
+only.
 """
 from __future__ import annotations
 
@@ -186,10 +193,35 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Do not auto-open a browser tab on startup.",
     )
 
-    # Shared args also live on the root parser so the default (no
-    # subcommand) behaviour stays backward-compatible with Phase 1.
-    _add_shared_args(parser)
     return parser
+
+
+_KNOWN_SUBCOMMANDS = frozenset({
+    "serve",
+    "enroll",
+    "install-mcp",
+    "install-autostart",
+    "dashboard",
+})
+
+
+def _ensure_subcommand(argv: list[str]) -> list[str]:
+    """Inject ``serve`` when the user didn't name any subcommand.
+
+    Shared flags (``--site-url`` etc.) now live only on the subparsers
+    so the subcommand-level ``dest`` doesn't get silently overwritten by
+    a duplicate root-level one. The tradeoff is that argparse needs the
+    subcommand name before those flags — git-style. To keep the Phase 1
+    "just run it" UX, we prepend ``serve`` whenever argv carries neither
+    a subcommand nor a CLI-terminating flag like ``--version``.
+    """
+    # --version / --help on the root exit before dispatch; leave argv alone.
+    for tok in argv:
+        if tok in ("--version", "-V", "-h", "--help"):
+            return list(argv)
+    if any(tok in _KNOWN_SUBCOMMANDS for tok in argv):
+        return list(argv)
+    return ["serve", *argv]
 
 
 # ── Commands ─────────────────────────────────────────────────────────────
@@ -217,6 +249,47 @@ def _cmd_serve(cfg: ConnectorConfig) -> int:
     state = get_state()
     state.agent_id = identity.metadata.agent_id
     state.extra["identity"] = identity
+
+    # The enrollment flow already pinned the Site URL in metadata.json —
+    # adopt it if the operator did not pass --site-url / CULLIS_SITE_URL.
+    # Without this, diagnostic tools like hello_site report "not configured"
+    # even though the identity we just loaded was issued against that site.
+    if not cfg.site_url and identity.metadata.site_url:
+        cfg.site_url = identity.metadata.site_url
+        _log.info(
+            "adopted site_url from identity metadata: %s", cfg.site_url,
+        )
+
+    # Build the CullisClient from the on-disk enrollment bundle.
+    #
+    # The Phase 1 ``connect`` tool went away with enrollment but the
+    # wiring was never completed: every tool reached for a client that
+    # nobody constructed. We build it here and load the signing key so
+    # ``send_oneshot`` (API-key + DPoP + inner/outer signatures, no
+    # broker JWT) works out of the box.
+    #
+    # We deliberately *do not* call ``login_via_proxy()`` eagerly:
+    # it asks the Mastio to sign a client_assertion with the agent's
+    # private key, but device-code enrollment leaves that key on the
+    # user's machine, not on the Mastio — so the call 404s with
+    # "agent credentials not available on proxy". Session-based tools
+    # mint the token lazily via ``ensure_broker_token`` and surface a
+    # clear error if it can't be obtained; one-shot tools don't need
+    # a token at all.
+    try:
+        from cullis_sdk import CullisClient
+
+        client = CullisClient.from_connector(cfg.config_dir)
+        key_path = cfg.config_dir / "identity" / "agent.key"
+        if key_path.exists():
+            client._signing_key_pem = key_path.read_text()
+        state.client = client
+    except Exception as exc:
+        _log.error(
+            "Failed to initialize CullisClient from %s: %s. "
+            "Tools requiring a connected client will not work.",
+            cfg.config_dir, exc,
+        )
 
     _log.info(
         "serving as %s (cert subject %s)",
@@ -418,7 +491,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Entry point for both ``python -m cullis_connector`` and the
     installed ``cullis-connector`` console script."""
     parser = _build_parser()
-    args = parser.parse_args(argv)
+    raw = list(argv) if argv is not None else sys.argv[1:]
+    args = parser.parse_args(_ensure_subcommand(raw))
     cfg = load_config(vars(args))
     setup_logging(cfg.log_level)
 
