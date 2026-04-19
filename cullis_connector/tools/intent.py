@@ -215,6 +215,48 @@ def register(mcp: "FastMCP") -> None:
         )
 
     @mcp.tool()
+    def reply(text: str) -> str:
+        """Reply to whoever sent the most recently decoded inbox message.
+
+        After `receive_oneshot` decodes an envelope, the connector
+        remembers (a) the sender as the active peer and (b) the
+        msg_id as `reply_to`. `reply(text)` consumes both: it sends
+        to the cached sender with the cached msg_id threaded in,
+        so the recipient can correlate the response with the original
+        request.
+
+        If no message has been received and decoded yet, returns a
+        prompt to call `receive_oneshot` first.
+        """
+        client = _require_oneshot_client()
+        state = get_state()
+
+        target = state.last_peer_resolved
+        reply_to = state.last_reply_to
+        if not target or not reply_to:
+            return (
+                "Nothing to reply to. Call receive_oneshot first to "
+                "fetch a message; reply() then threads the response."
+            )
+
+        try:
+            result = client.send_oneshot(
+                target,
+                {"type": "message", "text": text},
+                reply_to=reply_to,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("reply send to %s failed: %s", target, exc)
+            return f"Failed to reply to {target}: {exc}"
+
+        state.last_correlation_id = result.get("correlation_id")
+        return (
+            f"Reply sent to {target} "
+            f"(threaded as reply to {reply_to[:8]}…, "
+            f"correlation_id={result.get('correlation_id')})."
+        )
+
+    @mcp.tool()
     def chat(text: str) -> str:
         """Send a message to the currently active peer (set by `contact`).
 

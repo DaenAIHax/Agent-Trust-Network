@@ -217,3 +217,53 @@ def test_chat_send_failure_reports_error(tools):
     out = tools["chat"]("hi")
     assert "Failed to send" in out
     assert "network down" in out
+
+
+# ── reply() ──────────────────────────────────────────────────────────
+
+
+def test_reply_without_received_message_warns(tools):
+    _install_client([_peer("mario")])
+    out = tools["reply"]("ok")
+    assert "Nothing to reply to" in out
+    assert "receive_oneshot" in out
+
+
+def test_reply_threads_response_with_msg_id(tools):
+    """When state.last_peer_resolved + last_reply_to are populated
+    (typically by receive_oneshot), reply() forwards them to
+    send_oneshot so the recipient can correlate."""
+    client = _install_client([_peer("mario", "Mario Rossi")])
+    state = get_state()
+    state.last_peer_resolved = "acme::mario"
+    state.last_reply_to = "msg-original-1234567890"
+
+    captured: list[dict] = []
+
+    def _capture(recipient_id, payload, **kwargs):
+        captured.append({"to": recipient_id, "payload": payload, "kw": kwargs})
+        return {"correlation_id": "corr-9", "msg_id": "msg-9", "status": "enqueued"}
+    client.send_oneshot = _capture  # type: ignore[assignment]
+
+    out = tools["reply"]("got it")
+    assert "Reply sent to acme::mario" in out
+    assert len(captured) == 1
+    assert captured[0]["to"] == "acme::mario"
+    assert captured[0]["payload"] == {"type": "message", "text": "got it"}
+    assert captured[0]["kw"] == {"reply_to": "msg-original-1234567890"}
+    assert state.last_correlation_id == "corr-9"
+
+
+def test_reply_send_failure_surfaces(tools):
+    client = _install_client([_peer("mario")])
+    state = get_state()
+    state.last_peer_resolved = "acme::mario"
+    state.last_reply_to = "msg-1"
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("server 500")
+    client.send_oneshot = _boom  # type: ignore[assignment]
+
+    out = tools["reply"]("hi")
+    assert "Failed to reply" in out
+    assert "server 500" in out

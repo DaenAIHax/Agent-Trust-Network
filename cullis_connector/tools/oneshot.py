@@ -103,10 +103,14 @@ def register(mcp: "FastMCP") -> None:
             return "No one-shot messages."
 
         lines: list[str] = []
+        state = get_state()
+        last_decoded_sender: str | None = None
+        last_decoded_msg_id: str | None = None
         for row in rows:
             sender = row.get("sender_agent_id", "?")
             corr = row.get("correlation_id", "?")
             reply_to = row.get("reply_to") or "—"
+            msg_id = row.get("msg_id")
             try:
                 _prime_sender_pubkey_cache(client, sender)
                 decoded = client.decrypt_oneshot(row)
@@ -118,11 +122,26 @@ def register(mcp: "FastMCP") -> None:
                 lines.append(
                     f"- [{sender}] corr={corr[:8]} reply_to={reply_to}: {text}"
                 )
+                # Threading hint for the intent-level reply() tool.
+                # Track the LAST successfully decoded row — that's what
+                # the user just read and will most plausibly want to
+                # answer. Failed-decrypt rows don't update the cursor.
+                if msg_id:
+                    last_decoded_sender = (
+                        sender if "::" in sender
+                        else _canonical_recipient(sender)
+                    )
+                    last_decoded_msg_id = msg_id
             except Exception as exc:  # noqa: BLE001
                 lines.append(
                     f"- [{sender}] corr={corr[:8]} reply_to={reply_to}: "
                     f"<decrypt failed: {exc}>"
                 )
+
+        if last_decoded_sender:
+            state.last_peer_resolved = last_decoded_sender
+            state.last_reply_to = last_decoded_msg_id
+
         return f"{len(rows)} one-shot message(s):\n" + "\n".join(lines)
 
 
