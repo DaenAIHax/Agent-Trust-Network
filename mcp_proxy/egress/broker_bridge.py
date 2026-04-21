@@ -9,9 +9,11 @@ import asyncio
 import logging
 from typing import Any
 
+import httpx
 from fastapi import HTTPException
 
 from cullis_sdk.client import CullisClient
+from mcp_proxy.auth.mastio_rotation import ContinuityProof
 from mcp_proxy.egress.routing import decide_route
 
 logger = logging.getLogger("mcp_proxy.egress.broker_bridge")
@@ -89,6 +91,55 @@ class BrokerBridge:
             client = await self._create_client(agent_id)
             self._clients[agent_id] = client
             return client
+
+    async def propagate_mastio_key_rotation(
+        self,
+        proof: ContinuityProof,
+        new_cert_pem: str,
+    ) -> None:
+        """POST a mastio-pubkey rotation to the Court (ADR-012 Phase 2.1).
+
+        Called by ``AgentManager.rotate_mastio_key`` *before* the local
+        DB swap. The Court verifies ``proof`` against the currently-
+        pinned old pubkey and updates the pin on success.
+
+        Raises:
+            HTTPException: with 502 when the Court is unreachable or
+                replies with a 5xx, mapping to an operator-visible
+                rotation failure at the caller. Non-2xx responses are
+                re-raised with the Court's own status code and body so
+                the failure surfaces the Court's rejection reason
+                (malformed proof, stale timestamp, …).
+        """
+        url = f"{self._broker_url.rstrip('/')}/v1/onboarding/orgs/{self._org_id}/mastio-pubkey/rotate"
+        body = {
+            "new_pubkey_pem": proof.new_pubkey_pem,
+            "new_cert_pem": new_cert_pem,
+            "proof": proof.to_dict(),
+        }
+        logger.info(
+            "Propagating mastio pubkey rotation to Court (%s): old_kid=%s, new_kid=%s",
+            url, proof.old_kid, proof.new_kid,
+        )
+        try:
+            async with httpx.AsyncClient(verify=self._verify_tls, timeout=30.0) as http:
+                resp = await http.post(url, json=body)
+        except httpx.HTTPError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"court unreachable during rotation: {exc}",
+            ) from exc
+
+        if resp.status_code >= 500:
+            raise HTTPException(
+                status_code=502,
+                detail=f"court rejected rotation with {resp.status_code}: {resp.text}",
+            )
+        if resp.status_code >= 400:
+            raise HTTPException(
+                status_code=resp.status_code,
+                detail=f"court rejected rotation: {resp.text}",
+            )
 
     async def _evict_and_retry(self, agent_id: str) -> CullisClient:
         """Evict a cached client and create a fresh one (re-auth)."""
