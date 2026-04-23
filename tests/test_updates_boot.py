@@ -114,6 +114,12 @@ def _make_migration(
         },
     )
     cls.__module__ = fake_pkg_mod.__name__
+    # Pin on the fake package so ``Migration.__subclasses__`` (weakrefs)
+    # doesn't drop the class before ``discover()`` walks the tree. Test
+    # callers that ignore the return value would otherwise rely on GC
+    # timing — works locally, flakes in CI (see the sibling comment in
+    # tests/test_updates_registry.py::_fixture_cls).
+    setattr(fake_pkg_mod, name, cls)
     return cls
 
 
