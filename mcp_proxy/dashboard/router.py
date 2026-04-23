@@ -120,7 +120,12 @@ def generate_org_ca(org_id: str) -> tuple[str, str]:
         .serial_number(x509.random_serial_number())
         .not_valid_before(now)
         .not_valid_after(now + timedelta(days=3650))
-        .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
+        # pathLen=1 because this Org CA signs a Mastio intermediate
+        # (_mint_mastio_ca) which then signs agent leaves. RFC 5280
+        # §4.2.1.9: pathLen=0 would forbid the intermediate and any
+        # stdlib verifier (OpenSSL, Go crypto/x509, webpki, browser)
+        # would reject the full chain at federation/mTLS time. See #280.
+        .add_extension(x509.BasicConstraints(ca=True, path_length=1), critical=True)
         .add_extension(
             x509.KeyUsage(
                 digital_signature=True, key_cert_sign=True, crl_sign=True,

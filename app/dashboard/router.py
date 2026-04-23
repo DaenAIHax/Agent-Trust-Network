@@ -1315,7 +1315,13 @@ async def org_onboard_generate_ca(request: Request):
         .serial_number(_x509.random_serial_number())
         .not_valid_before(now - _dt.timedelta(minutes=5))  # tolerate minor clock skew
         .not_valid_after(now + _dt.timedelta(days=365 * 2))
-        .add_extension(_x509.BasicConstraints(ca=True, path_length=0), critical=True)
+        # pathLen=1 because the proxy that inherits this Org CA then
+        # mints a Mastio intermediate CA (_mint_mastio_ca) underneath
+        # it and signs agent leaves under that intermediate. RFC 5280
+        # §4.2.1.9: pathLen=0 would forbid the intermediate and any
+        # stdlib verifier (OpenSSL, Go crypto/x509, webpki, browser)
+        # would reject the full chain at federation/mTLS time. See #280.
+        .add_extension(_x509.BasicConstraints(ca=True, path_length=1), critical=True)
         .add_extension(
             _x509.SubjectKeyIdentifier.from_public_key(ca_key.public_key()),
             critical=False,
