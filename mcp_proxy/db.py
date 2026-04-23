@@ -727,6 +727,139 @@ async def activate_staged_and_deprecate_old(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# pending_updates — federation update framework (imp/federation_hardening_plan.md
+# Parte 1). Boot detector writes, dashboard admin endpoint reads + mutates.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_ALLOWED_PENDING_STATUS: frozenset[str] = frozenset({
+    "pending", "applied", "failed", "rolled_back",
+})
+
+
+async def insert_pending_update(
+    *,
+    migration_id: str,
+    detected_at: str,
+    status: str = "pending",
+) -> int:
+    """Insert a row flagging a migration as pending against current state.
+
+    Used by the boot detector (PR 2) after each call to
+    :meth:`Migration.check` that returns True. Idempotent: if a row for
+    ``migration_id`` already exists (the detector re-ran on a boot with
+    no admin intervention in between), the insert is a no-op and returns
+    ``0``. Fresh inserts return ``1``.
+
+    The ``status`` default is ``"pending"``; callers normally omit it.
+    """
+    if status not in _ALLOWED_PENDING_STATUS:
+        raise ValueError(
+            f"status {status!r} not in {sorted(_ALLOWED_PENDING_STATUS)}"
+        )
+    async with get_db() as conn:
+        dialect = conn.dialect.name
+        if dialect == "postgresql":
+            stmt = text(
+                """
+                INSERT INTO pending_updates
+                    (migration_id, detected_at, status)
+                VALUES
+                    (:mid, :detected, :status)
+                ON CONFLICT (migration_id) DO NOTHING
+                """
+            )
+        else:
+            # SQLite equivalent; Postgres rejects this syntax.
+            stmt = text(
+                """
+                INSERT OR IGNORE INTO pending_updates
+                    (migration_id, detected_at, status)
+                VALUES
+                    (:mid, :detected, :status)
+                """
+            )
+        result = await conn.execute(
+            stmt,
+            {"mid": migration_id, "detected": detected_at, "status": status},
+        )
+        return result.rowcount or 0
+
+
+async def update_pending_update_status(
+    *,
+    migration_id: str,
+    status: str,
+    applied_at: str | None = None,
+    error: str | None = None,
+) -> int:
+    """Update ``status`` (and optionally ``applied_at`` / ``error``) of a row.
+
+    Returns the rowcount. Zero means the ``migration_id`` is not in the
+    table — the caller (admin endpoint) decides whether to surface 404
+    or treat it as a no-op.
+
+    The caller is responsible for the status-field coherence invariants
+    documented in the Alembic migration docstring; this helper does not
+    enforce them so a single UPDATE can atomically set e.g.
+    ``status='applied', applied_at='...', error=NULL``.
+    """
+    if status not in _ALLOWED_PENDING_STATUS:
+        raise ValueError(
+            f"status {status!r} not in {sorted(_ALLOWED_PENDING_STATUS)}"
+        )
+    async with get_db() as conn:
+        result = await conn.execute(
+            text(
+                """
+                UPDATE pending_updates
+                   SET status = :status,
+                       applied_at = :applied_at,
+                       error = :error
+                 WHERE migration_id = :mid
+                """
+            ),
+            {
+                "mid": migration_id,
+                "status": status,
+                "applied_at": applied_at,
+                "error": error,
+            },
+        )
+        return result.rowcount or 0
+
+
+async def get_pending_updates(status: str | None = None) -> list[dict]:
+    """Return ``pending_updates`` rows, optionally filtered by status.
+
+    Ordered by ``migration_id`` (lexical — chronological with the
+    ``YYYY-MM-DD-slug`` convention). An unknown ``status`` filter
+    raises :class:`ValueError`; pass ``None`` (the default) to list all.
+    """
+    if status is not None and status not in _ALLOWED_PENDING_STATUS:
+        raise ValueError(
+            f"status {status!r} not in {sorted(_ALLOWED_PENDING_STATUS)}"
+        )
+    async with get_db() as conn:
+        if status is None:
+            result = await conn.execute(
+                text(
+                    "SELECT * FROM pending_updates "
+                    "ORDER BY migration_id ASC"
+                )
+            )
+        else:
+            result = await conn.execute(
+                text(
+                    "SELECT * FROM pending_updates "
+                    "WHERE status = :status "
+                    "ORDER BY migration_id ASC"
+                ),
+                {"status": status},
+            )
+        return [dict(row) for row in result.mappings().all()]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
