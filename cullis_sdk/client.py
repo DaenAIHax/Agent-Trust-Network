@@ -43,6 +43,18 @@ from cullis_sdk._logging import log, RED
 _PUBKEY_CACHE_TTL = 300  # seconds
 
 
+class PubkeyFetchError(RuntimeError):
+    """Raised by pubkey-fetch helpers (broker or egress) when the
+    target agent's public key cannot be retrieved.
+
+    Distinct from generic HTTP/network errors so callers — notably
+    ``decrypt_oneshot`` consumers — can discriminate "couldn't verify
+    sender, must skip" from "decrypt itself failed". The Connector's
+    inbox poller catches this specifically and logs at ERROR (security
+    relevant: an unverifiable sender means the message is dropped).
+    """
+
+
 class InsecureTLSWarning(UserWarning):
     """Raised when the SDK is configured to skip TLS verification.
 
@@ -1091,6 +1103,55 @@ class CullisClient:
         self._pubkey_cache[agent_id] = (pubkey_pem, time.time())
         return pubkey_pem
 
+    def get_agent_public_key_via_egress(
+        self, agent_id: str, force_refresh: bool = False,
+    ) -> str:
+        """Fetch the target agent's PEM cert through the local proxy's
+        ``GET /v1/egress/agents/{id}/public-key`` endpoint.
+
+        Companion to :meth:`get_agent_public_key`, intended for clients
+        that authenticate to the proxy with X-API-Key + DPoP and have no
+        broker JWT to spend on the Court's federation API. Replaces the
+        Connector's ``prime_sender_pubkey_cache`` workaround that used
+        to scrape ``/v1/egress/resolve`` for the same data and write
+        directly into the SDK's private cache.
+
+        Returns the PEM cert (not a bare key — the proxy hands back the
+        full x509, the verify helpers in :mod:`cullis_sdk.crypto` accept
+        either form). Reuses :attr:`_pubkey_cache` with the same TTL as
+        the broker path so successive calls don't burn the per-agent
+        egress rate-limit budget.
+
+        Raises :class:`PubkeyFetchError` when the proxy responds without
+        a usable cert (404, missing field, transport error). Plain HTTP
+        errors are wrapped — callers should catch ``PubkeyFetchError``
+        rather than ``httpx.HTTPError`` so future transports stay
+        transparent.
+        """
+        if not force_refresh and agent_id in self._pubkey_cache:
+            pem, fetched_at = self._pubkey_cache[agent_id]
+            if time.time() - fetched_at < _PUBKEY_CACHE_TTL:
+                return pem
+        path = f"/v1/egress/agents/{agent_id}/public-key"
+        try:
+            resp = self._egress_http("get", path)
+            resp.raise_for_status()
+            pem = resp.json().get("cert_pem")
+        except PubkeyFetchError:
+            raise
+        except Exception as exc:
+            raise PubkeyFetchError(
+                f"GET {path} failed: {exc} ({type(exc).__name__})"
+            ) from exc
+        if not pem:
+            raise PubkeyFetchError(
+                f"proxy returned no cert_pem for {agent_id} "
+                "(target may be cross-org with no broker bridge "
+                "configured, or the agent does not exist)"
+            )
+        self._pubkey_cache[agent_id] = (pem, time.time())
+        return pem
+
     # ── Sessions ────────────────────────────────────────────────────
 
     def open_session(self, target_agent_id: str, target_org_id: str,
@@ -1559,7 +1620,12 @@ class CullisClient:
         resp.raise_for_status()
         return resp.json().get("messages", [])
 
-    def decrypt_oneshot(self, inbox_row: dict) -> dict:
+    def decrypt_oneshot(
+        self,
+        inbox_row: dict,
+        *,
+        pubkey_fetcher: Callable[[str], str] | None = None,
+    ) -> dict:
         """Decrypt and authenticate a one-shot envelope row returned by
         :meth:`receive_oneshot`.
 
@@ -1579,6 +1645,14 @@ class CullisClient:
         private key and verify the inner signature against the sender's
         cert from the broker registry. Raises ``ValueError`` on any
         cryptographic failure.
+
+        :param pubkey_fetcher: optional callable ``(sender_agent_id) -> pem``
+            used to look up the sender's cert. When ``None`` (default),
+            falls back to :meth:`get_agent_public_key` which hits the
+            broker's ``/v1/federation`` namespace and requires a broker
+            JWT. Connectors enrolled via device-code don't hold that
+            JWT and should pass
+            :meth:`get_agent_public_key_via_egress` instead.
 
         Returns ``{"payload": <plaintext_dict>, "sender_verified": True,
         "mode": "mtls-only" | "envelope"}``.
@@ -1624,7 +1698,8 @@ class CullisClient:
             )
 
         # Verify the v2 outer envelope signature against the sender's cert.
-        sender_cert_pem = self.get_agent_public_key(sender)
+        fetch = pubkey_fetcher if pubkey_fetcher is not None else self.get_agent_public_key
+        sender_cert_pem = fetch(sender)
         ok = verify_oneshot_envelope_signature(
             sender_cert_pem,
             envelope["signature"],
