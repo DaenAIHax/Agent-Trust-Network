@@ -106,7 +106,19 @@ def _gen_org_ca(org_id: str) -> tuple[bytes, bytes]:
         .serial_number(x509.random_serial_number())
         .not_valid_before(now)
         .not_valid_after(now + datetime.timedelta(days=3650))
-        .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
+        # pathLen=1: the Org CA PEM written here is mounted into the
+        # proxy container (compose.yml proxy-a / proxy-b build
+        # mcp_proxy/Dockerfile and read /state/{org_id}/ca-key.pem).
+        # On boot, mcp_proxy runs ensure_mastio_identity() →
+        # _mint_mastio_ca() (mcp_proxy/egress/agent_manager.py:572-621)
+        # which signs a Mastio intermediate CA under THIS Org CA,
+        # and agent leaves are then minted under that intermediate.
+        # Runtime chain is therefore 3-tier (Org CA → Mastio CA →
+        # agent leaf) and RFC 5280 §4.2.1.9 requires pathLen≥1 on
+        # the Org CA so the intermediate is allowed. pathLen=0 would
+        # be rejected by any stdlib verifier (OpenSSL, Go crypto/x509,
+        # webpki, browser, kubectl mTLS) — see #280.
+        .add_extension(x509.BasicConstraints(ca=True, path_length=1), critical=True)
         .add_extension(
             x509.KeyUsage(
                 digital_signature=True, key_cert_sign=True, crl_sign=True,

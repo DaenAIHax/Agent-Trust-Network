@@ -144,20 +144,23 @@ def _walk_chain(
             pass
 
     # Path length: each parent's pathLenConstraint bounds the number of
-    # non-self-issued CAs that MAY follow below it. Walking top-down
-    # (trust_anchor first) lets us enforce it simply.
+    # non-self-issued intermediate CAs that MAY follow below it
+    # (RFC 5280 §4.2.1.9). ``full = [leaf, *intermediates, trust_anchor]``
+    # so iterating ``idx`` from ``len - 1`` (trust_anchor) down to ``1``
+    # covers every CA in the chain; ``below_ca_count = idx - 1`` is the
+    # number of CA certs strictly between ``parent`` and the leaf — the
+    # leaf itself sits at index 0 and is not counted (it is not a CA).
     for idx in range(len(full) - 1, 0, -1):
         parent = full[idx]
-        below_ca_count = max(0, (idx - 1))  # intermediates remaining below
+        below_ca_count = idx - 1
         try:
             bc = parent.extensions.get_extension_for_class(x509.BasicConstraints).value
-            if bc.path_length is not None and below_ca_count - 1 > bc.path_length:
-                # -1 because the leaf is not a CA, so it doesn't consume path length
+            if bc.path_length is not None and below_ca_count > bc.path_length:
                 raise HTTPException(
                     status.HTTP_401_UNAUTHORIZED,
                     detail=(f"certificate chain violates pathLenConstraint "
                             f"(parent allows {bc.path_length} below, chain has "
-                            f"{max(0, below_ca_count - 1)} intermediates)"),
+                            f"{below_ca_count} intermediates)"),
                 )
         except x509.ExtensionNotFound:
             # Non-CA wouldn't have BC; shouldn't reach here for intermediates

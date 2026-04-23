@@ -164,6 +164,13 @@ def gen_org_ca(
         .serial_number(x509.random_serial_number())
         .not_valid_before(NOW)
         .not_valid_after(NOW + datetime.timedelta(days=365 * 3))
+        # pathLen=0: dev/e2e chain is 3-tier flat
+        # (broker_ca → org_ca → agent_leaf) — no Mastio intermediate
+        # is minted below this Org CA, so pathLen=0 is RFC-correct
+        # (agent_leaf has ca=False and does not consume path length).
+        # Distinct from mcp_proxy/dashboard/router.py:123 which must
+        # use pathLen=1 because its chain does include a Mastio
+        # intermediate underneath. See #280.
         .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
         .add_extension(
             x509.SubjectKeyIdentifier.from_public_key(key.public_key()),
