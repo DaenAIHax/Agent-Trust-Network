@@ -136,6 +136,52 @@ class ProxySettings(BaseSettings):
     cb_db_latency_probe_timeout_s: float = 2.0
     cb_db_latency_window_s: float = 5.0
 
+    # ADR-013 Phase 4 — single-agent anomaly detection. Detects
+    # credential-compromise-shaped traffic anomalies that stay under
+    # the aggregate volume defences (Phases 1-6). See
+    # imp/adr_013_phase4_design.md.
+    #
+    # ``anomaly_quarantine_mode`` is the master switch. Values:
+    #   shadow  — detector runs, emits structured logs + DB audit
+    #             rows for would-be quarantines, does NOT flip
+    #             is_active=0. **Default on every deployment.** The
+    #             ADR safeguard §3.1 mandates shadow as the arrival
+    #             state for any new deployment, never auto-flipping.
+    #   enforce — detector acts on decisions: is_active=0 + hard-
+    #             delete after ``quarantine_ttl_hours``.
+    #   off     — evaluator task is not started.
+    #
+    # The ADR's 4-week-shadow invariant is advisory in code (an env-
+    # gated override exists for verified-safe deployments). Operators
+    # are expected to honour it; future work wires a runtime check.
+    anomaly_quarantine_mode: str = "shadow"
+
+    anomaly_ratio_threshold: float = 10.0
+    anomaly_absolute_threshold_rps: float = 100.0
+    # Soft absolute threshold — the minimum absolute rate a mature
+    # agent must exceed for the ratio path to trigger. Keeps low-
+    # volume bursts (fan-out, retry storms) from false-positiving
+    # while baseline-vs-current ratio is dramatic.
+    anomaly_absolute_threshold_rps_soft: float = 5.0
+    # 30 s tick. Lower makes detection latency better but increases
+    # DB read load; higher smooths across bursts that should fire.
+    anomaly_evaluation_interval_s: float = 30.0
+    # 3 ticks × 30 s = 90 s sustained — single transient spikes never
+    # quarantine. Design doc §2.2.
+    anomaly_sustained_ticks_required: int = 3
+    anomaly_quarantine_ttl_hours: int = 24
+    # Cycle-level fail-closed ceiling. ``3/min`` means detector does
+    # zero harm on any infra event that trips > 3 agents in a minute,
+    # only reports via aggregate alert. Tuning up requires redeploy
+    # (not runtime-settable) so a compromised admin API cannot raise
+    # the ceiling. Design doc §3.4.
+    anomaly_ceiling_per_min: int = 3
+    anomaly_baseline_min_days: int = 7
+    # Minimum shadow period before operator flip to enforce is
+    # allowed. Honour in operator runbook; runtime check is advisory
+    # follow-up.
+    anomaly_enforce_min_shadow_days: int = 28
+
     # Redis — optional. Empty = in-memory JTI store + rate limiter (single-
     # instance Mastio is fine without Redis). Multi-worker / HA deploys MUST
     # set this so the DPoP JTI store is shared across workers (audit F-B-12).
