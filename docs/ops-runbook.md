@@ -344,6 +344,126 @@ docker compose logs broker | tail -20
 
 ---
 
+## 8a. Anomaly detector (ADR-013 Phase 4)
+
+The Mastio ships a single-agent anomaly detector that catches
+credential-compromise traffic patterns that stay under the aggregate
+volume defences (DB pool, global rate limit, DB-latency circuit
+breaker).
+
+### Runtime model
+
+Four cooperating background tasks, started by the Mastio lifespan:
+
+| Component | Cadence | Role |
+|-----------|---------|------|
+| `traffic_recorder`    | 30 s flush      | In-memory counter per agent, flushed to `agent_traffic_samples`. |
+| `baseline_rollup`     | Daily 04:00 UTC | Roll 4-week `agent_traffic_samples` into 168 hour-of-week buckets. |
+| `anomaly_evaluator`   | 30 s tick       | Dual-signal detection + cycle-level fail-closed meta-breaker. |
+| `quarantine_expiry`   | Hourly          | Hard-DELETE `internal_agents` rows whose enforce-mode event has expired. |
+
+Master switch: `MCP_PROXY_ANOMALY_QUARANTINE_MODE ∈ {shadow,enforce,off}`.
+
+- `shadow` *(default)* — detector evaluates, logs, writes audit rows.
+  **Never touches `is_active`.** Default on every new deployment.
+- `enforce` — detector flips `is_active=0`, stamps 24 h expiry.
+- `off` — evaluator task not started. Used only when the detector
+  itself is misbehaving and the ceiling isn't catching it.
+
+### Observability
+
+```bash
+curl -H "X-Admin-Secret: $ADMIN_SECRET" \
+     http://mastio:9100/v1/admin/observability/anomaly-detector | jq
+```
+
+Fields worth watching:
+
+- `mode` — must match intent. An unexpected `off` means someone set
+  the env var and forgot to unset it.
+- `quarantines_last_24h` — enforce-mode events in the window.
+  Sustained non-zero values without a known incident are either a
+  real compromise or a tuning miss; investigate before dismissing.
+- `quarantines_last_24h_shadow_only` — what the detector *would*
+  have done in enforce mode. Use this during the shadow-to-enforce
+  flip assessment.
+- `meta_ceiling_trips_total` — lifetime count. If this climbs in
+  production, the detector is mis-tuned; raising the ceiling is
+  almost never the right fix.
+
+### Incident response
+
+#### A legitimate agent got quarantined (enforce mode)
+
+1. Pull the event: `SELECT * FROM agent_quarantine_events WHERE
+   agent_id = '<id>' ORDER BY quarantined_at DESC LIMIT 1;`
+2. Pull the traffic pattern:
+   `SELECT bucket_ts, req_count FROM agent_traffic_samples
+   WHERE agent_id = '<id>' AND bucket_ts > datetime('now','-1 day');`
+3. If the trigger was a one-off (known migration, legit campaign),
+   reactivate:
+   ```bash
+   curl -X POST -H "X-Admin-Secret: $ADMIN_SECRET" \
+        http://mastio:9100/v1/admin/agents/<id>/reactivate
+   ```
+4. If the agent's baseline has shifted permanently (agent changed
+   workload shape), let the next daily roll-up at 04:00 UTC
+   incorporate the new traffic. There is no per-agent threshold
+   override in Phase 4.
+
+If reactivation returns 404 "re-enrollment required", the 24 h
+expiry cron already hard-deleted the row. Re-enrol the agent via
+the normal Connector flow — this is by design.
+
+#### The detector flags agents that should not be flagged
+
+In shadow mode these are log noise — no action required. If
+> 5 % of agents appear in any week, the thresholds are too
+aggressive for the shape of this deployment. Tune via env +
+redeploy:
+
+```
+MCP_PROXY_ANOMALY_RATIO_THRESHOLD=15.0        # was 10.0
+MCP_PROXY_ANOMALY_ABSOLUTE_THRESHOLD_RPS=200  # was 100
+```
+
+#### Meta-ceiling tripped
+
+One `ERROR` log per trip:
+`anomaly_quarantine ceiling exceeded: suppressed N decision(s) …`.
+N agents simultaneously crossed threshold in a 30 s cycle — almost
+always infrastructure shape, not a coordinated compromise:
+
+- DB hiccup pushed every agent's observed rate up briefly.
+- Bad baseline was deployed (roll-up cron bug).
+- Time skew makes "now" look like a high-baseline hour.
+
+Action: investigate out-of-band. The detector did zero harm on this
+trip — zero quarantines applied — so there is no reactivation
+backlog. Raising the ceiling (env var, redeploy) is a last resort.
+
+### Flipping shadow → enforce
+
+1. Run in shadow mode for at least 28 days on the target deployment.
+   Review every shadow-mode event:
+   ```sql
+   SELECT agent_id, quarantined_at, trigger_ratio, trigger_abs_rate
+     FROM agent_quarantine_events
+    WHERE mode = 'shadow'
+    ORDER BY quarantined_at DESC;
+   ```
+2. Confirm zero false positives in the last 14 days. If any, tune
+   thresholds or investigate the flagged agent.
+3. Redeploy with `MCP_PROXY_ANOMALY_QUARANTINE_MODE=enforce`.
+4. Watch the observability endpoint closely for the first 48 h.
+
+Rollback: set the mode back to `shadow` and redeploy. Enforce-mode
+events already written stay in the DB (audit trail); their
+`is_active=0` stays until the 24 h cron hard-deletes the row, or an
+operator reactivates.
+
+---
+
 ## 9. Production Checklist
 
 Before going live, verify:
@@ -361,3 +481,7 @@ Before going live, verify:
 - [ ] Rate limit buckets are tuned for expected load
 - [ ] PDP webhooks are configured for all organizations
 - [ ] Jaeger/OTLP endpoint is configured for trace collection
+- [ ] Anomaly detector running in `shadow` mode for at least 28 days
+      before any flip to `enforce` (`MCP_PROXY_ANOMALY_QUARANTINE_MODE`)
+- [ ] Anomaly detector thresholds reviewed against the shadow-mode
+      event history (ratio, abs_rps, ceiling_per_min)
