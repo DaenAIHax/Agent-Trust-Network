@@ -323,25 +323,101 @@ async def get_agent(agent_id: str) -> dict | None:
         return _agent_row_to_dict(row)
 
 
-async def get_agent_by_key_hash(raw_api_key: str) -> dict | None:
-    """Look up an active agent by verifying a raw API key against stored bcrypt hashes.
+# Constant-time enumeration defence (issue #2). When the prefix-derived
+# agent_id doesn't match any row we still run one bcrypt.checkpw against
+# this dummy hash so the response latency for "unknown agent" matches
+# "known agent, wrong secret". Without it, the fast path for unknown
+# names (SQL miss ≈ 1 ms vs. match-attempt ≈ 300 ms) would let an
+# attacker enumerate agent names by timing. Generated once at import
+# time — checkpw against a valid hash that never matches real keys.
+_DUMMY_API_KEY_HASH: bytes | None = None
 
-    Since bcrypt hashes are non-deterministic (salted), we cannot do a direct
-    SQL lookup. Instead we fetch all active agents and verify against each hash.
-    For efficiency with many agents, consider a prefix index approach.
-    This is acceptable for the expected scale (tens to low hundreds of agents).
+
+def _dummy_api_key_hash() -> bytes:
+    global _DUMMY_API_KEY_HASH
+    if _DUMMY_API_KEY_HASH is None:
+        import bcrypt
+        _DUMMY_API_KEY_HASH = bcrypt.hashpw(b"never-a-real-key", bcrypt.gensalt())
+    return _DUMMY_API_KEY_HASH
+
+
+async def get_agent_by_key_hash(raw_api_key: str) -> dict | None:
+    """Look up an active agent by verifying a raw API key.
+
+    The key format is ``sk_local_{agent_name}_{32 hex chars}``. We parse
+    ``agent_name`` out of the prefix, build the canonical agent_id
+    ``{org_id}::{agent_name}`` (the Mastio serves a single org per
+    instance), fetch that one row, and verify its bcrypt hash. ``rpartition``
+    handles agent names that contain underscores — the hex suffix is
+    always the final 32 chars after the last underscore.
+
+    Issue #2: the previous implementation fetched every active agent and
+    ran ``bcrypt.checkpw`` synchronously in a loop, which scales as
+    O(N_agents × 200-400ms) per auth call and blocks the event loop for
+    the full duration. At N=10 concurrent requests the p99 was 29 s
+    (baseline benchmark in ``test/nightly/benchmarks/dpop_concurrency.py``).
+    Three fixes combined:
+      (a) parse the agent name from the prefix → O(1) row lookup, one
+          bcrypt per request instead of N.
+      (b) run ``bcrypt.checkpw`` on a worker thread via ``asyncio.to_thread``
+          so the single event-loop thread stays free to accept new
+          requests while the hash verify runs.
+      (c) run one dummy bcrypt when no row matches, so the "unknown agent"
+          response time is indistinguishable from "known agent, wrong
+          secret" — closes the timing side channel introduced by (a).
     """
     import bcrypt
 
+    if not raw_api_key.startswith("sk_local_"):
+        return None
+    rest = raw_api_key[len("sk_local_"):]
+    agent_name, sep, hex_part = rest.rpartition("_")
+    if not agent_name or not sep or len(hex_part) != 32:
+        return None
+
+    from mcp_proxy.config import get_settings
+    org_id = (get_settings().org_id or "").strip()
+    full_id = f"{org_id}::{agent_name}" if org_id else agent_name
+
     async with get_db() as conn:
         result = await conn.execute(
-            text("SELECT * FROM internal_agents WHERE is_active = 1")
+            text("SELECT * FROM internal_agents "
+                 "WHERE is_active = 1 AND agent_id = :aid"),
+            {"aid": full_id},
         )
-        rows = result.mappings().all()
-        for row in rows:
-            stored_hash = row["api_key_hash"]
-            if bcrypt.checkpw(raw_api_key.encode(), stored_hash.encode()):
-                return _agent_row_to_dict(row)
+        row = result.mappings().first()
+        if row is None and full_id != agent_name:
+            # Pre-migration fallback: some legacy rows were stored with
+            # the bare name. Only hit this branch when the canonical
+            # lookup missed, so it costs at most one extra indexed
+            # query per wrong key — not per request in steady state.
+            result = await conn.execute(
+                text("SELECT * FROM internal_agents "
+                     "WHERE is_active = 1 AND agent_id = :aid"),
+                {"aid": agent_name},
+            )
+            row = result.mappings().first()
+
+        if row is None:
+            # Burn a bcrypt.checkpw against the dummy hash so the failure
+            # path takes roughly the same wall time as a wrong-secret
+            # success path. ``checkpw`` returns False — discard the
+            # result; the caller sees None either way.
+            await asyncio.to_thread(
+                bcrypt.checkpw,
+                raw_api_key.encode(),
+                _dummy_api_key_hash(),
+            )
+            return None
+
+        stored_hash = row["api_key_hash"]
+        ok = await asyncio.to_thread(
+            bcrypt.checkpw,
+            raw_api_key.encode(),
+            stored_hash.encode(),
+        )
+        if ok:
+            return _agent_row_to_dict(row)
     return None
 
 

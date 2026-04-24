@@ -62,12 +62,10 @@ def main() -> int:
     print(f"[smoke] probing {total} agents via Mastio /v1/egress/peers")
 
     start = time.monotonic()
-    # Mild concurrency (2 workers). A wider fan-out stalls Mastio's single
-    # uvicorn worker under DPoP validation — that's the kind of finding
-    # 'nightly.sh go' will surface deliberately; smoke just wants a yes/no
-    # "N/N identities work", not a load test.
+    # Parallel probe — the Mastio auth path is non-blocking post-fix
+    # (issue #2), so fan-out N=10 clears 20/20 in a couple seconds.
     results: list[tuple[str, bool, str]] = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(10, total)) as pool:
         results = list(pool.map(_probe, manifest))
 
     ok = sum(1 for _, up, _ in results if up)
