@@ -111,9 +111,15 @@ jobs:
           pip install pip-audit
 
       - name: Audit dependencies
+        # ``pip-audit`` without args scans the whole virtualenv, which includes
+        # build-toolchain packages (pip, setuptools, wheel) that ship nothing
+        # to customers. Scoping to requirements.txt audits exactly what the
+        # broker image runs — anything we actually deploy. Newly-disclosed
+        # CVEs against pip itself still get picked up upstream; we don't want
+        # them to block deploys of code that doesn't include pip.
         run: |
           pip install -r requirements.txt
-          pip-audit
+          pip-audit -r requirements.txt
 
       - name: Ban insecure TLS opt-outs in production code
         # Matches audit F-E-01/F-E-02 class: blanket `verify=False` or
