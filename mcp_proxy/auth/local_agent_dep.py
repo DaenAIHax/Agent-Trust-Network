@@ -202,6 +202,10 @@ async def _maybe_local_internal_agent(request: Request) -> InternalAgent | None:
         except Exception:
             capabilities = [c for c in capabilities.split(",") if c]
 
+    # ADR-013 Phase 4 — record successful auth for the anomaly detector.
+    from mcp_proxy.observability.traffic_recorder import record_agent_request
+    record_agent_request(request, payload.agent_id)
+
     return InternalAgent(
         agent_id=payload.agent_id,
         display_name=record.get("display_name") or payload.agent_id,
