@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
-from typing import Optional
 
 import pytest
 from sqlalchemy import text

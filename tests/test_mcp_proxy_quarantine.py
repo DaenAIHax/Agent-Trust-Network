@@ -17,7 +17,6 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from mcp_proxy.db import dispose_db, init_db
 from mcp_proxy.observability.anomaly_evaluator import TriggerInfo
 from mcp_proxy.observability.quarantine import (
-    ReactivationResult,
     make_quarantine_apply_hook,
     reactivate_agent,
     run_expiry_once,
