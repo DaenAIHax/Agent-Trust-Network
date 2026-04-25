@@ -70,6 +70,26 @@ jobs:
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "Releasing version: ${version}"
 
+      - name: Verify pyproject + __init__ versions match tag
+        run: |
+          tag_version="${GITHUB_REF_NAME#connector-v}"
+          pyproject_version=$(grep -E '^version = ' packaging/pypi/pyproject.toml | head -1 | cut -d'"' -f2)
+          init_version=$(grep -E '^__version__' cullis_connector/__init__.py | head -1 | cut -d'"' -f2)
+          fail=0
+          if [ "$tag_version" != "$pyproject_version" ]; then
+            echo "ERROR: tag version ($tag_version) != packaging/pypi/pyproject.toml version ($pyproject_version)"
+            fail=1
+          fi
+          if [ "$tag_version" != "$init_version" ]; then
+            echo "ERROR: tag version ($tag_version) != cullis_connector/__init__.py __version__ ($init_version)"
+            fail=1
+          fi
+          if [ "$fail" = "1" ]; then
+            echo "Bump both files to match the tag before pushing the tag."
+            exit 1
+          fi
+          echo "OK: versions aligned at $tag_version"
+
       - name: Install build tool
         run: python -m pip install --upgrade pip build
 
@@ -252,7 +272,7 @@ jobs:
     name: Publish to PyPI
     needs: build-python
     runs-on: ubuntu-latest
-    if: ${{ false }}  # TODO: flip to `${{ secrets.PYPI_TOKEN != '' }}` once provisioned
+    if: ${{ secrets.PYPI_TOKEN != '' }}
     environment:
       name: pypi
       url: https://pypi.org/p/cullis-connector
