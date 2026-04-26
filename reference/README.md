@@ -1,0 +1,127 @@
+# Cullis Reference Deployment
+
+**Operational-grade demo of Cullis** — six LLM-driven agents enrolled via three different methods (BYOCA, SPIFFE/SPIRE, Connector device-code), running real multi-hop conversations across two organizations.
+
+This is the bigger sibling of `sandbox/`. The sandbox is a didactic playground (hard-coded nonce ping-pong, BYOCA-only enrollment); this directory shows what a Cullis deployment looks like with realistic content and all three enrollment paths exercised in parallel.
+
+> **Mutually exclusive with `sandbox/`** — both bind the same host ports (9100, 9200, 8000, …). Bring the sandbox down before this stack up: `bash sandbox/down.sh && bash reference/up.sh`.
+
+## Prerequisites
+
+- Docker Engine + Compose v2
+- ~6 GB RAM available (14 containers + Ollama on host)
+- ~6 GB free disk
+- **Ollama running on the host** with a small chat model loaded (e.g. `gemma3:1b` or `qwen3.5:2b`). The agent containers reach Ollama via `host.docker.internal:11434`.
+- Ollama tuned for concurrency: `OLLAMA_HOST=0.0.0.0:11434` + `OLLAMA_NUM_PARALLEL=6`. See the host setup section below.
+
+## Quickstart
+
+```bash
+# Make sure the sibling sandbox is down (mutually exclusive)
+bash sandbox/down.sh 2>/dev/null || true
+
+# Bring up the reference deployment
+bash reference/up.sh
+
+# Inject the kick-off prompt into alice-byoca and watch the multi-hop trace
+bash reference/scenarios/widget-hunt.sh
+```
+
+When you're done:
+
+```bash
+bash reference/down.sh
+```
+
+## What's running
+
+| Service | Port (host) | Role |
+|---|---|---|
+| Court (broker) | `:8000` | Cross-org federation broker |
+| Mastio A (proxy-a) | `:9100` | orga data plane + admin dashboard |
+| Mastio B (proxy-b) | `:9200` | orgb data plane + admin dashboard |
+| Keycloak A | `:8180` | OIDC IdP for orga admin SSO |
+| Keycloak B | `:8280` | OIDC IdP for orgb admin SSO |
+| SPIRE server A / B | (internal) | Workload identity for SPIFFE-enrolled agents |
+| Postgres / Redis | (internal) | Shared state for Court + both Mastios |
+| MCP catalog / inventory | (internal) | Downstream tool servers reverse-proxied by Mastios |
+| 6 LLM agents | (internal) | The point of this deployment |
+
+## The six agents
+
+| Agent | Org | Enrollment method | Role | Capability advertised |
+|---|---|---|---|---|
+| `alice-byoca` | orga | BYOCA (cert from Org CA) | BUYER | `order.create` |
+| `alice-spiffe` | orga | SPIFFE/SPIRE workload SVID | INVENTORY | `inventory.read` |
+| `alice-connector` | orga | Device-code (auto-approved) | BROKER | `discovery.federate` |
+| `bob-byoca` | orgb | BYOCA | INVENTORY | `inventory.read` |
+| `bob-spiffe` | orgb | SPIFFE/SPIRE | SUPPLIER | `order.fulfill` |
+| `bob-connector` | orgb | Device-code (auto-approved) | BROKER | `discovery.federate` |
+
+The role determines the system prompt and tool set; the enrollment method is orthogonal — every agent ends up with the same API-key + DPoP runtime auth (ADR-011 unified enrollment), regardless of how it got there.
+
+## The widget-hunt scenario
+
+```
+[orga, intra-org, ADR-001 short-circuit]
+  alice-byoca → alice-inventory: "Do we have widget-X?"
+  alice-inventory → alice-byoca: "qty=0"
+  alice-byoca → alice-broker: "Find widget-X cross-org"
+
+[discovery via Court registry]
+  alice-broker → discover(capability="order.fulfill") → bob-broker
+
+[cross-org, ADR-009 counter-signature, ECDH end-to-end]
+  alice-broker → bob-broker: "Looking for 100 widget-X for orga"
+
+[orgb, intra-org]
+  bob-broker → bob-inventory: "Check widget-X"
+  bob-inventory → bob-broker: "qty=500"
+  bob-broker → bob-byoca: "Source 100 widget-X for orga"
+  bob-byoca → bob-broker → (cross-org) → alice-broker → alice-byoca: "OK, will fulfill"
+```
+
+What this exercises:
+- All three enrollment paths active simultaneously
+- Intra-org short-circuit (Court never sees these hops)
+- Cross-org counter-signed encrypted envelope
+- Capability-based discovery via Court registry
+- Multi-hop LLM-driven conversation (each agent really thinks via Ollama, not scripted)
+
+## Host setup — Ollama on NixOS
+
+Add to `configuration.nix`:
+
+```nix
+services.ollama = {
+  enable = true;
+  acceleration = "vulkan";   # or "rocm" / "cuda" depending on GPU
+  host = "0.0.0.0";          # so Docker containers can reach it
+  environmentVariables = {
+    OLLAMA_NUM_PARALLEL = "6";    # 6 concurrent inference slots for 6 agents
+    OLLAMA_FLASH_ATTENTION = "0"; # Vulkan compatibility
+  };
+};
+
+# Firewall: 11434 is NOT in allowedTCPPorts, so external interfaces are blocked.
+# Docker bridge interfaces bypass the firewall by default → containers reach Ollama.
+networking.firewall.enable = true;
+```
+
+Pull the model:
+
+```bash
+ollama pull gemma3:1b      # or qwen3.5:2b
+```
+
+## How this differs from `sandbox/`
+
+| | `sandbox/` | `reference/` |
+|---|---|---|
+| Agent runtime | Hard-coded nonce ping-pong | LLM-driven via Ollama |
+| Enrollment | All BYOCA | BYOCA + SPIFFE + Connector device-code |
+| Scenario | `oneshot-a-to-b` (single message) | `widget-hunt` (multi-hop conversation) |
+| Setup time | ~30s | ~30s + Ollama warm-up |
+| Audience | Learning Cullis primitives | Pitch demo, integration reference, partner evaluation |
+
+If you're trying to understand Cullis for the first time, start with `sandbox/`. If you want to see what a deployment looks like with realistic workload, you're in the right place.
