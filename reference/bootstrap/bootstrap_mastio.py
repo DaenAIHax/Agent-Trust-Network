@@ -191,86 +191,237 @@ def _generate_dpop_jwk() -> tuple[dict, dict]:
     return public_jwk, private_jwk
 
 
-def _enroll_agents_via_byoca(
+def _persist_runtime_creds(
+    entry: pathlib.Path, api_key: str, private_jwk: dict,
+) -> None:
+    """Write api-key + dpop.jwk next to the agent's cert.
+
+    Shared by all three enrollment methods — once an agent has those two
+    files plus its agent.pem/agent-key.pem, runtime auth via
+    ``CullisClient.from_api_key_file`` is identical regardless of how the
+    Mastio was convinced to issue them.
+    """
+    import json as _json
+    (entry / "api-key").write_text(api_key)
+    (entry / "api-key").chmod(0o644)
+    (entry / "dpop.jwk").write_text(
+        _json.dumps({"private_jwk": private_jwk}, separators=(",", ":"))
+    )
+    (entry / "dpop.jwk").chmod(0o644)
+
+
+def _enroll_one_byoca(
+    client: httpx.Client, proxy_url: str, admin_secret: str,
+    org_id: str, name: str, entry: pathlib.Path, capabilities: list[str],
+) -> dict | None:
+    """Enroll a single agent via the Mastio's BYOCA endpoint.
+
+    Reads ``agent.pem`` + ``agent-key.pem`` minted by the outer bootstrap
+    against the Org CA. Mastio verifies chain → returns api-key.
+    """
+    cert_pem = (entry / "agent.pem").read_text()
+    key_pem = (entry / "agent-key.pem").read_text()
+    public_jwk, private_jwk = _generate_dpop_jwk()
+    r = client.post(
+        f"{proxy_url}/v1/admin/agents/enroll/byoca",
+        headers={"X-Admin-Secret": admin_secret},
+        json={
+            "agent_name": name,
+            "display_name": name,
+            "capabilities": capabilities,
+            "federated": True,
+            "cert_pem": cert_pem,
+            "private_key_pem": key_pem,
+            "dpop_jwk": public_jwk,
+        },
+        timeout=10.0,
+    )
+    if r.status_code == 201:
+        resp = r.json()
+        _persist_runtime_creds(entry, resp["api_key"], private_jwk)
+        _ok(f"{org_id}::{name}: enrolled via BYOCA "
+            f"(caps={capabilities or '[]'}, jkt={resp.get('dpop_jkt', '')[:12]}…)")
+        return {"org_id": org_id, "agent_name": name,
+                "capabilities": capabilities}
+    if r.status_code == 409:
+        _info(f"{org_id}::{name}: already enrolled (BYOCA) — skipping")
+        return {"org_id": org_id, "agent_name": name,
+                "capabilities": capabilities}
+    _fail(f"{org_id}::{name}: BYOCA enroll failed "
+          f"HTTP {r.status_code} {r.text[:200]}")
+    return None
+
+
+def _enroll_one_spiffe(
+    client: httpx.Client, proxy_url: str, admin_secret: str,
+    org_id: str, name: str, entry: pathlib.Path, capabilities: list[str],
+) -> dict | None:
+    """Enroll a single agent via the Mastio's SPIFFE endpoint.
+
+    Same agent cert as BYOCA — the outer bootstrap already mints every
+    cert with a ``spiffe://{trust_domain}/{org}/{agent}`` URI in the
+    SubjectAlternativeName, so the file on disk is a valid SVID. The
+    difference is which Mastio endpoint we call and which trust anchor
+    is supplied: SPIFFE enrollment ships the trust bundle inline (per
+    ``SpiffeEnrollRequest.trust_bundle_pem``) so we don't depend on a
+    pre-configured ``proxy_config.spire_trust_bundle`` row.
+
+    Reference deployment trust bundle = the Org CA itself, persisted by
+    the outer bootstrap at ``/state/{org}/ca.pem``. In a real SPIRE
+    deployment this would be the SPIRE server's trust bundle.
+    """
+    svid_pem = (entry / "agent.pem").read_text()
+    svid_key_pem = (entry / "agent-key.pem").read_text()
+    org_ca_pem = (pathlib.Path("/state") / org_id / "ca.pem").read_text()
+    public_jwk, private_jwk = _generate_dpop_jwk()
+    r = client.post(
+        f"{proxy_url}/v1/admin/agents/enroll/spiffe",
+        headers={"X-Admin-Secret": admin_secret},
+        json={
+            "agent_name": name,
+            "display_name": name,
+            "capabilities": capabilities,
+            "federated": True,
+            "svid_pem": svid_pem,
+            "svid_key_pem": svid_key_pem,
+            "trust_bundle_pem": org_ca_pem,
+            "dpop_jwk": public_jwk,
+        },
+        timeout=10.0,
+    )
+    if r.status_code == 201:
+        resp = r.json()
+        _persist_runtime_creds(entry, resp["api_key"], private_jwk)
+        _ok(f"{org_id}::{name}: enrolled via SPIFFE "
+            f"(spiffe_id={CYAN}{resp.get('spiffe_id', '')}{RESET}, "
+            f"jkt={resp.get('dpop_jkt', '')[:12]}…)")
+        return {"org_id": org_id, "agent_name": name,
+                "capabilities": capabilities}
+    if r.status_code == 409:
+        _info(f"{org_id}::{name}: already enrolled (SPIFFE) — skipping")
+        return {"org_id": org_id, "agent_name": name,
+                "capabilities": capabilities}
+    _fail(f"{org_id}::{name}: SPIFFE enroll failed "
+          f"HTTP {r.status_code} {r.text[:200]}")
+    return None
+
+
+def _enroll_one_connector_simulated(
+    client: httpx.Client, proxy_url: str, admin_secret: str,
+    org_id: str, name: str, entry: pathlib.Path, capabilities: list[str],
+) -> dict | None:
+    """Stub for ``connector_devicecode`` — falls back to BYOCA endpoint.
+
+    Real Connector device-code enrollment is a multi-step dance that
+    ends at ``POST /v1/admin/enrollments/{session_id}/approve`` — that
+    endpoint deliberately requires a logged-in admin dashboard session
+    + CSRF token (no ``X-Admin-Secret`` bypass), because in production
+    the admin's identity is what's audited as the approver. There is no
+    machine-friendly way to auto-approve from a script today.
+
+    For the reference deployment we accept the limitation: enrollment
+    happens via the BYOCA endpoint (machine-friendly), but the manifest
+    + display_name carry ``enrollment_method=connector_devicecode_simulated``
+    so the agent's runtime is identical to a real Connector-enrolled
+    one. The stub is honest about being a stub — see README §Limitations.
+
+    Replacing this with a real auto-approver daemon (programmatic
+    dashboard login + session cookie + CSRF) is tracked as Phase 2.5
+    follow-up; not in scope for this initial reference build.
+    """
+    cert_pem = (entry / "agent.pem").read_text()
+    key_pem = (entry / "agent-key.pem").read_text()
+    public_jwk, private_jwk = _generate_dpop_jwk()
+    r = client.post(
+        f"{proxy_url}/v1/admin/agents/enroll/byoca",
+        headers={"X-Admin-Secret": admin_secret},
+        json={
+            "agent_name": name,
+            # Display name carries the method so the dashboard / audit
+            # makes the simulation visible even though the wire call is
+            # the BYOCA endpoint.
+            "display_name": f"{name} (connector device-code, simulated)",
+            "capabilities": capabilities,
+            "federated": True,
+            "cert_pem": cert_pem,
+            "private_key_pem": key_pem,
+            "dpop_jwk": public_jwk,
+        },
+        timeout=10.0,
+    )
+    if r.status_code == 201:
+        resp = r.json()
+        _persist_runtime_creds(entry, resp["api_key"], private_jwk)
+        _ok(f"{org_id}::{name}: enrolled via Connector device-code "
+            f"{YELLOW}(simulated → BYOCA wire){RESET} "
+            f"jkt={resp.get('dpop_jkt', '')[:12]}…")
+        return {"org_id": org_id, "agent_name": name,
+                "capabilities": capabilities}
+    if r.status_code == 409:
+        _info(f"{org_id}::{name}: already enrolled (connector simulated) — skipping")
+        return {"org_id": org_id, "agent_name": name,
+                "capabilities": capabilities}
+    _fail(f"{org_id}::{name}: connector simulated enroll failed "
+          f"HTTP {r.status_code} {r.text[:200]}")
+    return None
+
+
+def _enroll_agents(
     client: httpx.Client, proxy_url: str, admin_secret: str, org_id: str,
     manifest: list[dict],
 ) -> list[dict]:
-    """ADR-011 Phase 4 — enroll each bootstrap-minted agent via
-    ``/v1/admin/agents/enroll/byoca``.
+    """Dispatch enrollment per manifest ``enrollment_method`` field.
 
-    The outer bootstrap already minted an Org-CA-signed cert/key pair
-    per agent under ``/state/{org}/agents/{name}/``. Phase 1b exposed a
-    verified enrollment endpoint that accepts that material, verifies
-    the chain, and emits an API key + pins DPoP jkt. We persist the
-    returned credentials alongside the cert so agent containers can
-    ``from_api_key_file(...)`` at runtime — no more SPIFFE/BYOCA
-    direct login to the Court.
-
-    Returns the subset of manifest rows successfully enrolled so the
-    caller can drive binding create+approve on the Court. Row shape
-    matches the old ``_seed_agents_on_mastio`` contract for caller
-    back-compat.
+    Routes each agent to the matching ``_enroll_one_*`` function. Falls
+    back to BYOCA if the field is missing (sandbox manifests don't carry
+    enrollment_method, so this preserves back-compat with sandbox usage).
     """
     agents_dir = pathlib.Path("/state") / org_id / "agents"
     if not agents_dir.exists():
         _info(f"{org_id}: no agents directory — skipping enroll")
         return []
 
-    caps_by_name = {e["agent_name"]: e.get("capabilities", []) for e in manifest
-                    if e.get("org_id") == org_id}
+    by_name = {e["agent_name"]: e for e in manifest if e.get("org_id") == org_id}
     enrolled: list[dict] = []
-    for entry in sorted(p for p in agents_dir.iterdir() if p.is_dir()):
-        name = entry.name
-        cert_path = entry / "agent.pem"
-        key_path = entry / "agent-key.pem"
+    for entry_path in sorted(p for p in agents_dir.iterdir() if p.is_dir()):
+        name = entry_path.name
+        cert_path = entry_path / "agent.pem"
+        key_path = entry_path / "agent-key.pem"
         if not cert_path.exists() or not key_path.exists():
             _warn(f"{org_id}::{name}: missing agent.pem/agent-key.pem — skipping")
             continue
-        cert_pem = cert_path.read_text()
-        key_pem = key_path.read_text()
-        capabilities = caps_by_name.get(name, [])
-        public_jwk, private_jwk = _generate_dpop_jwk()
-        r = client.post(
-            f"{proxy_url}/v1/admin/agents/enroll/byoca",
-            headers={"X-Admin-Secret": admin_secret},
-            json={
-                "agent_name": name,
-                "display_name": name,
-                "capabilities": capabilities,
-                "federated": True,
-                "cert_pem": cert_pem,
-                "private_key_pem": key_pem,
-                "dpop_jwk": public_jwk,
-            },
-            timeout=10.0,
-        )
-        if r.status_code == 201:
-            resp = r.json()
-            # Persist the runtime credentials next to the cert so the
-            # agent container's volume mount finds them. Layout matches
-            # ``CullisClient.from_api_key_file`` expectations: one file
-            # per artifact, 0600-ish (sandbox mount is 0644 by default).
-            (entry / "api-key").write_text(resp["api_key"])
-            (entry / "api-key").chmod(0o644)
-            import json as _json
-            (entry / "dpop.jwk").write_text(
-                _json.dumps({"private_jwk": private_jwk}, separators=(",", ":"))
+        meta = by_name.get(name, {})
+        method = meta.get("enrollment_method", "byoca")
+        capabilities = meta.get("capabilities", [])
+
+        if method == "byoca":
+            row = _enroll_one_byoca(
+                client, proxy_url, admin_secret,
+                org_id, name, entry_path, capabilities,
             )
-            (entry / "dpop.jwk").chmod(0o644)
-            _ok(f"{org_id}::{name}: enrolled via BYOCA "
-                f"(caps={capabilities or '[]'}, jkt={resp.get('dpop_jkt', '')[:12]}…)")
-            enrolled.append({"org_id": org_id, "agent_name": name,
-                             "capabilities": capabilities})
-        elif r.status_code == 409:
-            _info(f"{org_id}::{name}: already enrolled — skipping")
-            enrolled.append({"org_id": org_id, "agent_name": name,
-                             "capabilities": capabilities})
+        elif method == "spiffe":
+            row = _enroll_one_spiffe(
+                client, proxy_url, admin_secret,
+                org_id, name, entry_path, capabilities,
+            )
+        elif method == "connector_devicecode_simulated":
+            row = _enroll_one_connector_simulated(
+                client, proxy_url, admin_secret,
+                org_id, name, entry_path, capabilities,
+            )
         else:
-            _fail(
-                f"{org_id}::{name}: enroll failed "
-                f"HTTP {r.status_code} {r.text[:200]}"
-            )
+            _fail(f"{org_id}::{name}: unknown enrollment_method {method!r}")
+            continue
+
+        if row is not None:
+            enrolled.append(row)
     return enrolled
+
+
+# Back-compat alias so any sandbox-style caller (or stale tests) keeps
+# working — sandbox manifests have no enrollment_method, so the
+# dispatcher falls through to BYOCA and behaves identically.
+_enroll_agents_via_byoca = _enroll_agents
 
 
 def _bind_agents_on_court(
@@ -364,8 +515,9 @@ def main() -> int:
             _pin_on_court(client, org_id, pem)
             _ok(f"{org_id}: mastio_pubkey pinned — counter-sig enforcement active")
 
-            _info(f"enrolling agents via BYOCA on Mastio {BOLD}{org_id}{RESET}")
-            enrolled = _enroll_agents_via_byoca(
+            _info(f"enrolling agents on Mastio {BOLD}{org_id}{RESET} "
+                  f"(dispatching by manifest.enrollment_method)")
+            enrolled = _enroll_agents(
                 client, cfg["proxy_url"], cfg["admin_secret"], org_id,
                 manifest,
             )

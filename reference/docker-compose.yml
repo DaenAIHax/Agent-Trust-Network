@@ -220,7 +220,7 @@ services:
   proxy-a-init:
     build:
       context: ..
-      dockerfile: sandbox/proxy-init/Dockerfile
+      dockerfile: reference/proxy-init/Dockerfile
     depends_on:
       bootstrap:
         condition: service_completed_successfully
@@ -394,13 +394,15 @@ services:
       start_period: 15s
 
   agent-a:
-    # ADR-009 sandbox — orga workloads only start in ``full`` mode; with
-    # the default ``demo.sh up`` the user bootstraps orga themselves
-    # via the guided walkthrough.
-    profiles: ["full"]
+    # PHASE 2 NOTE: this container ran the sandbox's hard-coded nonce
+    # loop. Phase 3 of the reference build replaces it with six
+    # LLM-driven agent containers (alice-{byoca,spiffe,connector} +
+    # bob-{byoca,spiffe,connector}), each pointing at Ollama. Until then
+    # this stays gated behind a profile no script invokes.
+    profiles: ["disabled-pending-phase3"]
     build:
       context: ..
-      dockerfile: sandbox/agent/Dockerfile
+      dockerfile: reference/agent/Dockerfile
     depends_on:
       spire-agent-a:
         condition: service_healthy
@@ -440,10 +442,11 @@ services:
   # mode: same org, one trust_domain, different agents pick different
   # auth methods.
   byoca-a:
-    profiles: ["full"]
+    # PHASE 2 NOTE: see agent-a above. Replaced by 6 LLM agents in Phase 3.
+    profiles: ["disabled-pending-phase3"]
     build:
       context: ..
-      dockerfile: sandbox/agent/Dockerfile
+      dockerfile: reference/agent/Dockerfile
     depends_on:
       bootstrap:
         condition: service_completed_successfully
@@ -473,7 +476,7 @@ services:
   proxy-b-init:
     build:
       context: ..
-      dockerfile: sandbox/proxy-init/Dockerfile
+      dockerfile: reference/proxy-init/Dockerfile
     depends_on:
       bootstrap:
         condition: service_completed_successfully
@@ -612,9 +615,11 @@ services:
       start_period: 15s
 
   agent-b:
+    # PHASE 2 NOTE: see agent-a above. Replaced by 6 LLM agents in Phase 3.
+    profiles: ["disabled-pending-phase3"]
     build:
       context: ..
-      dockerfile: sandbox/agent/Dockerfile
+      dockerfile: reference/agent/Dockerfile
     depends_on:
       spire-agent-b:
         condition: service_healthy

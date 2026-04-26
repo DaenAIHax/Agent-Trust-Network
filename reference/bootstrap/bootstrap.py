@@ -86,29 +86,71 @@ ORGS = [
 ]
 
 AGENTS = [
+    # ── orga: BUYER + INVENTORY + BROKER, one per enrollment method ────────
     {
-        "agent_id": "orga::agent-a",
+        "agent_id": "orga::alice-byoca",
         "org_id": "orga",
-        "capabilities": ["order.read", "order.write", "oneshot.message", "sandbox.read"],
+        "enrollment_method": "byoca",
+        "role": "buyer",
+        "capabilities": ["order.create", "oneshot.message"],
+        "persist_extra": True,  # LLM agent reads cert/key/api-key from state
     },
     {
-        "agent_id": "orga::byoca-bot",
+        "agent_id": "orga::alice-spiffe",
         "org_id": "orga",
-        "capabilities": ["order.read", "oneshot.message", "sandbox.read"],
-        "persist_extra": True,  # byoca-a container reads certs from state
+        "enrollment_method": "spiffe",
+        "role": "inventory",
+        "capabilities": ["inventory.read", "oneshot.message"],
+        "persist_extra": True,
     },
     {
-        "agent_id": "orgb::agent-b",
+        "agent_id": "orga::alice-connector",
+        "org_id": "orga",
+        # Stub: real device-code requires admin dashboard session + CSRF
+        # (no X-Admin-Secret bypass for /v1/admin/enrollments/{id}/approve).
+        # Reference deployment enrolls these via the BYOCA endpoint and
+        # labels them in the manifest so the runtime stack is identical
+        # while the README documents the simplification. Real device-code
+        # auto-approval would be a separate daemon container.
+        "enrollment_method": "connector_devicecode_simulated",
+        "role": "broker",
+        "capabilities": ["discovery.federate", "oneshot.message"],
+        "persist_extra": True,
+    },
+
+    # ── orgb: INVENTORY + SUPPLIER + BROKER, mirror layout ────────────────
+    {
+        "agent_id": "orgb::bob-byoca",
         "org_id": "orgb",
-        "capabilities": ["order.read", "order.write", "oneshot.message", "sandbox.read"],
+        "enrollment_method": "byoca",
+        "role": "inventory",
+        "capabilities": ["inventory.read", "oneshot.message"],
+        "persist_extra": True,
+    },
+    {
+        "agent_id": "orgb::bob-spiffe",
+        "org_id": "orgb",
+        "enrollment_method": "spiffe",
+        "role": "supplier",
+        "capabilities": ["order.fulfill", "oneshot.message"],
+        "persist_extra": True,
+    },
+    {
+        "agent_id": "orgb::bob-connector",
+        "org_id": "orgb",
+        "enrollment_method": "connector_devicecode_simulated",
+        "role": "broker",
+        "capabilities": ["discovery.federate", "oneshot.message"],
+        "persist_extra": True,
     },
 ]
 
-PEERS = {
-    "orga::agent-a":   ["orgb::agent-b", "orga::byoca-bot"],
-    "orga::byoca-bot":  ["orgb::agent-b", "orga::agent-a"],
-    "orgb::agent-b":   ["orga::agent-a", "orga::byoca-bot"],
-}
+# LLM-driven agents discover peers via Cullis ``/v1/egress/resolve`` at
+# runtime instead of reading a static peers.json. PEERS is kept (empty
+# for the active 6-agent reference set) so phase_6_peers_json still
+# writes /state/peers.json — agents read it but find no entries and skip
+# any auto-send loop, falling through to LLM-driven decisions.
+PEERS: dict[str, list[str]] = {}
 
 # ---------------------------------------------------------------------------
 # PKI helpers
@@ -536,10 +578,14 @@ def phase_4_register_agents(client: httpx.Client, orgs_data: dict[str, dict]) ->
     # the two bootstrap stages loosely coupled.
     manifest = [
         {
-            "agent_id":     a["agent_id"],
-            "org_id":       a["org_id"],
-            "agent_name":   a["agent_id"].split("::", 1)[1],
-            "capabilities": a["capabilities"],
+            "agent_id":          a["agent_id"],
+            "org_id":            a["org_id"],
+            "agent_name":        a["agent_id"].split("::", 1)[1],
+            "capabilities":      a["capabilities"],
+            # Reference deployment additions (sandbox manifest doesn't
+            # carry these, downstream readers default safely):
+            "enrollment_method": a.get("enrollment_method", "byoca"),
+            "role":              a.get("role", "agent"),
         }
         for a in targets
     ]
