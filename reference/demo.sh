@@ -53,11 +53,15 @@ _print_dashboards() {
 }
 
 _print_scenarios() {
-    _header "Try it — send messages between agents"
-    echo -e "  ${GREEN}./demo.sh oneshot-a-to-b${RESET}   cross-org: orga::agent-a → orgb::agent-b (via Court)"
-    echo -e "  ${GREEN}./demo.sh oneshot-b-to-a${RESET}   cross-org: orgb::agent-b → orga::agent-a (via Court)"
-    echo -e "  ${GREEN}./demo.sh mcp-catalog${RESET}      intra-org MCP: orga::agent-a → get_catalog"
-    echo -e "  ${GREEN}./demo.sh mcp-inventory${RESET}    intra-org MCP: orgb::agent-b → check_inventory"
+    _header "Try it — generate traffic for the Grafana dashboard"
+    echo -e "  ${BOLD}${CYAN}┌─ open http://localhost:3000 first ─────────────────────┐${RESET}"
+    echo -e "  ${BOLD}${CYAN}└────────────────────────────────────────────────────────┘${RESET}"
+    echo
+    echo -e "  ${GREEN}./scenarios/widget-hunt.sh${RESET}        kick-off prompt → multi-hop LLM chain"
+    echo -e "  ${GREEN}./scenarios/inject.sh${RESET}             one mixed burst of fresh messages"
+    echo -e "  ${GREEN}./scenarios/inject.sh -n 10${RESET}       ten back-to-back bursts"
+    echo -e "  ${GREEN}./scenarios/inject.sh --loop${RESET}      continuous bursts ~every 8s (Ctrl-C to stop)"
+    echo -e "  ${GREEN}./scenarios/inject.sh -c${RESET}          cross-org only (exercises ADR-009 counter-sig)"
 }
 
 _print_teardown() {
@@ -123,40 +127,15 @@ case "${1:-help}" in
     docker compose logs bootstrap --no-log-prefix
     ;;
 
-  oneshot-a-to-b)
-    _header "Scenario — cross-org one-shot: orga::agent-a → orgb::agent-b"
-    docker compose exec -e TARGET_AGENT_ID=orgb::agent-b agent-a \
-      python /app/scenarios/oneshot_cross_org.py
+  widget-hunt)
+    _header "Scenario — kick-off the multi-hop LLM chain on alice-byoca"
+    bash scenarios/widget-hunt.sh
     ;;
 
-  oneshot-b-to-a)
-    _header "Scenario — cross-org one-shot: orgb::agent-b → orga::agent-a"
-    docker compose exec -e TARGET_AGENT_ID=orga::agent-a agent-b \
-      python /app/scenarios/oneshot_cross_org.py
-    ;;
-
-  mcp-catalog)
-    _header "Scenario — intra-org MCP call: orga::agent-a → get_catalog"
-    docker compose exec \
-      -e MCP_TOOL_NAME=get_catalog \
-      -e MCP_TOOL_ARGS='{"category":"electronics"}' \
-      agent-a python /app/scenarios/mcp_call_local.py
-    ;;
-
-  mcp-inventory)
-    _header "Scenario — intra-org MCP call: orgb::agent-b → check_inventory"
-    docker compose exec \
-      -e MCP_TOOL_NAME=check_inventory \
-      -e MCP_TOOL_ARGS='{"sku":"WIDGET-X"}' \
-      agent-b python /app/scenarios/mcp_call_local.py
-    ;;
-
-  guide)
-    if command -v less >/dev/null 2>&1; then
-      less -R GUIDE.md
-    else
-      cat GUIDE.md
-    fi
+  inject)
+    shift
+    _header "Scenario — inject fresh traffic"
+    bash scenarios/inject.sh "$@"
     ;;
 
   help|*)
@@ -175,14 +154,12 @@ Inspection:
   dashboard       Print dashboard URLs + Court bootstrap token (first login).
   bootstrap-logs  Replay the verbose Phase 1-7 bootstrap output.
 
-Scenarios (require 'full' mode — orga workloads must be running):
-  oneshot-a-to-b  Cross-org one-shot from orga::agent-a to orgb::agent-b.
-  oneshot-b-to-a  Cross-org one-shot from orgb::agent-b to orga::agent-a.
-  mcp-catalog     Intra-org MCP call: orga::agent-a → mcp-catalog (get_catalog).
-  mcp-inventory   Intra-org MCP call: orgb::agent-b → mcp-inventory (check_inventory).
-
-Guided onboarding (for 'up' mode — walks you through completing orga):
-  guide           Open the step-by-step Markdown walkthrough.
+Demo (require 'full' mode + http://localhost:3000 open):
+  widget-hunt     Restart the stack with the kick-off prompt baked in
+                  (alice-byoca starts the multi-hop sourcing chain).
+  inject [args]   Generate fresh traffic without restarting. Pass
+                  -n N (N bursts), --loop (continuous), -c (cross-org
+                  only). See ./scenarios/inject.sh -h for details.
 EOF
     ;;
 esac
