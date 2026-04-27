@@ -88,16 +88,25 @@ class ProxySettings(BaseSettings):
     # ``GF_AUTH_DISABLE_LOGIN_FORM`` pattern (inverted).
     force_local_password: bool = False
 
-    # Standalone mode — ship the proxy as a product on its own, without a
-    # Cullis broker in front of it. When true:
+    # Standalone mode — the Mastio's default. ADR-006 + ADR-014 made this
+    # the canonical shape: the proxy runs as a self-contained mini-broker
+    # for its own org, with no Court uplink. The wizard derives org_id
+    # from the auto-generated Org CA, the nginx sidecar terminates TLS,
+    # and intra-org messaging works zero-config. Federation ("allaccio
+    # al Court") is post-setup, opt-in via the dashboard /proxy/federation
+    # page — not by flipping this flag.
+    #
+    # When true (default):
     #   - BrokerBridge and the reverse-proxy httpx client are not initialized.
     #   - /readyz skips the JWKS cache check (there is no broker to fetch from).
     #   - validate_config() does not require BROKER_JWKS_URL in production.
     #   - Dashboard responses carry x-cullis-mode: standalone.
-    # Intra-org flows (enrollment, /v1/egress/*, local sessions, Guardian)
-    # keep working unchanged. Federation can be turned on later by flipping
-    # this to false and setting broker_url/broker_jwks_url.
-    standalone: bool = False
+    #
+    # Setting false plus broker_url + broker_jwks_url at boot keeps the
+    # legacy federated bring-up working — used by tests/e2e and by
+    # operators who already have a Court online and want it from the
+    # first boot rather than via the dashboard attach flow.
+    standalone: bool = True
 
     # Broker uplink (for egress) — ignored in standalone mode.
     broker_url: str = ""

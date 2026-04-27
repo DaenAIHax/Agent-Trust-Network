@@ -2,27 +2,25 @@
 # Cullis MCP Proxy — Org-Level Gateway + Built-in PDP
 # =============================================================================
 #
-# Joins the broker's Docker network by default so the broker can reach
-# the PDP webhook on the shared bridge. For a proxy that runs on a
-# different host than the broker, use docker-compose.proxy.standalone.yml
-# as an override — it swaps the external network for an internal one and
-# expects a full URL in MCP_PROXY_BROKER_URL.
+# Default deploy = standalone Mastio on its own private docker network.
+# The Mastio derives its Org CA + org_id at first boot (ADR-006 §2.2),
+# the mastio-nginx sidecar (ADR-014) terminates TLS on host port 9443
+# with mTLS on /v1/(egress|agents). Zero broker dependency at boot;
+# federation ("allaccio al Court") is post-setup, opt-in via the
+# dashboard /proxy/federation page.
 #
-# ADR-014 — the Mastio listens on 9100 only inside the broker_net docker
-# network. The mastio-nginx sidecar terminates TLS on host port 9443 and
-# enforces mTLS on the agent-identity routes. Host port 9100 is NOT
-# published — anyone reaching the Mastio comes through nginx.
+# Operators who want to bring up the Mastio with a Court already on
+# the same docker host (CI smoke, dev fixtures) layer the
+# docker-compose.proxy.shared-broker.yml override on top.
 #
 # Usage:
-#   ./deploy_proxy.sh                       # dev, same host as broker
-#   ./deploy_proxy.sh --standalone          # remote broker
+#   ./deploy_proxy.sh                       # dev, standalone (default)
+#   ./deploy_proxy.sh --shared-broker       # join the broker's docker net
 #   ./deploy_proxy.sh --prod                # fail-fast on insecure defaults
 #
-# Prerequisites (shared mode):
-#   - Broker running on this host (./deploy_broker.sh --dev or --prod-*)
-#   - The network "cullis-broker_default" must exist (created by the
-#     broker compose project; name derives from COMPOSE_PROJECT_NAME
-#     which deploy_broker.sh pins to "cullis-broker")
+# Host port 9443 is the only published port. The in-pod Mastio listener
+# (9100) is reachable only via the sidecar at 127.0.0.1 inside the
+# proxy_net docker network.
 # =============================================================================
 
 services:
@@ -37,22 +35,24 @@ services:
       - "9100"
     environment:
       MCP_PROXY_ENVIRONMENT:       ${MCP_PROXY_ENVIRONMENT:-development}
-      # ADR-006 Trojan Horse — flip to true to run this Mastio as a
-      # self-contained mini-broker (no Court uplink, no JWKS fetch). Intra-org
-      # flows keep working; cross-org is disabled until federation is enabled.
-      MCP_PROXY_STANDALONE:        ${MCP_PROXY_STANDALONE:-false}
+      # ADR-006 — standalone is the canonical default. The Mastio derives
+      # its Org CA + org_id at first-boot and runs as a self-contained
+      # mini-broker. Federation is post-setup, opt-in via the dashboard.
+      # The shared-broker override flips this to false.
+      MCP_PROXY_STANDALONE:        ${MCP_PROXY_STANDALONE:-true}
       MCP_PROXY_ADMIN_SECRET:      ${MCP_PROXY_ADMIN_SECRET:-change-me-in-production}
       # Persistent signing key — without this, admin sessions are invalid
       # after every proxy restart (per-process random fallback).
       MCP_PROXY_DASHBOARD_SIGNING_KEY: ${MCP_PROXY_DASHBOARD_SIGNING_KEY:-}
       MCP_PROXY_DATABASE_URL:      sqlite+aiosqlite:////data/mcp_proxy.db
-      # Broker uplink — defaults to the in-compose service name so dev just
-      # works. Production/remote broker sets MCP_PROXY_BROKER_URL to the
-      # public HTTPS URL.
-      MCP_PROXY_BROKER_URL:        ${MCP_PROXY_BROKER_URL:-http://broker:8000}
-      MCP_PROXY_BROKER_JWKS_URL:   ${MCP_PROXY_BROKER_JWKS_URL:-http://broker:8000/.well-known/jwks.json}
+      # Broker uplink — empty by default in standalone. The shared-broker
+      # override fills these with the in-compose service name; production
+      # federated deploys set them via proxy.env.
+      MCP_PROXY_BROKER_URL:        ${MCP_PROXY_BROKER_URL:-}
+      MCP_PROXY_BROKER_JWKS_URL:   ${MCP_PROXY_BROKER_JWKS_URL:-}
       # PDP endpoint registered with the broker when the org onboards.
-      # On the shared network, the broker reaches the proxy by service name.
+      # In standalone the broker is absent, but the value stays valid for
+      # the (unused) registration code path.
       MCP_PROXY_PDP_URL:           ${MCP_PROXY_PDP_URL:-http://mcp-proxy:9100/pdp/policy}
       # Public URL the proxy advertises to its own internal agents (DPoP HTU).
       # ADR-014 — points at the nginx sidecar's TLS endpoint, not the
@@ -94,7 +94,7 @@ services:
       # Mastio (this service) writes; mastio-nginx mounts ro.
       - mastio_nginx_certs:/var/lib/mastio/nginx-certs:rw
     networks:
-      - broker_net
+      - proxy_net
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9100/health')"]
@@ -120,7 +120,7 @@ services:
       mcp-proxy:
         condition: service_healthy
     networks:
-      - broker_net
+      - proxy_net
     restart: unless-stopped
     healthcheck:
       # Verify the cert pair landed AND nginx itself is serving.
@@ -140,9 +140,11 @@ services:
       start_period: 15s
 
 networks:
-  broker_net:
-    external: true
-    name: cullis-broker_default
+  # Default standalone: a private bridge owned by this compose project.
+  # The shared-broker override resets this and joins ``broker_net``
+  # (cullis-broker_default) instead.
+  proxy_net:
+    driver: bridge
 
 volumes:
   mcp_proxy_data:

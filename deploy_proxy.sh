@@ -5,17 +5,24 @@
 #
 # Deploys the MCP Proxy for one organization.
 #
-# Four deploy modes (combinable):
-#   (default)        dev on the same host as the broker
-#   --prod           fail-fast on insecure defaults, prod overlay
-#   --standalone     proxy on a different host than the broker (remote broker URL)
-#   --down           stop + remove containers
-#   --rebuild        rebuild images and restart
+# Default = standalone Mastio on its own private docker network. The
+# Mastio derives its Org CA at first boot and works zero-config; allaccio
+# al Court is post-setup via the dashboard. The --shared-broker override
+# is only for bringing up the Mastio alongside a Court already running
+# on the same docker host (CI fixtures, single-host dev).
+#
+# Modes (combinable):
+#   (default)         standalone Mastio, private docker network
+#   --shared-broker   join the broker's docker network (Court must be up)
+#   --prod            fail-fast on insecure defaults + prod overlay
+#   --down            stop + remove containers
+#   --rebuild         rebuild images and restart
 #
 # Examples:
-#   ./deploy_proxy.sh
-#   ./deploy_proxy.sh --standalone
-#   ./deploy_proxy.sh --prod --standalone
+#   ./deploy_proxy.sh                       # standalone (default)
+#   ./deploy_proxy.sh --shared-broker       # join Court on same host
+#   ./deploy_proxy.sh --prod                # standalone, prod safety
+#   ./deploy_proxy.sh --prod --shared-broker
 #   ./deploy_proxy.sh --down
 #
 set -euo pipefail
@@ -51,57 +58,57 @@ print_help() {
     cat <<EOF
 Usage: $0 [OPTIONS]
 
-Deploys the MCP Proxy for one organization. Combines with --down / --rebuild
-for lifecycle management, and --standalone when the proxy runs on a different
-host than the broker.
+Deploys the MCP Proxy for one organization. Default = standalone Mastio
+(zero broker dependency). Combine with --down / --rebuild for lifecycle
+management, --shared-broker only when a Court is up on the same host.
 
 Options:
-  (no flags)                  Dev mode, same host as the broker (default)
+  (no flags)                  Standalone Mastio, private docker network
+                              (default — no broker required at boot)
+  --shared-broker             Join the broker's docker network. Requires
+                              the Court compose project to be up.
   --prod                      Production: fail-fast on insecure defaults,
-                              requires proxy.env pre-provisioned
-  --standalone                Proxy runs on a different host than the broker
-                              (reads BROKER_URL from proxy.env)
-  --down                      Stop and remove containers
-  --rebuild                   Rebuild images and restart
-  --help, -h                  Show this help and exit
+                              requires proxy.env pre-provisioned.
+  --down                      Stop and remove containers.
+  --rebuild                   Rebuild images and restart.
+  --help, -h                  Show this help and exit.
 
 Examples:
-  ./deploy_proxy.sh                          # dev, same host as broker
-  ./deploy_proxy.sh --standalone             # dev, proxy on its own host
-  ./deploy_proxy.sh --prod --standalone      # prod, proxy on its own host
-  ./deploy_proxy.sh --down                   # stop + remove containers
+  ./deploy_proxy.sh                              # standalone (default)
+  ./deploy_proxy.sh --shared-broker              # join Court on same host
+  ./deploy_proxy.sh --prod                       # standalone, prod safety
+  ./deploy_proxy.sh --prod --shared-broker       # federated prod
+  ./deploy_proxy.sh --down                       # stop + remove containers
+
+Legacy --standalone (no-op) is accepted with a deprecation warning so
+older runbooks keep running.
 EOF
 }
 
 ACTION="up"
 MODE="development"
-STANDALONE=0
+SHARED_BROKER=0
 for arg in "$@"; do
     case "$arg" in
-        --down)       ACTION="down" ;;
-        --rebuild)    ACTION="rebuild" ;;
-        --prod)       MODE="production" ;;
-        --standalone) STANDALONE=1 ;;
-        --help|-h)    print_help; exit 0 ;;
+        --down)          ACTION="down" ;;
+        --rebuild)       ACTION="rebuild" ;;
+        --prod)          MODE="production" ;;
+        --shared-broker) SHARED_BROKER=1 ;;
+        --standalone)
+            warn "--standalone is the new default — flag is a no-op. Drop it from your scripts."
+            ;;
+        --help|-h)       print_help; exit 0 ;;
         *) die "Unknown argument: $arg (use --help)" ;;
     esac
 done
 
 # ── Compose file stacking ───────────────────────────────────────────────────
+# Default = standalone (private proxy_net + MCP_PROXY_STANDALONE=true
+# in the base compose). The shared-broker override layers on broker_net
+# + MCP_PROXY_STANDALONE=false.
 COMPOSE_FILES="-f docker-compose.proxy.yml"
-[[ $STANDALONE -eq 1 ]]    && COMPOSE_FILES="$COMPOSE_FILES -f docker-compose.proxy.standalone.yml"
+[[ $SHARED_BROKER -eq 1 ]]   && COMPOSE_FILES="$COMPOSE_FILES -f docker-compose.proxy.shared-broker.yml"
 [[ "$MODE" == "production" ]] && COMPOSE_FILES="$COMPOSE_FILES -f docker-compose.proxy.prod.yml"
-
-# ADR-006 Trojan Horse — flag --standalone selects the network override
-# above AND tells the Mastio itself to run in mini-broker mode (derive
-# Org CA at first boot, skip broker uplink). Both knobs were drifting
-# apart — flag set the network but the Mastio still booted federated,
-# never derived the Org CA, and the nginx sidecar (ADR-014) had no
-# cert material to serve. Propagate the flag through the env so the
-# container picks it up at lifespan startup.
-if [[ $STANDALONE -eq 1 ]]; then
-    export MCP_PROXY_STANDALONE=true
-fi
 
 # ── Down early-exit ─────────────────────────────────────────────────────────
 if [[ "$ACTION" == "down" ]]; then
@@ -166,7 +173,7 @@ if [[ "$MODE" == "production" ]]; then
 fi
 
 # ── Build + Start ───────────────────────────────────────────────────────────
-step "Deploying Cullis MCP Proxy (${MODE}, $([ $STANDALONE -eq 1 ] && echo standalone || echo shared-network))"
+step "Deploying Cullis MCP Proxy (${MODE}, $([ $SHARED_BROKER -eq 1 ] && echo shared-broker || echo standalone))"
 
 if [[ "$ACTION" == "rebuild" ]]; then
     echo -e "  ${GRAY}$COMPOSE $COMPOSE_FILES --env-file proxy.env build --no-cache${RESET}"
@@ -174,13 +181,12 @@ if [[ "$ACTION" == "rebuild" ]]; then
     ok "Images rebuilt"
 fi
 
-# If shared-network, make sure the broker network exists; otherwise compose
-# will fail with an obtuse "network cullis-broker_default not found".
-# Network name derives from the broker's COMPOSE_PROJECT_NAME ("cullis-broker"
-# pinned in deploy_broker.sh per shake-out P0-03).
-if [[ $STANDALONE -eq 0 ]]; then
+# --shared-broker assumes the broker compose project is up so its docker
+# network is reachable. Bail with a useful error if it isn't, instead of
+# letting compose emit "network cullis-broker_default not found".
+if [[ $SHARED_BROKER -eq 1 ]]; then
     if ! docker network inspect cullis-broker_default >/dev/null 2>&1; then
-        die "Network 'cullis-broker_default' not found. Either start the broker first (./deploy_broker.sh --dev) or rerun with --standalone for a remote broker."
+        die "--shared-broker requires the broker compose to be up. Either run ./deploy_broker.sh --dev first, or drop --shared-broker for the standalone default."
     fi
 fi
 
