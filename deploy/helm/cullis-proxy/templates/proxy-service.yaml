@@ -11,13 +11,21 @@ metadata:
 spec:
   type: {{ .Values.proxy.service.type }}
   ports:
-    # ADR-014 — clients reach the Mastio through the nginx sidecar's TLS+mTLS.
-    # The plain proxy port (9100) is no longer surfaced by the Service —
-    # it stays inside the pod, reachable only by the sidecar at 127.0.0.1.
+    # ADR-014 — clients reach the Mastio through the nginx sidecar's TLS+mTLS
+    # when nginx.enabled is true; otherwise the Service hands plain HTTP
+    # straight to the proxy on 9100 (TLS termination expected upstream).
+    {{- if .Values.nginx.enabled }}
     - name: https
       port: {{ .Values.proxy.service.port }}
       targetPort: https
       protocol: TCP
       appProtocol: https
+    {{- else }}
+    - name: http
+      port: {{ .Values.proxy.containerPort }}
+      targetPort: http
+      protocol: TCP
+      appProtocol: http
+    {{- end }}
   selector:
     {{- include "cullis-proxy.proxy.selectorLabels" . | nindent 4 }}

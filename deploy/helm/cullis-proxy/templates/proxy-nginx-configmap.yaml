@@ -1,3 +1,4 @@
+{{- if .Values.nginx.enabled }}
 {{/*
 ADR-014 — nginx sidecar config dropped into /etc/nginx/conf.d. Mounts
 the same shared cert directory the proxy container writes into at
@@ -90,3 +91,4 @@ data:
             return 404;
         }
     }
+{{- end }}

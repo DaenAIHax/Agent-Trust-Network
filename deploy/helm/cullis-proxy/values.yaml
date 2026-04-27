@@ -273,6 +273,16 @@ proxy:
 # from the shared in-pod nginx-certs volume.
 # ---------------------------------------------------------------------------
 nginx:
+  # -- Toggle the sidecar. ``true`` (default) bundles the nginx
+  # container alongside the proxy and exposes 9443 TLS via the
+  # Service. ``false`` skips the sidecar entirely: the proxy serves
+  # 9100 HTTP through the Service and the cert provisioning path in
+  # the lifespan is disabled (``MCP_PROXY_NGINX_CERT_DIR`` empty).
+  # The off path is intended for environments where TLS termination
+  # is handled by an external ingress controller / service mesh and
+  # the sidecar would just add a hop. helm-test uses it.
+  enabled: true
+
   image:
     repository: nginx
     # -- nginx-alpine is small and ships with the OpenSSL we need.
