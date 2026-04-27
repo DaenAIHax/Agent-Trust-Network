@@ -131,7 +131,7 @@ jobs:
               --set broker.image.repository=cullis-broker \
               --set broker.image.tag=ci-local \
               --set broker.image.pullPolicy=Never \
-              --wait --timeout 5m
+              --wait --timeout 8m
           else
             # ADR-014 — cullis-proxy chart now bundles the nginx sidecar.
             # standalone=true tells the Mastio to derive its own Org CA at
@@ -144,7 +144,7 @@ jobs:
               --set proxy.image.tag=ci-local \
               --set proxy.image.pullPolicy=Never \
               --set proxy.standalone=true \
-              --wait --timeout 5m
+              --wait --timeout 8m
           fi
 
       # ADR-014 — for cullis-proxy the Service hands raw TLS bytes from

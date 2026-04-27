@@ -42,9 +42,19 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.proxy.podSecurityContext }}
+      {{- if .Values.proxy.podSecurityContext }}
       securityContext:
-        {{- toYaml . | nindent 8 }}
+        {{- toYaml .Values.proxy.podSecurityContext | nindent 8 }}
+      {{- else }}
+      # ADR-014 default — proxyuser is gid 999 in the Mastio image.
+      # fsGroup makes the shared nginx-certs emptyDir group-readable +
+      # writable so first-boot (proxy container, runs as proxyuser) can
+      # drop the Org CA + leaf into the volume that the nginx sidecar
+      # mounts read-only. Container-level runAsUser intentionally not
+      # set so the nginx sidecar can run with its image default
+      # (which sets up worker processes from the master as root).
+      securityContext:
+        fsGroup: 999
       {{- end }}
       terminationGracePeriodSeconds: {{ .Values.proxy.terminationGracePeriodSeconds }}
       {{- with .Values.proxy.nodeSelector }}
@@ -179,13 +189,13 @@ spec:
           {{- end }}
         {{- end }}
         # ADR-014 — shared scratch volume between proxy + nginx sidecar.
-        # emptyDir is correct here: the cert is regenerated at every pod
-        # start (idempotent reuse only matters across container restarts
-        # within the same pod, which emptyDir provides).
+        # Plain disk-backed emptyDir: in K8s, ``medium: Memory`` interacts
+        # poorly with fsGroup-based ownership in some kubelet versions and
+        # tmpfs reserves are sized off node memory rather than the volume
+        # itself, making ``sizeLimit`` advisory. Disk-backed avoids both
+        # surprises; the cert is ~3 KB total, the storage cost is noise.
         - name: nginx-certs
-          emptyDir:
-            medium: Memory
-            sizeLimit: 1Mi
+          emptyDir: {}
         - name: nginx-conf
           configMap:
             name: {{ include "cullis-proxy.proxy.fullname" . }}-nginx

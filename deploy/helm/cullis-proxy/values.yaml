@@ -224,14 +224,17 @@ proxy:
     failureThreshold: 3
     successThreshold: 1
 
-  # -- Startup probe (optional — useful on first DB init).
+  # -- Startup probe (optional — useful on first DB init). Bumped
+  # failureThreshold to 60 (= 5 min boot budget) to absorb slower kind
+  # cluster bootstraps where alembic migrations + Org CA + Mastio
+  # identity + nginx cert provisioning all run on first boot.
   startupProbe:
     httpGet:
       path: /healthz
       port: http
     initialDelaySeconds: 5
     periodSeconds: 5
-    failureThreshold: 30
+    failureThreshold: 60
 
   # -- preStop hook. Sleep gives Kubernetes time to propagate the pod
   # removal through the Service endpoints before uvicorn gets SIGTERM.

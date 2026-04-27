@@ -177,6 +177,7 @@ async def lifespan(app: FastAPI):
                     out_dir=settings.nginx_cert_dir,
                     sans=sans,
                 )
+                _log.info("ADR-014 nginx cert provisioning complete")
             except Exception as exc:  # don't block lifespan on cert write
                 _log.warning(
                     "ADR-014 nginx server cert provisioning failed: %s — "
@@ -186,6 +187,7 @@ async def lifespan(app: FastAPI):
 
     app.state.agent_manager = agent_mgr
     app.state.org_id = org_id
+    _log.info("Lifespan: agent_manager + org_id wired (org_id=%s)", org_id)
 
     # Federation update framework (imp/federation_hardening_plan.md
     # Parte 1, PR 2). Must run BEFORE ``LocalIssuer`` construction so a
