@@ -122,9 +122,52 @@ spec:
             - name: data
               mountPath: {{ .Values.persistence.mountPath }}
             {{- end }}
+            # ADR-014 — proxy writes the Org CA + nginx server cert into
+            # this dir at first-boot; the sidecar reads it.
+            - name: nginx-certs
+              mountPath: /var/lib/mastio/nginx-certs
             {{- with .Values.proxy.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+        # ADR-014 — TLS termination + mTLS gate sidecar
+        - name: mastio-nginx
+          image: "{{ .Values.nginx.image.repository }}:{{ .Values.nginx.image.tag }}"
+          imagePullPolicy: {{ .Values.nginx.image.pullPolicy }}
+          ports:
+            - name: https
+              containerPort: 9443
+              protocol: TCP
+          volumeMounts:
+            - name: nginx-certs
+              mountPath: /etc/nginx/certs
+              readOnly: true
+            - name: nginx-conf
+              mountPath: /etc/nginx/conf.d
+              readOnly: true
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - >-
+                  test -s /etc/nginx/certs/mastio-server.crt &&
+                  test -s /etc/nginx/certs/org-ca.crt &&
+                  wget -q --no-check-certificate -O /dev/null https://127.0.0.1:9443/health
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - wget -q --no-check-certificate -O /dev/null https://127.0.0.1:9443/health
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          {{- with .Values.nginx.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
       volumes:
         {{- if not (include "cullis-proxy.usesPostgres" .) }}
         - name: data
@@ -135,6 +178,17 @@ spec:
           emptyDir: {}
           {{- end }}
         {{- end }}
+        # ADR-014 — shared scratch volume between proxy + nginx sidecar.
+        # emptyDir is correct here: the cert is regenerated at every pod
+        # start (idempotent reuse only matters across container restarts
+        # within the same pod, which emptyDir provides).
+        - name: nginx-certs
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+        - name: nginx-conf
+          configMap:
+            name: {{ include "cullis-proxy.proxy.fullname" . }}-nginx
         {{- with .Values.proxy.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

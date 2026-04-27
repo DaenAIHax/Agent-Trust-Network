@@ -1,0 +1,77 @@
+{{/*
+ADR-014 — nginx sidecar config dropped into /etc/nginx/conf.d. Mounts
+the same shared cert directory the proxy container writes into at
+first-boot. Verbatim copy of the docker-compose nginx config so the
+two deploy targets share one source of truth (with a copy-paste boundary
+that ought to converge to a single rendered template at some point).
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "cullis-proxy.proxy.fullname" . }}-nginx
+  labels:
+    {{- include "cullis-proxy.proxy.labels" . | nindent 4 }}
+data:
+  00-maps.conf: |
+    # WebSocket Upgrade helper — must live in http {} context.
+    map $http_upgrade $connection_upgrade {
+        default upgrade;
+        ''      close;
+    }
+  mastio.conf: |
+    server {
+        listen 9443 ssl;
+        http2 on;
+        server_name _;
+
+        ssl_certificate     /etc/nginx/certs/mastio-server.crt;
+        ssl_certificate_key /etc/nginx/certs/mastio-server.key;
+        ssl_protocols       TLSv1.2 TLSv1.3;
+        ssl_ciphers         HIGH:!aNULL:!MD5:!RC4;
+        ssl_prefer_server_ciphers on;
+        ssl_session_timeout 10m;
+        ssl_session_cache   shared:SSL:10m;
+
+        ssl_client_certificate /etc/nginx/certs/org-ca.crt;
+        ssl_verify_client      optional;
+
+        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+        add_header X-Content-Type-Options    "nosniff" always;
+        add_header X-Frame-Options           "DENY" always;
+        add_header Referrer-Policy           "strict-origin-when-cross-origin" always;
+
+        client_max_body_size 4m;
+
+        # mTLS-required: agent identity routes
+        location ~ ^/v1/(egress|agents)(/.*)?$ {
+            if ($ssl_client_verify != SUCCESS) {
+                return 401;
+            }
+            proxy_pass http://127.0.0.1:{{ .Values.proxy.containerPort }};
+            proxy_http_version 1.1;
+            proxy_set_header Host                $host;
+            proxy_set_header X-Real-IP           $remote_addr;
+            proxy_set_header X-Forwarded-For     $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto   https;
+            proxy_set_header X-SSL-Client-Cert   $ssl_client_escaped_cert;
+            proxy_set_header X-SSL-Client-Verify $ssl_client_verify;
+        }
+
+        # Anonymous over TLS — enrollment, auth helpers, dashboard, health, PDP
+        location ~ ^/(v1/enrollment|v1/auth|health|readyz|live|pdp|proxy)(/.*)?$ {
+            proxy_pass http://127.0.0.1:{{ .Values.proxy.containerPort }};
+            proxy_http_version 1.1;
+            proxy_set_header Host              $host;
+            proxy_set_header X-Real-IP         $remote_addr;
+            proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto https;
+            proxy_set_header X-SSL-Client-Cert "";
+            proxy_set_header Upgrade           $http_upgrade;
+            proxy_set_header Connection        $connection_upgrade;
+            proxy_read_timeout                 86400;
+        }
+
+        location / {
+            return 404;
+        }
+    }

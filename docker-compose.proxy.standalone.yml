@@ -25,6 +25,12 @@ services:
     networks: !override
       - proxy_net
 
+  # ADR-014 — sidecar follows mcp-proxy onto the standalone bridge
+  # so it can resolve ``mcp-proxy:9100`` over docker DNS.
+  mastio-nginx:
+    networks: !override
+      - proxy_net
+
 networks:
   broker_net: !reset null
   proxy_net:

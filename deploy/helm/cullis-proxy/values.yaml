@@ -238,10 +238,17 @@ proxy:
   preStopSleepSeconds: 5
 
   service:
-    # -- Service type. Keep ClusterIP and front it with the Ingress.
+    # -- Service type. ClusterIP works behind a TCP-passthrough Ingress;
+    # use LoadBalancer when the cluster has no Ingress controller capable
+    # of passing TLS through to the pod (most ingress controllers
+    # terminate TLS, which is incompatible with the in-pod mTLS gate).
+    # ADR-014 made TLS terminate at the sidecar inside the pod, so the
+    # service hands raw TLS bytes to whichever fronting layer is configured.
     type: ClusterIP
-    # -- Service port exposed to the Ingress controller.
-    port: 9100
+    # -- Service port. Clients connect over TLS to the nginx sidecar
+    # listening on 9443; the in-pod proxy port (9100) is not exposed
+    # by the Service.
+    port: 9443
     # -- Extra annotations on the proxy Service.
     annotations: {}
 
@@ -257,6 +264,37 @@ proxy:
 # ---------------------------------------------------------------------------
 # Persistence — SQLite DB backing the proxy.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# nginx sidecar — ADR-014. Terminates TLS + enforces mTLS for agent-
+# identity routes. Reads cert material the proxy writes at first-boot
+# from the shared in-pod nginx-certs volume.
+# ---------------------------------------------------------------------------
+nginx:
+  image:
+    repository: nginx
+    # -- nginx-alpine is small and ships with the OpenSSL we need.
+    tag: 1.27-alpine
+    pullPolicy: IfNotPresent
+
+  # -- Resource hints for the sidecar. nginx is light; these are floors.
+  resources:
+    requests:
+      cpu: 25m
+      memory: 32Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+  # -- Dir inside the proxy container where it writes Org CA + server
+  # cert. Sidecar mounts the same dir read-only at /etc/nginx/certs.
+  certDir: /var/lib/mastio/nginx-certs
+
+  # -- SAN(s) baked into the server cert at first-boot. Comma-separated.
+  # In K8s the dominant SAN is the in-cluster Service DNS, but operators
+  # may add the public hostname too if traffic enters via LoadBalancer
+  # without a TLS-terminating front layer.
+  san: "mastio,mastio.local,localhost"
+
 # ---------------------------------------------------------------------------
 # Postgres — supported runtime backend since ADR-001 Phase 1.3. When either
 # `externalUrl` or `internal: true` is set, the proxy reads PROXY_DB_URL
@@ -354,10 +392,16 @@ vault:
   secretPrefix: "secret/data/mcp-proxy/tools"
 
 # ---------------------------------------------------------------------------
-# Ingress — cert-manager TLS termination with websocket-friendly annotations.
+# Ingress — DISABLED by default after ADR-014. The nginx sidecar
+# inside the pod terminates TLS+mTLS on port 9443 and the Service
+# hands raw TLS bytes upward. Re-enabling this Ingress requires the
+# controller to be configured for TCP passthrough (e.g.
+# nginx-ingress with `--enable-ssl-passthrough`). Without passthrough
+# the Ingress would terminate TLS at the cluster edge, breaking the
+# end-to-end TLS chain the sidecar enforces.
 # ---------------------------------------------------------------------------
 ingress:
-  enabled: true
+  enabled: false
   className: nginx
   # -- Public hostname for the proxy.
   host: proxy.example.com
