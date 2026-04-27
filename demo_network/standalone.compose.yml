@@ -29,6 +29,15 @@ services:
       MCP_PROXY_PROXY_PUBLIC_URL: "https://localhost:9443"
     expose:
       - "9100"
+    # nginx/mastio/mastio.conf hard-codes ``proxy_pass http://mcp-proxy:9100``
+    # (matches the service name in docker-compose.proxy.yml). The
+    # standalone compose keeps the historical service name ``proxy``
+    # for shell-friendliness, so we add ``mcp-proxy`` as a network
+    # alias to keep the nginx config repo-shared without a fork.
+    networks:
+      default:
+        aliases:
+          - mcp-proxy
     volumes:
       - proxy-data:/data
       - mastio_nginx_certs:/var/lib/mastio/nginx-certs:rw
