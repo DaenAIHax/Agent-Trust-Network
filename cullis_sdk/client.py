@@ -63,6 +63,47 @@ class InsecureTLSWarning(UserWarning):
     """
 
 
+def _cert_key_pair_matches(
+    cert_path: "str | Path",
+    key_path: "str | Path",
+) -> tuple[bool, str]:
+    """Pre-flight: do the cert and key on disk belong to the same agent?
+
+    Recent httpx versions load the cert chain eagerly at ``Client``
+    construction (via ``ssl.SSLContext.load_cert_chain``) and surface
+    mismatched pairs as an opaque ``ssl.SSLError: KEY_VALUES_MISMATCH``
+    deep inside ``httpx._config``. We compare the cert's public key
+    against the key's public key first so the caller gets a usable
+    diagnostic instead of an SSL stack trace, and so legacy on-disk
+    layouts (pre-ADR-014 enrollment dumps that wrote cert+key out of
+    sync) degrade to plain server-TLS rather than crashing the SDK.
+
+    Returns ``(matches, reason)``. ``reason`` is empty on success.
+    """
+    try:
+        from cryptography import x509
+        from cryptography.hazmat.primitives import serialization
+        cert_obj = x509.load_pem_x509_certificate(
+            Path(cert_path).read_bytes(),
+        )
+        key_obj = serialization.load_pem_private_key(
+            Path(key_path).read_bytes(), password=None,
+        )
+    except (FileNotFoundError, ValueError, OSError) as exc:
+        return False, f"could not load cert+key for pre-flight: {exc}"
+
+    spki_format = serialization.PublicFormat.SubjectPublicKeyInfo
+    cert_pub = cert_obj.public_key().public_bytes(
+        serialization.Encoding.DER, spki_format,
+    )
+    key_pub = key_obj.public_key().public_bytes(
+        serialization.Encoding.DER, spki_format,
+    )
+    if cert_pub != key_pub:
+        return False, "cert public key does not match private key on disk"
+    return True, ""
+
+
 def _build_proxy_http_client(
     *,
     verify_tls: bool,
@@ -72,23 +113,35 @@ def _build_proxy_http_client(
 ) -> httpx.Client:
     """Build the proxy-facing ``httpx.Client``.
 
-    ADR-014: when ``cert_path`` + ``key_path`` are both supplied, the
-    client presents the agent's certificate at the TLS handshake so
-    nginx in front of the Mastio can verify it against the Org CA.
-    The Mastio's ``get_agent_from_client_cert`` dep then derives the
-    canonical agent_id from the cert SAN — no ``X-API-Key`` needed
-    on the wire.
+    ADR-014: when ``cert_path`` + ``key_path`` are both supplied AND the
+    pair matches, the client presents the agent's certificate at the
+    TLS handshake so nginx in front of the Mastio can verify it against
+    the Org CA. The Mastio's ``get_agent_from_client_cert`` dep then
+    derives the canonical agent_id from the cert SAN — no ``X-API-Key``
+    needed on the wire.
 
-    When either path is missing the client falls back to plain TLS
-    server-auth (legacy / pre-mTLS deploys, dev fixtures, the
-    ``from_enrollment`` device-code shim that does not yet round-trip
-    the cert). Calls to ``/v1/egress/*`` and ``/v1/agents/search``
-    will then 401 from nginx because those locations require a client
-    cert — that is the correct ADR-014 behaviour, not a regression.
+    When either path is missing or the pair is mismatched (legacy
+    on-disk dumps, broken test fixtures), the client falls back to
+    plain TLS server-auth and emits a warning. Calls to
+    ``/v1/egress/*`` and ``/v1/agents/search`` will then 401 from
+    nginx because those locations require a client cert — that is the
+    correct ADR-014 behaviour, not a regression.
     """
     cert: "tuple[str, str] | None" = None
     if cert_path is not None and key_path is not None:
-        cert = (str(cert_path), str(key_path))
+        ok, reason = _cert_key_pair_matches(cert_path, key_path)
+        if ok:
+            cert = (str(cert_path), str(key_path))
+        else:
+            import warnings
+            warnings.warn(
+                f"Skipping mTLS — {reason}. Calls to /v1/egress/* and "
+                "/v1/agents/search will 401 at nginx until cert+key "
+                "are re-issued in sync. Re-enroll the Connector or "
+                "fix the on-disk cert pair.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
     return httpx.Client(
         timeout=timeout, verify=verify_tls, cert=cert,
     )
