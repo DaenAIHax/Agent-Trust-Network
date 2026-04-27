@@ -1,22 +1,24 @@
 #!/usr/bin/env bash
-# Cullis standalone proxy — smoke test (ADR-006 Fase 1 / PR #4).
+# Cullis standalone proxy — smoke test (ADR-006 Fase 1, ADR-014 PR-B).
 #
-#   ./standalone_smoke.sh up    # build image, start proxy, seed agents
+#   ./standalone_smoke.sh up    # build + start proxy + nginx + seed agents
 #   ./standalone_smoke.sh check # full lifecycle: discover → session → send → ack → close
 #   ./standalone_smoke.sh down  # stop + volumes gone
 #   ./standalone_smoke.sh full  # down + up + check + down
 #
 # The test proves the "Trojan Horse" claim: a single proxy container
-# running in standalone mode (no broker) handles the whole intra-org
-# message lifecycle for two locally-enrolled agents, and the audit
-# chain is intact at the end.
+# (plus the nginx sidecar that terminates mTLS) running in standalone
+# mode handles the whole intra-org message lifecycle for two locally-
+# enrolled agents over the production wire (https://localhost:9443 with
+# client cert), and the audit chain is intact at the end.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$HERE"
 
 COMPOSE="docker compose -p cullis-standalone -f standalone.compose.yml"
-PROXY_URL="http://localhost:9110"
+PROXY_URL="https://localhost:9443"
+CERTS_DIR="$HERE/.smoke-certs"
 
 # ANSI colors (no-op if not TTY)
 if [[ -t 1 ]]; then
@@ -32,38 +34,82 @@ die() { printf "${RED}✗${RESET} %s\n" "$*" >&2; exit 1; }
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 
-# Generate an API key for an agent and bcrypt-hash it *inside* the proxy
-# container (same hasher the proxy uses at verify time).
+# Pull the Org CA (public cert) out of the nginx_certs volume so curl
+# can verify the TLS server cert. Idempotent — short-circuits if
+# ``$CERTS_DIR/org-ca.crt`` already exists.
+fetch_org_ca() {
+    if [[ -f "$CERTS_DIR/org-ca.crt" ]]; then
+        return 0
+    fi
+    mkdir -p "$CERTS_DIR"
+    chmod 700 "$CERTS_DIR"
+    $COMPOSE exec -T proxy cat /var/lib/mastio/nginx-certs/org-ca.crt \
+        > "$CERTS_DIR/org-ca.crt"
+    ok "fetched Org CA from proxy first-boot"
+}
+
+# Mint a Connector-shaped cert+key for ``$1`` agent_id by calling into
+# the proxy's own cert factory inside the container, then pull the
+# bytes out to the host so curl can present them at the TLS handshake.
+# Also writes the row into ``internal_agents`` with the matching
+# ``cert_pem`` so the dep's leaf-DER pin succeeds.
 seed_agent() {
     local agent_id="$1"
+    local org_id="acme"
+    local canonical_id="${org_id}::${agent_id}"
 
-    # generate_api_key returns "sk_local_<agent>_<32hex>" — the only
-    # format get_agent_from_api_key accepts. ADR-010 Phase 6b: the
-    # Mastio's sole agent registry is ``internal_agents`` — auth
-    # (X-API-Key) and discovery (/v1/agents/search) both read from it.
+    # Mint inside the container, drop cert+key under /tmp/<agent>.{crt,key}
+    # so we can pull them out via ``compose cp`` without inventing a
+    # stdout splitter on the host.
     $COMPOSE exec -T proxy python -c "
-import asyncio, os
-from mcp_proxy.auth.api_key import generate_api_key, hash_api_key
-from mcp_proxy.db import create_agent, init_db
+import asyncio, os, sys
+from mcp_proxy.db import init_db, create_agent
+from mcp_proxy.egress.agent_manager import AgentManager
 async def main():
-    raw = generate_api_key('$agent_id')
     await init_db(os.environ['MCP_PROXY_DATABASE_URL'])
+    mgr = AgentManager(org_id='${org_id}', trust_domain='cullis.local')
+    if not await mgr.load_org_ca_from_config():
+        sys.exit('Org CA missing from proxy_config — first-boot likely failed')
+    cert_pem, key_pem = mgr._generate_agent_cert('${agent_id}')
     await create_agent(
-        agent_id='$agent_id',
-        display_name='$agent_id',
-        capabilities=['cap.read','cap.write'],
-        api_key_hash=hash_api_key(raw),
+        agent_id='${canonical_id}',
+        display_name='${agent_id}',
+        capabilities=['cap.read', 'cap.write'],
+        api_key_hash='\$2b\$12\$placeholder',
+        cert_pem=cert_pem,
     )
-    print(raw, end='')
+    with open('/tmp/${agent_id}.crt', 'w') as f:
+        f.write(cert_pem)
+    with open('/tmp/${agent_id}.key', 'w') as f:
+        f.write(key_pem)
+    os.chmod('/tmp/${agent_id}.key', 0o600)
 asyncio.run(main())
 "
+
+    # Pull cert + key out to the host so curl can read them. ``compose
+    # cp`` resolves the service name to its container, no need to look
+    # up the container id by hand.
+    $COMPOSE cp "proxy:/tmp/${agent_id}.crt" "$CERTS_DIR/${agent_id}.crt"
+    $COMPOSE cp "proxy:/tmp/${agent_id}.key" "$CERTS_DIR/${agent_id}.key"
+    chmod 600 "$CERTS_DIR/${agent_id}.key"
 }
 
 
-# httpie-style: call the proxy with a given key, require 200, return body.
+# httpie-style: call the proxy with a given agent's cert+key, require
+# 200, return body. nginx terminates TLS on 9443, validates the client
+# cert against the Org CA, forwards to mcp-proxy with X-SSL-Client-Cert
+# set — same wire production uses.
 call() {
-    local method="$1" path="$2" key="$3" body="${4:-}"
-    local args=(-sS -X "$method" "${PROXY_URL}${path}" -H "X-API-Key: $key")
+    local method="$1" path="$2" agent="$3" body="${4:-}"
+    local args=(
+        -sS
+        --cacert "$CERTS_DIR/org-ca.crt"
+        --cert   "$CERTS_DIR/$agent.crt"
+        --key    "$CERTS_DIR/$agent.key"
+        --resolve "mastio.local:9443:127.0.0.1"
+        -X "$method"
+        "${PROXY_URL/localhost/mastio.local}${path}"
+    )
     if [[ -n "$body" ]]; then
         args+=(-H "content-type: application/json" -d "$body")
     fi
@@ -83,24 +129,32 @@ call() {
 # ── Commands ───────────────────────────────────────────────────────────────
 
 cmd_up() {
-    say "standalone_smoke: building + starting proxy container"
-    $COMPOSE up -d --build --wait
-    ok "proxy healthy at $PROXY_URL"
+    say "standalone_smoke: building + starting proxy + nginx sidecar"
+    if ! $COMPOSE up -d --build --wait; then
+        say "standalone_smoke: bring-up failed — dumping proxy + nginx logs"
+        $COMPOSE logs --tail=200 proxy >&2 || true
+        $COMPOSE logs --tail=200 mastio-nginx >&2 || true
+        return 1
+    fi
+    ok "stack healthy at $PROXY_URL"
 }
 
 
 cmd_check() {
     say "standalone_smoke: running intra-org lifecycle"
 
-    # 1. Seed two agents with API keys.
-    local alice_key bob_key
-    alice_key="$(seed_agent alice-bot)"
-    bob_key="$(seed_agent bob-bot)"
-    ok "seeded alice-bot + bob-bot"
+    # 0. Pull Org CA the proxy minted at first-boot so curl can verify
+    #    the server cert nginx is presenting.
+    fetch_org_ca
+
+    # 1. Seed two agents — DB row + Org-CA-signed cert+key on host.
+    seed_agent alice-bot
+    seed_agent bob-bot
+    ok "seeded alice-bot + bob-bot with Org-CA-signed certs"
 
     # 2. Alice discovers bob via /v1/agents/search (proxy-native endpoint).
     local search
-    search="$(call GET "/v1/agents/search" "$alice_key")"
+    search="$(call GET "/v1/agents/search" alice-bot)"
     if ! grep -q "alice-bot" <<< "$search"; then
         die "discovery did not return alice-bot (got: $search)"
     fi
@@ -111,40 +165,40 @@ cmd_check() {
 
     # 3. Alice opens a session to bob.
     local open_resp session_id
-    open_resp="$(call POST "/v1/egress/sessions" "$alice_key" \
-        '{"target_agent_id":"bob-bot","target_org_id":"acme","capabilities":["cap.read"]}')"
+    open_resp="$(call POST "/v1/egress/sessions" alice-bot \
+        '{"target_agent_id":"acme::bob-bot","target_org_id":"acme","capabilities":["cap.read"]}')"
     session_id="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['session_id'])" "$open_resp")"
     ok "session opened: $session_id"
 
     # 4. Bob accepts.
-    call POST "/v1/egress/sessions/$session_id/accept" "$bob_key" >/dev/null
+    call POST "/v1/egress/sessions/$session_id/accept" bob-bot >/dev/null
     ok "session accepted by bob"
 
     # 5. Alice sends a message (envelope mode — opaque ciphertext).
     local send_resp msg_id
-    send_resp="$(call POST "/v1/egress/send" "$alice_key" \
-        '{"session_id":"'"$session_id"'","payload":{"hello":"bob","nonce":"smoke42"},"recipient_agent_id":"bob-bot","mode":"envelope"}')"
+    send_resp="$(call POST "/v1/egress/send" alice-bot \
+        '{"session_id":"'"$session_id"'","payload":{"hello":"bob","nonce":"smoke42"},"recipient_agent_id":"acme::bob-bot","mode":"envelope"}')"
     msg_id="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['msg_id'])" "$send_resp")"
     ok "message sent: $msg_id"
 
     # 6. Bob polls and sees exactly one message with smoke42 nonce.
     local poll
-    poll="$(call GET "/v1/egress/messages/$session_id" "$bob_key")"
+    poll="$(call GET "/v1/egress/messages/$session_id" bob-bot)"
     if ! grep -q "smoke42" <<< "$poll"; then
         die "bob's poll didn't surface the sender's nonce (got: $poll)"
     fi
     ok "bob polled smoke42 payload"
 
     # 7. Bob acks — row flips to delivered, next poll is empty.
-    call POST "/v1/egress/sessions/$session_id/messages/$msg_id/ack" "$bob_key" >/dev/null
-    poll="$(call GET "/v1/egress/messages/$session_id" "$bob_key")"
+    call POST "/v1/egress/sessions/$session_id/messages/$msg_id/ack" bob-bot >/dev/null
+    poll="$(call GET "/v1/egress/messages/$session_id" bob-bot)"
     local count
     count="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['count'])" "$poll")"
     [[ "$count" == "0" ]] || die "post-ack poll still returns count=$count"
     ok "ack recorded, queue empty"
 
     # 8. Alice closes.
-    call POST "/v1/egress/sessions/$session_id/close" "$alice_key" >/dev/null
+    call POST "/v1/egress/sessions/$session_id/close" alice-bot >/dev/null
     ok "session closed"
 
     # 9. Verify the local audit chain is intact for org=acme.
@@ -168,12 +222,13 @@ asyncio.run(main())
     fi
     ok "audit chain intact"
 
-    say "standalone_smoke: PASS — proxy served the full intra-org lifecycle with zero broker."
+    say "standalone_smoke: PASS — proxy + mastio-nginx served the full intra-org lifecycle over mTLS with zero broker."
 }
 
 
 cmd_down() {
     $COMPOSE down -v --remove-orphans >/dev/null 2>&1 || true
+    rm -rf "$CERTS_DIR"
     ok "teardown done"
 }
 
@@ -184,8 +239,9 @@ cmd_full() {
     local rc=0
     cmd_check || rc=$?
     if [[ $rc -ne 0 ]]; then
-        say "standalone_smoke: FAIL — dumping proxy logs"
+        say "standalone_smoke: FAIL — dumping proxy + nginx logs"
         $COMPOSE logs --tail=200 proxy >&2 || true
+        $COMPOSE logs --tail=200 mastio-nginx >&2 || true
     fi
     cmd_down
     return $rc
