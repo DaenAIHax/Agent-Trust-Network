@@ -34,6 +34,16 @@ data:
   MCP_PROXY_ORG_ID: {{ .Values.proxy.orgId | quote }}
   {{- end }}
 
+  # ADR-014 — nginx sidecar TLS material. Empty when nginx.enabled=false
+  # so the lifespan skips the cert-provisioning path (no consumer to
+  # serve the certs to).
+  {{- if .Values.nginx.enabled }}
+  MCP_PROXY_NGINX_CERT_DIR: {{ .Values.nginx.certDir | quote }}
+  MCP_PROXY_NGINX_SAN: {{ .Values.nginx.san | quote }}
+  {{- else }}
+  MCP_PROXY_NGINX_CERT_DIR: ""
+  {{- end }}
+
   # ADR-001 Phase 2 — SPIFFE routing decision. trust_domain is the SPIFFE
   # trust domain this proxy serves; intra_org_routing gates the new routing
   # decision (default off — Phase 3 wires real local delivery).
