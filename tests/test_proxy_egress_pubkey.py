@@ -22,7 +22,7 @@ async def proxy_app(tmp_path, monkeypatch):
     monkeypatch.setenv("PROXY_LOCAL_SWEEPER_DISABLED", "1")
     monkeypatch.setenv("PROXY_TRUST_DOMAIN", "cullis.local")
     monkeypatch.setenv("MCP_PROXY_ORG_ID", "acme")
-    monkeypatch.delenv("MCP_PROXY_STANDALONE", raising=False)
+    monkeypatch.setenv("MCP_PROXY_STANDALONE", "false")  # PR-D: default flipped to true; tests that expect federated bring-up must opt in explicitly
     monkeypatch.delenv("PROXY_TRANSPORT_INTRA_ORG", raising=False)
 
     from mcp_proxy.config import get_settings
