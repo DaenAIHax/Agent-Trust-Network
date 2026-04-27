@@ -46,7 +46,6 @@ async def test_send_via_proxy_mtls_only_end_to_end(proxy_app):
     # private key the existing flow used; the mTLS dep only pins the
     # leaf DER, so we still need to insert the same cert PEM that we
     # will present in X-SSL-Client-Cert).
-    import urllib.parse
     from datetime import datetime, timezone
     from sqlalchemy import text
     from mcp_proxy.db import get_db
