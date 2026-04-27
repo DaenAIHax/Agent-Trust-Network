@@ -132,7 +132,12 @@ call() {
 
 cmd_up() {
     say "standalone_smoke: building + starting proxy + nginx sidecar"
-    $COMPOSE up -d --build --wait
+    if ! $COMPOSE up -d --build --wait; then
+        say "standalone_smoke: bring-up failed — dumping proxy + nginx logs"
+        $COMPOSE logs --tail=200 proxy >&2 || true
+        $COMPOSE logs --tail=200 mastio-nginx >&2 || true
+        return 1
+    fi
     ok "stack healthy at $PROXY_URL"
 }
 
