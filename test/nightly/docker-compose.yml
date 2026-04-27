@@ -153,6 +153,7 @@ services:
       proxy-a-init:
         condition: service_completed_successfully
     environment:
+      MCP_PROXY_STANDALONE: "false"  # PR-D: explicit federated opt-in
       MCP_PROXY_BROKER_URL:        "http://broker:8000"
       MCP_PROXY_BROKER_JWKS_URL:   "http://broker:8000/.well-known/jwks.json"
       MCP_PROXY_ADMIN_SECRET:      "${PROXY_A_ADMIN_SECRET:-nightly-proxy-admin-a}"
@@ -231,6 +232,7 @@ services:
       proxy-b-init:
         condition: service_completed_successfully
     environment:
+      MCP_PROXY_STANDALONE: "false"  # PR-D: explicit federated opt-in
       MCP_PROXY_BROKER_URL:        "http://broker:8000"
       MCP_PROXY_BROKER_JWKS_URL:   "http://broker:8000/.well-known/jwks.json"
       MCP_PROXY_ADMIN_SECRET:      "${PROXY_B_ADMIN_SECRET:-nightly-proxy-admin-b}"

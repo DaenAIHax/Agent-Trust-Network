@@ -538,6 +538,15 @@ async def lifespan(app: FastAPI):
                 await sweeper_task
             except (asyncio.CancelledError, Exception):
                 pass
+        except ValueError as exc:
+            # pytest-xdist runs lifespan teardown in a different event
+            # loop than startup; ``wait_for`` rejects the cross-loop
+            # task with ``ValueError``. Standalone is the default after
+            # PR-D, the sweeper auto-starts, and the symptom downstream
+            # is fixture corruption + cascading "different loop" errors
+            # on every subsequent asyncio test. Tolerate it here — the
+            # task will be GC'd at process exit.
+            _log.debug("local sweeper teardown loop mismatch (xdist): %s", exc)
 
     sub_stop = getattr(app.state, "federation_subscriber_stop", None)
     sub_task = getattr(app.state, "federation_subscriber_task", None)
@@ -552,6 +561,8 @@ async def lifespan(app: FastAPI):
                 await sub_task
             except (asyncio.CancelledError, Exception):
                 pass
+        except ValueError as exc:
+            _log.debug("federation subscriber teardown loop mismatch (xdist): %s", exc)
 
     stats_stop = getattr(app.state, "federation_stats_stop", None)
     stats_task = getattr(app.state, "federation_stats_task", None)
@@ -566,6 +577,8 @@ async def lifespan(app: FastAPI):
                 await stats_task
             except (asyncio.CancelledError, Exception):
                 pass
+        except ValueError as exc:
+            _log.debug("federation stats teardown loop mismatch (xdist): %s", exc)
 
     pub_stop = getattr(app.state, "federation_publisher_stop", None)
     pub_task = getattr(app.state, "federation_publisher_task", None)
@@ -580,6 +593,8 @@ async def lifespan(app: FastAPI):
                 await pub_task
             except (asyncio.CancelledError, Exception):
                 pass
+        except ValueError as exc:
+            _log.debug("federation publisher teardown loop mismatch (xdist): %s", exc)
 
     ws_manager = getattr(app.state, "local_ws_manager", None)
     if ws_manager is not None:

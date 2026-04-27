@@ -80,7 +80,7 @@ async def test_federation_mode_default_header(tmp_path, monkeypatch):
     monkeypatch.delenv("PROXY_DB_URL", raising=False)
     monkeypatch.setenv("PROXY_LOCAL_SWEEPER_DISABLED", "1")
     monkeypatch.setenv("MCP_PROXY_ORG_ID", "acme")
-    monkeypatch.delenv("MCP_PROXY_STANDALONE", raising=False)
+    monkeypatch.setenv("MCP_PROXY_STANDALONE", "false")  # PR-D: default flipped to true; tests that expect federated bring-up must opt in explicitly
     # Give it a broker URL so BrokerBridge spins up cleanly.
     monkeypatch.setenv("MCP_PROXY_BROKER_URL", "http://broker.example")
 

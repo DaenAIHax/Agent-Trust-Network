@@ -279,6 +279,7 @@ services:
       # ADR-004 — reverse-proxy forwards directly to broker:8000 (bypasses
       # Traefik), so X-Forwarded-Host / -Proto survive to the broker's
       # --proxy-headers htu reconstruction.
+      MCP_PROXY_STANDALONE: "false"  # PR-D: explicit federated opt-in
       MCP_PROXY_BROKER_URL: "http://broker:8000"
       MCP_PROXY_BROKER_JWKS_URL: "http://broker:8000/.well-known/jwks.json"
       MCP_PROXY_PROXY_PUBLIC_URL: "https://proxy-a.cullis.test:8443"
@@ -314,6 +315,7 @@ services:
         condition: service_completed_successfully
     environment:
       # ADR-004 — reverse-proxy → broker:8000 internal (no Traefik in between).
+      MCP_PROXY_STANDALONE: "false"  # PR-D: explicit federated opt-in
       MCP_PROXY_BROKER_URL: "http://broker:8000"
       MCP_PROXY_BROKER_JWKS_URL: "http://broker:8000/.well-known/jwks.json"
       MCP_PROXY_PROXY_PUBLIC_URL: "https://proxy-b.cullis.test:8443"

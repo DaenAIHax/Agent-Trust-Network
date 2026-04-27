@@ -24,7 +24,7 @@ async def proxy_app(tmp_path, monkeypatch):
     # Scrub standalone + intra-org transport so an xdist neighbour
     # (e.g. test_proxy_standalone_e2e) leaking into the env can't
     # flip the default from `envelope` to `mtls-only` under us.
-    monkeypatch.delenv("MCP_PROXY_STANDALONE", raising=False)
+    monkeypatch.setenv("MCP_PROXY_STANDALONE", "false")  # PR-D: default flipped to true; tests that expect federated bring-up must opt in explicitly
     monkeypatch.delenv("PROXY_TRANSPORT_INTRA_ORG", raising=False)
 
     from mcp_proxy.config import get_settings
