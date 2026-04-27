@@ -29,6 +29,10 @@ volumes:
   bootstrap-state:
   proxy-a-data:
   proxy-b-data:
+  # ADR-014 — Mastio writes Org CA + nginx server cert here at first-boot;
+  # the per-org sidecar mounts read-only.
+  mastio-a-nginx-certs:
+  mastio-b-nginx-certs:
   # Blocco 4 — SPIRE stacks per org
   spire-a-server-api:
   spire-a-server-data:
@@ -282,11 +286,23 @@ services:
       # BrokerBridge's own per-agent Court login, so the envelope path
       # keeps working.
       MCP_PROXY_LOCAL_AUTH_ENABLED: "true"
+      # ADR-014 — first-boot writes Org CA + nginx server cert into the
+      # shared volume so the mastio-nginx-a sidecar can serve TLS on
+      # 9443 against the same CA the agents' certs chain to. SAN
+      # includes ``proxy-a`` (the alias agents resolve over
+      # orga-internal) and ``localhost`` (smoke + dev curl from host).
+      MCP_PROXY_NGINX_CERT_DIR: "/var/lib/mastio/nginx-certs"
+      MCP_PROXY_NGINX_SAN: "proxy-a,localhost"
     volumes:
       - proxy-a-data:/data
+      - mastio-a-nginx-certs:/var/lib/mastio/nginx-certs:rw
     networks:
       orga-internal:
-        aliases: [proxy-a]
+        # ``mcp-proxy`` is the upstream name nginx/mastio/mastio.conf
+        # hard-codes (matches the canonical compose service name); add
+        # it as an alias here so the sidecar's ``proxy_pass`` resolves
+        # without forking the shared nginx config.
+        aliases: [proxy-a, mcp-proxy]
       public-wan:
         aliases: [proxy-a]
     expose: ["9100"]
@@ -297,6 +313,42 @@ services:
       timeout: 3s
       retries: 20
       start_period: 10s
+
+  # ADR-014 — TLS terminator + mTLS gate for orga agents. Lives only
+  # on orga-internal: the sidecar verifies client certs against the
+  # Org CA the Mastio just minted, terminates TLS on 9443, and
+  # forwards plaintext to mcp-proxy:9100 inside the same network.
+  # Host port 9443 lets smoke + curl from the host hit it without
+  # going through orga-internal.
+  mastio-nginx-a:
+    image: nginx:1.27-alpine
+    depends_on:
+      proxy-a:
+        condition: service_healthy
+    volumes:
+      - ../nginx/mastio:/etc/nginx/conf.d:ro
+      - mastio-a-nginx-certs:/etc/nginx/certs:ro
+    networks:
+      orga-internal:
+        aliases: [mastio-nginx-a]
+    expose: ["9443"]
+    ports: ["9443:9443"]
+    healthcheck:
+      # Cert files on disk + master pid alive — same logic as the
+      # standalone smoke (busybox wget TLS handshake against the
+      # self-signed Org CA flakes on Alpine; if the cert material
+      # were invalid nginx wouldn't have started).
+      test:
+        - CMD-SHELL
+        - >-
+          test -s /etc/nginx/certs/mastio-server.crt &&
+          test -s /etc/nginx/certs/mastio-server.key &&
+          test -s /etc/nginx/certs/org-ca.crt &&
+          test -s /var/run/nginx.pid
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
 
   # ── Blocco 4 — SPIRE stack per Org A ──────────────────────────────────────
   #
@@ -398,8 +450,16 @@ services:
         condition: service_completed_successfully
       broker:
         condition: service_healthy
+      # ADR-014 — wait for the nginx sidecar to be serving 9443 before
+      # the agent's first SDK call hits the wire.
+      mastio-nginx-a:
+        condition: service_healthy
     environment:
-      BROKER_URL: "http://proxy-a:9100"
+      # ADR-014 — agents reach the Mastio over mTLS via the per-org
+      # nginx sidecar on 9443. The agent presents its Org-CA-signed
+      # cert (loaded from /state/{org}/agents/{name}/agent.{pem,key})
+      # at the TLS handshake; nginx verifies + forwards.
+      BROKER_URL: "https://proxy-a:9443"
       ORG_ID: "orga"
       AGENT_NAME: "agent-a"
       PEERS_FILE: "/state/peers.json"
@@ -439,8 +499,11 @@ services:
         condition: service_completed_successfully
       broker:
         condition: service_healthy
+      mastio-nginx-a:
+        condition: service_healthy
     environment:
-      BROKER_URL: "http://proxy-a:9100"
+      # ADR-014 — see agent-a rationale; same nginx sidecar.
+      BROKER_URL: "https://proxy-a:9443"
       ORG_ID: "orga"
       AGENT_NAME: "byoca-bot"
       PEERS_FILE: "/state/peers.json"
@@ -509,11 +572,15 @@ services:
       PROXY_TRANSPORT_INTRA_ORG: "mtls-only"
       # ADR-012 — Mastio-local /v1/auth/token (see proxy-a rationale).
       MCP_PROXY_LOCAL_AUTH_ENABLED: "true"
+      # ADR-014 — see proxy-a rationale.
+      MCP_PROXY_NGINX_CERT_DIR: "/var/lib/mastio/nginx-certs"
+      MCP_PROXY_NGINX_SAN: "proxy-b,localhost"
     volumes:
       - proxy-b-data:/data
+      - mastio-b-nginx-certs:/var/lib/mastio/nginx-certs:rw
     networks:
       orgb-internal:
-        aliases: [proxy-b]
+        aliases: [proxy-b, mcp-proxy]
       public-wan:
         aliases: [proxy-b]
     expose: ["9100"]
@@ -524,6 +591,34 @@ services:
       timeout: 3s
       retries: 20
       start_period: 10s
+
+  # ADR-014 — TLS terminator + mTLS gate for orgb agents. Mirrors
+  # mastio-nginx-a; host port 9543 keeps proxy-a's 9443 free.
+  mastio-nginx-b:
+    image: nginx:1.27-alpine
+    depends_on:
+      proxy-b:
+        condition: service_healthy
+    volumes:
+      - ../nginx/mastio:/etc/nginx/conf.d:ro
+      - mastio-b-nginx-certs:/etc/nginx/certs:ro
+    networks:
+      orgb-internal:
+        aliases: [mastio-nginx-b]
+    expose: ["9443"]
+    ports: ["9543:9443"]
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          test -s /etc/nginx/certs/mastio-server.crt &&
+          test -s /etc/nginx/certs/mastio-server.key &&
+          test -s /etc/nginx/certs/org-ca.crt &&
+          test -s /var/run/nginx.pid
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
 
   # ── Blocco 4 — SPIRE stack per Org B ──────────────────────────────────────
 
@@ -611,8 +706,11 @@ services:
         condition: service_completed_successfully
       broker:
         condition: service_healthy
+      mastio-nginx-b:
+        condition: service_healthy
     environment:
-      BROKER_URL: "http://proxy-b:9100"
+      # ADR-014 — agents reach Mastio B via the orgb nginx sidecar.
+      BROKER_URL: "https://proxy-b:9443"
       ORG_ID: "orgb"
       AGENT_NAME: "agent-b"
       PEERS_FILE: "/state/peers.json"

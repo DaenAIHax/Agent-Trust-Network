@@ -132,27 +132,45 @@ def _auth_api_key_file(mastio_url: str, identity_dir: str, self_id: str) -> Cull
     bootstrap-mastio stage enrolled for them.
 
     Layout matches what ``_enroll_agents_via_byoca`` writes under
-    ``/state/{org}/agents/{name}/``: ``api-key`` + ``dpop.jwk`` (both
-    required for egress DPoP enforcement).
+    ``/state/{org}/agents/{name}/``: ``api-key`` + ``dpop.jwk`` +
+    ``agent.pem`` (cert) + ``agent-key.pem`` (private key).
+
+    ADR-014 — cert+key are passed to ``from_api_key_file`` so the
+    SDK's httpx client presents them at the TLS handshake against the
+    per-org nginx sidecar on 9443. ``verify_tls=False`` because the
+    sandbox's Org CA is self-signed (no system trust store entry); a
+    real deploy points at a CA-trusted hostname or a custom
+    ``CULLIS_CA_BUNDLE``.
     """
     api_key_path = pathlib.Path(identity_dir) / "api-key"
     dpop_key_path = pathlib.Path(identity_dir) / "dpop.jwk"
+    cert_path = pathlib.Path(identity_dir) / "agent.pem"
+    key_path = pathlib.Path(identity_dir) / "agent-key.pem"
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
-        if api_key_path.exists() and dpop_key_path.exists():
+        if (
+            api_key_path.exists()
+            and dpop_key_path.exists()
+            and cert_path.exists()
+            and key_path.exists()
+        ):
             break
         time.sleep(0.5)
     else:
         raise RuntimeError(
-            f"[{self_id}] api-key or dpop.jwk missing under {identity_dir} "
-            "— did bootstrap-mastio run?"
+            f"[{self_id}] missing identity material under {identity_dir} "
+            "(need api-key, dpop.jwk, agent.pem, agent-key.pem) — "
+            "did bootstrap-mastio + bootstrap run?"
         )
     client = CullisClient.from_api_key_file(
         mastio_url,
         api_key_path=api_key_path,
         dpop_key_path=dpop_key_path,
+        cert_path=cert_path,
+        key_path=key_path,
         agent_id=self_id,
         org_id=self_id.split("::", 1)[0],
+        verify_tls=False,
     )
     # Session APIs (``list_sessions`` / ``open_session`` / ``send``) still
     # require a broker JWT. ``login_via_proxy`` converts the API key into
