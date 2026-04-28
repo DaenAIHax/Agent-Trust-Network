@@ -23,6 +23,11 @@ async def standalone_proxy(tmp_path, monkeypatch):
     monkeypatch.setenv("MCP_PROXY_ORG_ID", "acme")
     monkeypatch.delenv("MCP_PROXY_BROKER_URL", raising=False)
     monkeypatch.delenv("MCP_PROXY_BROKER_JWKS_URL", raising=False)
+    # standalone-default flips local_auth on via the auto-enable path
+    # (config.py). The "no broker uplink → 503" contract this fixture
+    # was designed to assert pre-dates that — pin local_auth off so the
+    # legacy reverse-proxy fallback fires.
+    monkeypatch.setenv("MCP_PROXY_LOCAL_AUTH_ENABLED", "false")
 
     from mcp_proxy.config import get_settings
     get_settings.cache_clear()

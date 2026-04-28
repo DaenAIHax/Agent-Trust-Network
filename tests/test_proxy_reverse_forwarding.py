@@ -35,6 +35,9 @@ async def proxy_forwarding(tmp_path, monkeypatch):
     # Any value — we overwrite app.state.reverse_proxy_client below anyway.
     monkeypatch.setenv("MCP_PROXY_BROKER_URL", BROKER_TARGET)
     monkeypatch.setenv("MCP_PROXY_ORG_ID", "acme")
+    # standalone-default flips local_auth on; this test exercises the
+    # forward-to-broker reverse-proxy path, so pin local_auth off.
+    monkeypatch.setenv("MCP_PROXY_LOCAL_AUTH_ENABLED", "false")
 
     from mcp_proxy.config import get_settings
     get_settings.cache_clear()

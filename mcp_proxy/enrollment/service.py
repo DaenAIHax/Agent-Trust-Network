@@ -334,7 +334,7 @@ async def approve(
             ),
             {
                 "ts": now,
-                "aid": agent_id,
+                "aid": canonical_id,
                 "detail": json.dumps({
                     "source": "device_code_enrollment",
                     "session_id": session_id,
