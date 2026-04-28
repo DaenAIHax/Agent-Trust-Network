@@ -545,7 +545,13 @@ Verify the zone actually engages:
 
 ```bash
 # Flood one path above the budget; expect a mix of 200 + 429.
-ab -n 100000 -c 500 -H 'X-API-Key: test' https://mastio.example/v1/egress/peers
+# ADR-014: ``/v1/egress/*`` requires a TLS client cert at the nginx
+# sidecar; ``ab`` doesn't speak mTLS. Use ``hey`` or ``curl`` in a
+# loop with the agent's cert+key, or hit a non-egress route that
+# shares the same rate-limit zone (e.g. ``/v1/auth/token``).
+hey -n 100000 -c 500 \
+    -E /etc/cullis/agent.pem -K /etc/cullis/agent-key.pem \
+    https://mastio.example/v1/egress/peers
 # Edge log should show ``limiting requests``; Mastio log should show
 # fewer 429s than the client received (the rest were shed at edge).
 ```
@@ -602,7 +608,13 @@ Once Layer 1 is live, confirm it is actually gating:
 ```bash
 # Layer 1 working: flood > budget → you see 429s from the edge *before*
 # the Mastio's ``global rate limit shed`` log line appears.
-wrk -t4 -c200 -d30s -H 'X-API-Key: $TEST_KEY' https://mastio.example/v1/egress/peers
+# ADR-014: ``/v1/egress/*`` requires mTLS; ``wrk`` doesn't present a
+# client cert, so either generate the load with ``hey`` (supports
+# ``-E``/``-K`` for mTLS) or replay against ``/v1/auth/token`` which
+# shares the same rate-limit zone but auths via JWT.
+hey -z 30s -c 200 \
+    -E /etc/cullis/agent.pem -K /etc/cullis/agent-key.pem \
+    https://mastio.example/v1/egress/peers
 
 # Log correlation: edge should show thousands of 429s; Mastio should
 # show a much smaller count (only traffic that survived Layer 1).
