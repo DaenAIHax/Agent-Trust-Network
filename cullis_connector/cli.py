@@ -363,7 +363,13 @@ def _cmd_serve(cfg: ConnectorConfig) -> int:
     try:
         from cullis_sdk import CullisClient
 
-        client = CullisClient.from_connector(cfg.config_dir)
+        # Honour ``--no-verify-tls`` (cfg.verify_tls=False) end-to-end.
+        # ``from_connector`` derives a default from the site_url scheme;
+        # without an explicit override the dev/lab path with a
+        # self-signed Org CA can't login_via_proxy_with_local_key.
+        client = CullisClient.from_connector(
+            cfg.config_dir, verify_tls=cfg.verify_tls,
+        )
         # Attach the loaded identity bundle so downstream helpers
         # (canonical_recipient, etc.) can derive the sender's org from
         # the cert subject without reaching into process-global state.
