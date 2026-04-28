@@ -255,6 +255,14 @@ async def approve(
         agent_name=agent_id,
     )
 
+    # ADR-014 — ``get_agent_from_client_cert`` parses the cert SAN
+    # (``spiffe://<trust_domain>/<org_id>/<agent_name>``) and looks up
+    # ``internal_agents.agent_id`` by the canonical ``{org_id}::{agent_name}``
+    # form. Store the canonical form so the cert-auth dep finds the row;
+    # the short ``agent_id`` from the admin form is treated as the agent
+    # name within this org.
+    canonical_id = f"{agent_manager.org_id}::{agent_id}"
+
     now = _iso(_now())
     await conn.execute(
         text(
@@ -271,7 +279,7 @@ async def approve(
         {
             "decided": now,
             "admin": admin_name,
-            "agent_id": agent_id,
+            "agent_id": canonical_id,
             "caps": json.dumps(capabilities),
             "groups": json.dumps(groups),
             "cert": cert_pem,
@@ -285,7 +293,7 @@ async def approve(
     # on the line above is the credential — no api_key is minted.
     existing = await conn.execute(
         text("SELECT 1 FROM internal_agents WHERE agent_id = :aid"),
-        {"aid": agent_id},
+        {"aid": canonical_id},
     )
     if existing.first() is None:
         await conn.execute(
@@ -298,7 +306,7 @@ async def approve(
                            :device, :dpop_jkt, 'connector', :created)"""
             ),
             {
-                "aid": agent_id,
+                "aid": canonical_id,
                 "dn": agent_id,
                 "caps": json.dumps(capabilities),
                 "cert": cert_pem,
