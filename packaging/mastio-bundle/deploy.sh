@@ -1,0 +1,222 @@
+#!/usr/bin/env bash
+# ═══════════════════════════════════════════════════════════════════════════════
+# Cullis Mastio — image-based deploy (no source tree required)
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Pulls the published Mastio image from GHCR and brings up the Mastio +
+# nginx sidecar via docker-compose. The Mastio derives its Org CA at
+# first boot and runs as a self-contained mini-broker (ADR-006). The
+# --shared-broker overlay opts into federation when a Court is up on
+# the same docker host.
+#
+# Pin a release with CULLIS_MASTIO_VERSION=0.3.0 ./deploy.sh
+# (defaults to "latest" — fine for dev, pin in production).
+#
+# Modes (combinable):
+#   (default)         standalone Mastio, private docker network
+#   --shared-broker   join the broker's docker network (Court must be up)
+#   --prod            fail-fast on insecure defaults + prod overlay
+#   --down            stop + remove containers
+#   --pull            re-pull image (otherwise pulled on first up)
+#
+# Examples:
+#   ./deploy.sh                                # standalone (default)
+#   CULLIS_MASTIO_VERSION=0.3.0 ./deploy.sh    # pinned version
+#   ./deploy.sh --shared-broker                # join Court on same host
+#   ./deploy.sh --prod                         # standalone, prod safety
+#   ./deploy.sh --down                         # stop + remove
+#
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+export COMPOSE_PROJECT_NAME="cullis-mastio"
+
+GREEN=$'\033[32m'; YELLOW=$'\033[33m'; RED=$'\033[31m'
+BOLD=$'\033[1m'; GRAY=$'\033[90m'; RESET=$'\033[0m'
+ok()   { echo -e "  ${GREEN}✓${RESET}  $1"; }
+warn() { echo -e "  ${YELLOW}!${RESET}  $1"; }
+err()  { echo -e "  ${RED}✗${RESET}  $1"; }
+die()  { err "$1"; exit 1; }
+step() { echo -e "\n${BOLD}── $1 ──${RESET}"; }
+
+if docker compose version &>/dev/null 2>&1; then
+    COMPOSE="docker compose"
+elif command -v docker-compose &>/dev/null; then
+    COMPOSE="docker-compose"
+else
+    die "docker compose is not installed"
+fi
+
+print_help() {
+    cat <<EOF
+Usage: $0 [OPTIONS]
+
+Deploys the Cullis Mastio from the published image (no source tree
+required). Default = standalone, zero broker dependency at boot.
+
+Options:
+  (no flags)                  Standalone Mastio, private docker network
+  --shared-broker             Join the broker's docker network. Requires
+                              the Court compose project to be up.
+  --prod                      Production: fail-fast on insecure defaults,
+                              requires proxy.env pre-provisioned.
+  --down                      Stop and remove containers.
+  --pull                      Force-pull the image before starting.
+  --help, -h                  Show this help and exit.
+
+Environment:
+  CULLIS_MASTIO_VERSION       Image tag to pull (default: "latest").
+                              Pin to a specific release in production.
+
+Examples:
+  ./deploy.sh                                    # standalone (default)
+  CULLIS_MASTIO_VERSION=0.3.0 ./deploy.sh        # pinned version
+  ./deploy.sh --shared-broker                    # join Court on same host
+  ./deploy.sh --prod                             # standalone, prod safety
+  ./deploy.sh --down                             # stop + remove
+EOF
+}
+
+ACTION="up"
+MODE="development"
+SHARED_BROKER=0
+FORCE_PULL=0
+for arg in "$@"; do
+    case "$arg" in
+        --down)          ACTION="down" ;;
+        --pull)          FORCE_PULL=1 ;;
+        --prod)          MODE="production" ;;
+        --shared-broker) SHARED_BROKER=1 ;;
+        --help|-h)       print_help; exit 0 ;;
+        *) die "Unknown argument: $arg (use --help)" ;;
+    esac
+done
+
+COMPOSE_FILES="-f docker-compose.yml"
+[[ $SHARED_BROKER -eq 1 ]]    && COMPOSE_FILES="$COMPOSE_FILES -f docker-compose.shared-broker.yml"
+[[ "$MODE" == "production" ]] && COMPOSE_FILES="$COMPOSE_FILES -f docker-compose.prod.yml"
+
+if [[ "$ACTION" == "down" ]]; then
+    step "Stopping Cullis Mastio"
+    $COMPOSE $COMPOSE_FILES --env-file proxy.env down 2>/dev/null \
+        || $COMPOSE $COMPOSE_FILES down
+    ok "Mastio stopped"
+    exit 0
+fi
+
+# ── proxy.env — create if missing, validate in prod ─────────────────────────
+step "Environment configuration (proxy.env)"
+
+if [[ ! -f "$SCRIPT_DIR/proxy.env" ]]; then
+    warn "proxy.env not found — generating one"
+    if [[ "$MODE" == "production" ]]; then
+        die "--prod requires proxy.env to exist with real values. Run: BROKER_URL=https://broker.example.com PROXY_PUBLIC_URL=https://mastio.myorg.example.com ./generate-proxy-env.sh --prod"
+    fi
+    bash "$SCRIPT_DIR/generate-proxy-env.sh" --defaults
+fi
+
+if [[ "$MODE" == "production" ]]; then
+    _errors=()
+    _load_env() { grep -E "^$1=" "$SCRIPT_DIR/proxy.env" 2>/dev/null | head -1 | cut -d= -f2- || true; }
+
+    _admin="$(_load_env MCP_PROXY_ADMIN_SECRET)"
+    if [[ -z "$_admin" || "$_admin" == "change-me-in-production" ]]; then
+        _errors+=("MCP_PROXY_ADMIN_SECRET is empty or still the dev default — regenerate proxy.env")
+    fi
+
+    _signing="$(_load_env MCP_PROXY_DASHBOARD_SIGNING_KEY)"
+    if [[ -z "$_signing" ]]; then
+        _errors+=("MCP_PROXY_DASHBOARD_SIGNING_KEY is empty — admin sessions will break on every restart")
+    fi
+
+    _public="$(_load_env MCP_PROXY_PROXY_PUBLIC_URL)"
+    if [[ -z "$_public" ]]; then
+        _errors+=("MCP_PROXY_PROXY_PUBLIC_URL is empty in production — set the public URL where internal agents reach this Mastio (e.g. https://mastio.myorg.example.com)")
+    elif [[ "$_public" == "https://localhost:9443" || "$_public" == "http://localhost:9100" ]]; then
+        _errors+=("MCP_PROXY_PROXY_PUBLIC_URL still localhost — set the public URL where internal agents reach this Mastio")
+    elif [[ "$_public" == http://* ]]; then
+        _errors+=("MCP_PROXY_PROXY_PUBLIC_URL uses plain HTTP — ADR-014 requires HTTPS via the mastio-nginx sidecar (default port 9443)")
+    fi
+
+    if [[ ${#_errors[@]} -gt 0 ]]; then
+        echo ""
+        err "Production proxy.env is not safe to deploy:"
+        for e in "${_errors[@]}"; do echo -e "    ${RED}✗${RESET} $e"; done
+        echo ""
+        die "Fix the issues above and rerun. Aborting before compose up."
+    fi
+    ok "proxy.env validated for production"
+fi
+
+# ── Pull + Start ────────────────────────────────────────────────────────────
+step "Deploying Cullis Mastio (${MODE}, $([ $SHARED_BROKER -eq 1 ] && echo shared-broker || echo standalone))"
+
+VERSION="${CULLIS_MASTIO_VERSION:-latest}"
+echo -e "  Image: ${GRAY}ghcr.io/cullis-security/cullis-mastio:${VERSION}${RESET}"
+
+if [[ $FORCE_PULL -eq 1 ]]; then
+    echo -e "  ${GRAY}$COMPOSE $COMPOSE_FILES --env-file proxy.env pull${RESET}"
+    $COMPOSE $COMPOSE_FILES --env-file proxy.env pull
+    ok "Image pulled"
+fi
+
+if [[ $SHARED_BROKER -eq 1 ]]; then
+    if ! docker network inspect cullis-broker_default >/dev/null 2>&1; then
+        die "--shared-broker requires the Court compose to be up. Either bring the Court online first, or drop --shared-broker for the standalone default."
+    fi
+fi
+
+echo -e "  ${GRAY}$COMPOSE $COMPOSE_FILES --env-file proxy.env up -d${RESET}"
+$COMPOSE $COMPOSE_FILES --env-file proxy.env up -d
+ok "Containers started"
+
+# ── Wait for health ─────────────────────────────────────────────────────────
+step "Waiting for services"
+
+PROXY_PORT="$(grep -E '^MCP_PROXY_PORT=' "$SCRIPT_DIR/proxy.env" 2>/dev/null | cut -d= -f2-)"
+PROXY_PORT="${PROXY_PORT:-9443}"
+
+echo -n "  Mastio + nginx "
+for i in $(seq 1 60); do
+    if curl -skf "https://localhost:${PROXY_PORT}/health" >/dev/null 2>&1; then
+        echo -e " ${GREEN}ready${RESET}"
+        break
+    fi
+    echo -n "."
+    sleep 1
+    if [[ $i -eq 60 ]]; then
+        echo -e " ${RED}timeout${RESET}"
+        warn "Mastio did not become healthy — check logs: $COMPOSE $COMPOSE_FILES logs mcp-proxy mastio-nginx"
+    fi
+done
+
+PUBLIC_URL="$(grep -E '^MCP_PROXY_PROXY_PUBLIC_URL=' "$SCRIPT_DIR/proxy.env" 2>/dev/null | cut -d= -f2-)"
+PUBLIC_URL="${PUBLIC_URL:-https://localhost:${PROXY_PORT}}"
+
+echo ""
+echo -e "${GREEN}${BOLD}Cullis Mastio deployed (${MODE}).${RESET}"
+echo ""
+echo -e "  ${BOLD}Dashboard${RESET}        ${GRAY}${PUBLIC_URL}/proxy/login${RESET}"
+echo -e "  ${BOLD}Health${RESET}           ${GRAY}${PUBLIC_URL}/health${RESET}"
+echo ""
+if [[ "$MODE" == "development" ]]; then
+    echo "  Next steps (development):"
+    echo "    1. Open ${PUBLIC_URL}/proxy/login"
+    echo "       (browser will warn — TLS is signed by your local Org CA,"
+    echo "        not a public CA. Accept the self-signed warning.)"
+    echo "    2. Complete the first-boot setup wizard"
+    echo "    3. Enroll agents via the Connector or paste an invite token"
+else
+    echo "  Next steps (production):"
+    echo "    1. Front-door TLS at your edge LB → mastio-nginx :${PROXY_PORT}"
+    echo "    2. DNS: ${PUBLIC_URL}  →  this host"
+    echo "    3. Share the dashboard URL with your org admin"
+fi
+echo ""
+echo "  Useful commands:"
+echo "    $COMPOSE $COMPOSE_FILES logs -f                # tail logs"
+echo "    $COMPOSE $COMPOSE_FILES ps                     # container status"
+echo "    $0 --down                                      # stop"
+echo ""
