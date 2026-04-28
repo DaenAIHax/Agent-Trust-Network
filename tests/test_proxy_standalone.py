@@ -62,12 +62,21 @@ async def test_standalone_readyz_is_ready_without_jwks(standalone_proxy):
 
 
 @pytest.mark.asyncio
-async def test_standalone_reverse_proxy_returns_503(standalone_proxy):
-    """With no broker uplink, /v1/auth/token has nowhere to forward to."""
+async def test_standalone_local_auth_handler_active(standalone_proxy):
+    """In standalone mode the local /v1/auth/token handler IS the issuer.
+
+    Pre-PR-D this test asserted ``503 reverse-proxy not configured``
+    because standalone left local_auth off and the forwarder noticed
+    there was no broker. Post-PR-D + ADR-012 auto-enable, standalone
+    flips ``local_auth_enabled`` on and the local handler responds
+    directly. With an empty body it surfaces a pydantic validation
+    error (422) rather than 503 — proves the local route is wired,
+    not the forwarder.
+    """
     _, client = standalone_proxy
     resp = await client.post("/v1/auth/token", json={})
-    assert resp.status_code == 503
-    assert "reverse proxy not configured" in resp.text
+    assert resp.status_code == 422, resp.text
+    assert "client_assertion" in resp.text
 
 
 @pytest.mark.asyncio
