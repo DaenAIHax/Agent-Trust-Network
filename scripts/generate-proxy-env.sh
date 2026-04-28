@@ -77,8 +77,14 @@ case "$MODE" in
         ;;
     defaults)
         BROKER="${BROKER_URL:-http://broker:8000}"
-        # ADR-014 — public URL points at the mastio-nginx sidecar (TLS).
-        PUBLIC="${PROXY_PUBLIC_URL:-https://localhost:9443}"
+        # Empty by default → settings.py falls back to ``request.url`` for
+        # DPoP htu validation (auto-detect from the inbound Host header).
+        # Hardcoding ``localhost`` broke every non-localhost deploy
+        # (Docker, k8s, VM) because the agent's actual htu carried the
+        # service name / ingress hostname / VM IP. Operators who front
+        # the Mastio with a stable public hostname should still pass
+        # ``PROXY_PUBLIC_URL=https://mastio.example.com`` explicitly.
+        PUBLIC="${PROXY_PUBLIC_URL:-}"
         JWKS="${BROKER%/}/.well-known/jwks.json"
         ENVIRONMENT="development"
         ;;
@@ -86,8 +92,7 @@ case "$MODE" in
         echo ""
         read -rp "  Broker URL [http://broker:8000]: " BROKER
         BROKER="${BROKER:-http://broker:8000}"
-        read -rp "  Proxy public URL [https://localhost:9443]: " PUBLIC
-        PUBLIC="${PUBLIC:-https://localhost:9443}"
+        read -rp "  Proxy public URL [empty = auto-detect from Host header]: " PUBLIC
         JWKS="${BROKER%/}/.well-known/jwks.json"
         ENVIRONMENT="development"
         ;;
