@@ -74,4 +74,19 @@ USER proxyuser
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:9100/health')" || exit 1
 
-CMD ["uvicorn", "mcp_proxy.main:app", "--host", "0.0.0.0", "--port", "9100"]
+# ADR-014 — the Mastio is always fronted by the mastio-nginx sidecar
+# (TLS termination + mTLS gate). nginx sets X-Forwarded-Proto: https
+# and X-Forwarded-For; uvicorn must opt in to those headers via
+# ``--proxy-headers`` or it reconstructs ``request.url`` from its own
+# bind (``http://localhost:9100/...``), and DPoP htu validation 401s
+# every host-side egress call (host signs ``https://<public>:9443/...``,
+# server expects ``http``).
+#
+# ``--forwarded-allow-ips='*'`` is safe in this image because the
+# backend listener (9100) is **never** published to the host or LAN —
+# it is reachable only from the sidecar inside the same docker pod /
+# k8s pod / compose network. Operators who run the bare image without
+# a sidecar (not the supported topology) override this CMD or rebind
+# 9100 to 127.0.0.1.
+CMD ["uvicorn", "mcp_proxy.main:app", "--host", "0.0.0.0", "--port", "9100", \
+     "--proxy-headers", "--forwarded-allow-ips", "*"]
