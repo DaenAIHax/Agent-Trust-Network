@@ -548,6 +548,66 @@ def build_app(config: ConnectorConfig) -> FastAPI:
             {"status": "error", "error": f"Unexpected status '{remote_status}'"}
         )
 
+    @app.post("/api/test-ping")
+    def api_test_ping() -> JSONResponse:
+        """Smoke-probe the configured Mastio Site from the dashboard.
+
+        Closes Finding #5 from the 2026-04-29 dogfood: a freshly
+        enrolled operator had no in-dashboard way to ask "is this
+        actually working?" and had to drop into the MCP tool surface
+        (``hello_site``) to confirm. We replicate the same probe here
+        — ``GET <site>/health`` with the same TLS posture as the rest
+        of the connector — so the answer lives one click away from
+        the identity card.
+        """
+        if not has_identity(config.config_dir):
+            return JSONResponse(
+                {"ok": False, "error": "No identity loaded — enroll first."},
+                status_code=200,
+            )
+        if not config.site_url:
+            return JSONResponse(
+                {"ok": False, "error": "Site URL is not configured."},
+                status_code=200,
+            )
+
+        url = f"{config.site_url.rstrip('/')}/health"
+        started = time.perf_counter()
+        try:
+            resp = httpx.get(
+                url,
+                verify=config.verify_arg,
+                timeout=config.request_timeout_s,
+            )
+        except httpx.HTTPError as exc:
+            return JSONResponse({
+                "ok": False,
+                "site_url": config.site_url,
+                "error": f"Site unreachable: {exc}",
+            })
+
+        rtt_ms = round((time.perf_counter() - started) * 1000, 1)
+        if resp.status_code != 200:
+            return JSONResponse({
+                "ok": False,
+                "site_url": config.site_url,
+                "rtt_ms": rtt_ms,
+                "error": f"Site responded with HTTP {resp.status_code}",
+            })
+
+        try:
+            payload = resp.json()
+        except ValueError:
+            payload = {}
+        return JSONResponse({
+            "ok": True,
+            "site_url": config.site_url,
+            "rtt_ms": rtt_ms,
+            "site_status": payload.get("status", "unknown"),
+            "site_version": payload.get("version", "unknown"),
+            "tls_verified": config.verify_arg is not False,
+        })
+
     @app.post("/cancel")
     def cancel() -> Response:
         _clear_pending()
