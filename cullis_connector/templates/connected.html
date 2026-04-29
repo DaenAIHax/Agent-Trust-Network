@@ -60,6 +60,19 @@
             <span class="identity-v">{{ issued_at or '—' }}</span>
         </div>
     </div>
+
+    <div class="btn-row" style="margin-top: 16px;">
+        <button type="button"
+                id="test-ping-btn"
+                class="btn btn-ghost"
+                hx-post="/api/test-ping"
+                hx-swap="none"
+                hx-on::before-request="prepareTestPing(this)"
+                hx-on::after-request="handleTestPingResult(this, event)">
+            Test connection
+        </button>
+        <span id="test-ping-result" class="muted" style="font-size: 12px; align-self: center;"></span>
+    </div>
 </section>
 
 <section class="panel">
@@ -157,6 +170,33 @@ function handleAutostartResult(btn, event) {
         showToast(payload.enabled ? 'Autostart enabled' : 'Autostart disabled');
     } else {
         showToast(payload.error || 'Could not change autostart setting');
+    }
+}
+
+function prepareTestPing(btn) {
+    btn.disabled = true;
+    btn.textContent = 'Pinging…';
+    const out = document.getElementById('test-ping-result');
+    if (out) { out.textContent = ''; out.style.color = ''; }
+}
+
+function handleTestPingResult(btn, event) {
+    btn.disabled = false;
+    btn.textContent = 'Test connection';
+    const out = document.getElementById('test-ping-result');
+    if (!out) return;
+    let payload = {};
+    try { payload = JSON.parse(event.detail.xhr.responseText); } catch (e) {}
+    if (payload.ok) {
+        out.style.color = '';
+        out.textContent = '✓ ' + (payload.site_status || 'reachable')
+            + ' · ' + payload.rtt_ms + ' ms'
+            + (payload.site_version && payload.site_version !== 'unknown'
+                ? ' · v' + payload.site_version : '')
+            + (payload.tls_verified ? ' · TLS verified' : ' · TLS NOT verified');
+    } else {
+        out.style.color = 'var(--err, #c62828)';
+        out.textContent = '✗ ' + (payload.error || 'unreachable');
     }
 }
 
