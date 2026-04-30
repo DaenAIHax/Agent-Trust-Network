@@ -59,7 +59,13 @@ def cfg(tmp_path) -> ConnectorConfig:
 def client(cfg, monkeypatch) -> TestClient:
     import cullis_connector.web as _web
     monkeypatch.setattr(_web, "has_identity", lambda _: False)
-    return TestClient(build_app(cfg))
+    tc = TestClient(build_app(cfg))
+    # Audit 2026-04-30 lane 5 C1: dashboard now rejects state-changing
+    # requests without a same-origin ``Origin`` header. ``TestClient``
+    # uses ``http://testserver`` as the base URL, so a matching Origin
+    # makes these calls behave like a same-origin browser POST.
+    tc.headers["Origin"] = "http://testserver"
+    return tc
 
 
 def _patch_pki_endpoint(monkeypatch, status_code: int, body: str) -> list[str]:

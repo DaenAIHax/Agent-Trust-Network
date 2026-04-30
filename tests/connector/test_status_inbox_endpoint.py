@@ -117,13 +117,21 @@ def test_status_inbox_rejects_wrong_token(app):
 
 def test_status_inbox_seen_rejects_missing_auth_cannot_reset_counter(app):
     """Without auth, a local attacker must NOT be able to ack the
-    dispatcher and hide unread messages from the user."""
+    dispatcher and hide unread messages from the user.
+
+    Two layers reject this request now (audit 2026-04-30 lane 5 C1):
+    the CSRF Origin guard returns 403 because the request has neither
+    a same-origin ``Origin`` nor a ``Bearer`` token; if it ever made it
+    past the middleware, the route-level bearer dependency would
+    return 401. Either is a hard rejection — what matters is that
+    ``fake.ack`` is never called.
+    """
     fake = MagicMock()
     fake.stop = AsyncMock(return_value=None)
     with TestClient(app) as client:
         app.state.inbox_dispatcher = fake
         r = client.post("/status/inbox/seen")
-    assert r.status_code == 401
+    assert r.status_code in (401, 403)
     fake.ack.assert_not_called()
 
 

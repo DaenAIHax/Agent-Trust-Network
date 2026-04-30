@@ -28,18 +28,26 @@ def cfg(tmp_path) -> ConnectorConfig:
     )
 
 
+def _origin_aware_client(cfg) -> TestClient:
+    """TestClient that pretends the request comes from the dashboard's
+    own origin (audit 2026-04-30 C1 — Origin header now required)."""
+    tc = TestClient(build_app(cfg))
+    tc.headers["Origin"] = "http://testserver"
+    return tc
+
+
 @pytest.fixture
 def client_with_identity(cfg, monkeypatch) -> TestClient:
     """Pretend an enrolled identity is on disk so test-ping doesn't
     short-circuit on the no-identity guard."""
     monkeypatch.setattr(_web, "has_identity", lambda _: True)
-    return TestClient(build_app(cfg))
+    return _origin_aware_client(cfg)
 
 
 @pytest.fixture
 def client_without_identity(cfg, monkeypatch) -> TestClient:
     monkeypatch.setattr(_web, "has_identity", lambda _: False)
-    return TestClient(build_app(cfg))
+    return _origin_aware_client(cfg)
 
 
 def _patch_health(monkeypatch, *, status_code: int, body: dict | str):
@@ -132,7 +140,7 @@ def test_test_ping_strips_trailing_slash_on_site_url(monkeypatch, tmp_path):
         verify_tls=True,
     )
     monkeypatch.setattr(_web, "has_identity", lambda _: True)
-    client = TestClient(build_app(cfg))
+    client = _origin_aware_client(cfg)
     captured = _patch_health(
         monkeypatch, status_code=200, body={"status": "ok"}
     )
