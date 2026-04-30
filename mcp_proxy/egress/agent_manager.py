@@ -149,16 +149,24 @@ class AgentManager:
         )
 
     async def load_org_ca_from_config(self) -> bool:
-        """Try to load Org CA from proxy_config DB table (keys: org_ca_key, org_ca_cert).
+        """Try to load the Org CA via the configured KMS provider.
+
+        Default provider is :class:`mcp_proxy.kms.LocalKMSProvider` which
+        reads ``proxy_config[org_ca_key]`` and ``proxy_config[org_ca_cert]``
+        — same surface as before this method got refactored to route
+        through the KMS factory. cullis-enterprise plugins (cloud KMS,
+        Key Vault, etc.) plug in via ``MCP_PROXY_KMS_BACKEND`` + the
+        ``kms_factory`` plugin hook.
 
         Returns True if loaded successfully, False otherwise.
         """
-        ca_key_pem = await get_config("org_ca_key")
-        ca_cert_pem = await get_config("org_ca_cert")
-        if ca_key_pem and ca_cert_pem:
+        from mcp_proxy.kms import get_kms_provider
+        loaded = await get_kms_provider().load_org_ca()
+        if loaded is not None:
+            ca_key_pem, ca_cert_pem = loaded
             await self.load_org_ca(ca_key_pem, ca_cert_pem)
             return True
-        logger.warning("Org CA not found in proxy_config — agent cert issuance unavailable")
+        logger.warning("Org CA not found via KMS provider — agent cert issuance unavailable")
         return False
 
     async def generate_org_ca(
@@ -247,8 +255,12 @@ class AgentManager:
         ).decode()
         ca_cert_pem = ca_cert.public_bytes(serialization.Encoding.PEM).decode()
 
-        await set_config("org_ca_key", ca_key_pem)
-        await set_config("org_ca_cert", ca_cert_pem)
+        # Route through the KMS provider so enterprise backends (cloud
+        # KMS / Key Vault / Secrets Manager) get to persist this without
+        # touching agent_manager. The LocalKMSProvider default writes to
+        # proxy_config exactly like the prior inline calls did.
+        from mcp_proxy.kms import get_kms_provider
+        await get_kms_provider().store_org_ca(ca_key_pem, ca_cert_pem)
 
         self._org_ca_key = ca_key
         self._org_ca_cert = ca_cert

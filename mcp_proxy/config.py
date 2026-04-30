@@ -26,6 +26,15 @@ class ProxySettings(BaseSettings):
 
     proxy_public_url: str = ""  # for DPoP htu validation
 
+    # KMS backend for the Org CA (and, in follow-up, Mastio leaf keys).
+    # ``local`` keeps the keys in proxy_config DB (current default,
+    # works for community + small deploys). Other values dispatch to
+    # cullis-enterprise plugins via the ``kms_factory`` plugin hook —
+    # e.g. ``aws`` / ``azure`` / ``gcp`` resolve to their respective
+    # cloud KMS providers when cullis-enterprise is installed and the
+    # license grants the matching feature.
+    kms_backend: str = "local"
+
     # Secrets backend
     secret_backend: str = "env"  # "env" | "vault"
     vault_addr: str = ""
