@@ -257,6 +257,70 @@ def build_app(config: ConnectorConfig) -> FastAPI:
     templates.env.globals["active_profile"] = config.profile_name or ""
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
+    # ── CSRF / cross-origin guard ────────────────────────────────────────
+    #
+    # Audit 2026-04-30 lane 5 C1 — every state-changing endpoint on the
+    # dashboard (14 routes) had no CSRF token, no Origin/Referer check,
+    # and no SameSite cookie because the dashboard had no session at all.
+    # Any web page the operator visited could POST to ``/setup/pin-ca``
+    # and overwrite the TOFU-pinned Org CA, configure their IDE to spawn
+    # a malicious MCP server, etc. DNS rebinding to 127.0.0.1:7777
+    # amplifies the surface.
+    #
+    # Defence: reject every state-changing request whose ``Origin`` (or,
+    # as fallback, ``Referer``) does not match the dashboard's own host.
+    # Browsers attach ``Origin`` automatically on cross-origin POST and
+    # cannot be fooled by DNS rebinding because the header carries the
+    # name the page was loaded from, not the resolved IP.
+    #
+    # Exemption: requests carrying ``Authorization: Bearer ...`` skip the
+    # check. Bearer auth is the calling convention for non-browser
+    # callers (statusline scripts hit ``/status/inbox/seen`` with the
+    # token from ``statusline.token``); browsers never auto-attach
+    # ``Authorization``, so the bearer path is not a CSRF vector.
+
+    @app.middleware("http")
+    async def _csrf_origin_guard(request: Request, call_next):  # type: ignore[no-untyped-def]
+        if request.method in ("POST", "PUT", "DELETE", "PATCH"):
+            authz = request.headers.get("authorization", "")
+            if not authz.startswith("Bearer "):
+                expected_host = request.url.netloc
+                expected_origins = {
+                    f"http://{expected_host}",
+                    f"https://{expected_host}",
+                }
+                origin = request.headers.get("origin")
+                if origin is not None:
+                    if origin not in expected_origins:
+                        return JSONResponse(
+                            {"detail": "cross-origin request blocked"},
+                            status_code=403,
+                        )
+                else:
+                    referer = request.headers.get("referer", "")
+                    if referer:
+                        if not any(
+                            referer == o or referer.startswith(o + "/")
+                            for o in expected_origins
+                        ):
+                            return JSONResponse(
+                                {"detail": "cross-origin referer blocked"},
+                                status_code=403,
+                            )
+                    else:
+                        return JSONResponse(
+                            {
+                                "detail": (
+                                    "missing Origin and Referer; "
+                                    "browser POSTs must originate from the "
+                                    "dashboard. Programmatic callers should "
+                                    "use Authorization: Bearer."
+                                )
+                            },
+                            status_code=403,
+                        )
+        return await call_next(request)
+
     # ── Routes ────────────────────────────────────────────────────────────
 
     @app.get("/", response_class=HTMLResponse)

@@ -51,7 +51,12 @@ def connector_client(connector_dir, monkeypatch):
         verify_tls=False,
     )
     app = build_app(cfg)
-    return TestClient(app)
+    tc = TestClient(app)
+    # Audit 2026-04-30 lane 5 C1 — dashboard rejects state-changing
+    # requests without a same-origin Origin header. ``TestClient`` uses
+    # ``http://testserver`` as base URL by default.
+    tc.headers["Origin"] = "http://testserver"
+    return tc
 
 
 def _mount_mastio(monkeypatch, handler):

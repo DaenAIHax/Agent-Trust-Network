@@ -43,7 +43,10 @@ def client_on_north(profile_tree, monkeypatch):
         verify_tls=False,
     )
     from cullis_connector.web import build_app
-    return TestClient(build_app(cfg))
+    tc = TestClient(build_app(cfg))
+    # Audit 2026-04-30 lane 5 C1 — same-origin Origin header required.
+    tc.headers["Origin"] = "http://testserver"
+    return tc
 
 
 def test_profiles_page_lists_profiles_and_flags_active(client_on_north):
