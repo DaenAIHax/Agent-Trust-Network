@@ -51,6 +51,22 @@ class EnrollmentStartRequest(BaseModel):
             " endpoint (#206) or re-enrolls (audit F-B-11 Phase 3b)."
         ),
     )
+    pop_signature: str | None = Field(
+        None,
+        max_length=2048,
+        description=(
+            "H-csr-pop audit fix — base64url proof of possession over"
+            " the keypair whose public half is in ``pubkey_pem``. The"
+            " Connector signs ``\"enrollment-pop:v1|<pubkey-sha256-hex>\"``"
+            " (RSA-PSS or ECDSA, dispatched by key type) and submits"
+            " the signature here. The server verifies before persisting,"
+            " so an attacker cannot enroll a stolen / observed public"
+            " key whose private half they don't control. Optional for"
+            " a transition window — pre-fix Connectors still enroll"
+            " but the server logs a WARNING. Will become required in"
+            " a follow-up release."
+        ),
+    )
 
 
 class EnrollmentStartResponse(BaseModel):

@@ -156,6 +156,65 @@ def _validate_and_compute_dpop_jkt(dpop_jwk: dict | None) -> str | None:
         ) from exc
 
 
+_ENROLLMENT_POP_DOMAIN = "enrollment-pop:v1"
+
+
+def _verify_pop_signature(
+    pubkey_pem: str, fingerprint: str, signature_b64: str,
+) -> bool:
+    """H-csr-pop audit — proof of possession over the enrollment keypair.
+
+    The Connector signs ``"enrollment-pop:v1|<fingerprint>"`` with
+    its private key and submits the signature in ``pop_signature``.
+    The server verifies before persisting the row. A failed verify
+    raises ``EnrollmentError`` (400). Domain-separated by the
+    ``enrollment-pop:v1`` prefix and bound to the pubkey fingerprint
+    so the proof is non-replayable across keys.
+    """
+    import base64 as _b64
+
+    from cryptography.exceptions import InvalidSignature
+    from cryptography.hazmat.primitives import hashes as _hashes
+    from cryptography.hazmat.primitives.asymmetric import (
+        ec as _ec,
+        padding as _padding,
+        rsa as _rsa,
+    )
+
+    try:
+        sig = _b64.urlsafe_b64decode(
+            signature_b64 + "=" * (-len(signature_b64) % 4),
+        )
+    except Exception:
+        return False
+    try:
+        pub_key = serialization.load_pem_public_key(pubkey_pem.encode())
+    except Exception:
+        return False
+    canonical = (
+        f"{_ENROLLMENT_POP_DOMAIN}|{fingerprint}".encode("utf-8")
+    )
+    try:
+        if isinstance(pub_key, _rsa.RSAPublicKey):
+            pub_key.verify(
+                sig, canonical,
+                _padding.PSS(
+                    mgf=_padding.MGF1(_hashes.SHA256()),
+                    salt_length=_padding.PSS.MAX_LENGTH,
+                ),
+                _hashes.SHA256(),
+            )
+        elif isinstance(pub_key, _ec.EllipticCurvePublicKey):
+            pub_key.verify(sig, canonical, _ec.ECDSA(_hashes.SHA256()))
+        else:
+            return False
+        return True
+    except InvalidSignature:
+        return False
+    except Exception:
+        return False
+
+
 async def start_enrollment(
     conn: AsyncConnection,
     *,
@@ -165,6 +224,7 @@ async def start_enrollment(
     reason: str | None,
     device_info: str | None,
     dpop_jwk: dict | None = None,
+    pop_signature: str | None = None,
 ) -> StartedEnrollment:
     """Create a new pending enrollment.
 
@@ -189,6 +249,30 @@ async def start_enrollment(
     dpop_jkt = _validate_and_compute_dpop_jkt(dpop_jwk)
 
     fingerprint = _pubkey_fingerprint(pubkey_pem)
+
+    # H-csr-pop audit fix — verify proof-of-possession over the
+    # submitted public key. A pre-fix Connector that doesn't ship
+    # ``pop_signature`` is allowed through with a WARNING during the
+    # transition window so existing fleets keep working; a follow-up
+    # PR makes it required once Connector rollout is confirmed.
+    if pop_signature:
+        if not _verify_pop_signature(pubkey_pem, fingerprint, pop_signature):
+            raise EnrollmentError(
+                "pop_signature does not verify against pubkey_pem — "
+                "the submitter does not control the corresponding "
+                "private key (H-csr-pop audit).",
+                http_status=400,
+            )
+    else:
+        import logging
+        logging.getLogger("mcp_proxy.enrollment").warning(
+            "start_enrollment: legacy Connector submitted pubkey_pem "
+            "without pop_signature (fingerprint=%s). Accepted under "
+            "the transition window; a future release will make the "
+            "PoP signature required.",
+            fingerprint,
+        )
+
     session_id = secrets.token_urlsafe(24)
     now = _now()
     expires_at = now + ENROLLMENT_TTL
