@@ -375,6 +375,7 @@ class CullisClient:
         timeout: float = 10.0,
         enable_dpop: bool = True,
         dpop_base_dir: "Path | None" = None,
+        ca_chain_path: "str | Path | None" = None,
     ) -> CullisClient:
         """Bootstrap a proxy-connected client from an enrollment URL.
 
@@ -386,6 +387,14 @@ class CullisClient:
             save_config: Optional file path to save the received config as .env
             verify_tls: Whether to verify TLS certificates
             timeout: HTTP request timeout in seconds
+            ca_chain_path: H10 audit fix — operator-pinned Org CA bundle
+                (PEM). When supplied it is loaded into both the
+                bootstrap httpx client (used for the enrollment GET)
+                AND the long-lived runtime client returned to the
+                caller, so the Mastio's self-signed cert verifies
+                against the pin instead of the system CA store. This
+                completes the threading PR #363 / #365 started for
+                ``from_connector``.
 
         Returns:
             A CullisClient configured with the proxy URL and API key.
@@ -396,7 +405,14 @@ class CullisClient:
             agents = client.discover(capabilities=["order.read"])
         """
         _check_insecure_tls(verify_tls)
-        http = httpx.Client(timeout=timeout, verify=verify_tls)
+        # H10: route the bootstrap GET through the same SSLContext-aware
+        # builder as the runtime client so the pinned Org CA is honoured
+        # at every step, not just on subsequent calls.
+        http = _build_proxy_http_client(
+            verify_tls=verify_tls,
+            timeout=timeout,
+            ca_chain_path=ca_chain_path,
+        )
         try:
             resp = http.get(enroll_url)
             resp.raise_for_status()
@@ -427,7 +443,14 @@ class CullisClient:
         instance = cls.__new__(cls)
         instance.base = config["proxy_url"].rstrip("/")
         instance._verify_tls = verify_tls
-        instance._http = httpx.Client(timeout=timeout, verify=verify_tls)
+        # H10: thread the pinned Org CA into the long-lived runtime
+        # client so every subsequent call (egress, tools/invoke,
+        # public-key fetch) verifies against it.
+        instance._http = _build_proxy_http_client(
+            verify_tls=verify_tls,
+            timeout=timeout,
+            ca_chain_path=ca_chain_path,
+        )
         instance.token = None
         instance._label = config["agent_id"]
         instance._signing_key_pem = None
@@ -566,6 +589,7 @@ class CullisClient:
         org_id: str | None = None,
         verify_tls: bool = True,
         timeout: float = 10.0,
+        ca_chain_path: "str | Path | None" = None,
     ) -> "CullisClient":
         """Primary runtime constructor under ADR-014.
 
@@ -604,6 +628,7 @@ class CullisClient:
             timeout=timeout,
             cert_path=cert_path,
             key_path=key_path,
+            ca_chain_path=ca_chain_path,
         )
         instance.token = None
         instance._label = agent_id or "(client-cert-auth)"
@@ -651,6 +676,7 @@ class CullisClient:
         org_id: str | None = None,
         verify_tls: bool = True,
         timeout: float = 10.0,
+        ca_chain_path: "str | Path | None" = None,
     ) -> "CullisClient":
         import warnings
         warnings.warn(
@@ -676,6 +702,7 @@ class CullisClient:
             org_id=org_id,
             verify_tls=verify_tls,
             timeout=timeout,
+            ca_chain_path=ca_chain_path,
         )
 
     @classmethod
@@ -694,6 +721,7 @@ class CullisClient:
         federated: bool = False,
         verify_tls: bool = True,
         timeout: float = 10.0,
+        ca_chain_path: "str | Path | None" = None,
     ) -> "CullisClient":
         """Operator-side helper: enroll an agent via BYOCA and return a
         runtime-ready client.
@@ -729,6 +757,7 @@ class CullisClient:
             enable_dpop=enable_dpop,
             verify_tls=verify_tls,
             timeout=timeout,
+            ca_chain_path=ca_chain_path,
         )
 
     @classmethod
@@ -748,6 +777,7 @@ class CullisClient:
         federated: bool = False,
         verify_tls: bool = True,
         timeout: float = 10.0,
+        ca_chain_path: "str | Path | None" = None,
     ) -> "CullisClient":
         """Operator-side helper: enroll an agent via SPIFFE SVID and
         return a runtime-ready client.
@@ -778,6 +808,7 @@ class CullisClient:
             enable_dpop=enable_dpop,
             verify_tls=verify_tls,
             timeout=timeout,
+            ca_chain_path=ca_chain_path,
         )
 
     @classmethod
@@ -792,6 +823,7 @@ class CullisClient:
         enable_dpop: bool,
         verify_tls: bool,
         timeout: float,
+        ca_chain_path: "str | Path | None" = None,
     ) -> "CullisClient":
         """Shared machinery for every ``enroll_via_*`` helper.
 
@@ -816,7 +848,14 @@ class CullisClient:
             "Content-Type": "application/json",
         }
 
-        http = httpx.Client(timeout=timeout, verify=verify_tls)
+        # H10: route the bootstrap POST through the SSLContext-aware
+        # builder so the pinned Org CA is honoured during enrollment,
+        # not only for subsequent runtime calls.
+        http = _build_proxy_http_client(
+            verify_tls=verify_tls,
+            timeout=timeout,
+            ca_chain_path=ca_chain_path,
+        )
         try:
             resp = http.post(url, json=body, headers=headers)
         finally:
@@ -863,6 +902,7 @@ class CullisClient:
             timeout=timeout,
             cert_path=cert_path_runtime,
             key_path=key_path_runtime,
+            ca_chain_path=ca_chain_path,
         )
         instance.token = None
         instance._label = agent_id
