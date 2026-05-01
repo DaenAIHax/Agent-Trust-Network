@@ -99,6 +99,7 @@ def enroll(
         dpop_jwk=dpop_public_jwk,
         verify_tls=verify_tls,
         timeout_s=request_timeout_s,
+        private_key=private_key,
     )
     session_id = start_resp["session_id"]
     enroll_url = start_resp["enroll_url"]
@@ -169,6 +170,49 @@ def enroll(
 # ── Internals ────────────────────────────────────────────────────────────
 
 
+def _build_pop_signature(private_key, pubkey_pem: str) -> str:
+    """H-csr-pop audit fix — sign the canonical proof string with the
+    enrollment keypair so the server can verify the submitter
+    actually controls the matching private key.
+
+    Without this proof a hostile caller could submit *someone else's*
+    public key (observed in logs / leaked) and have the admin issue
+    a cert tied to it: useless to the attacker (they don't have the
+    private key), but a griefing / impersonation surface against the
+    real owner of the keypair.
+    """
+    import base64 as _b64
+    import hashlib as _hashlib
+
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
+
+    public_key = serialization.load_pem_public_key(pubkey_pem.encode())
+    der = public_key.public_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    fingerprint = _hashlib.sha256(der).hexdigest()
+    canonical = f"enrollment-pop:v1|{fingerprint}".encode("utf-8")
+
+    if isinstance(private_key, rsa.RSAPrivateKey):
+        sig = private_key.sign(
+            canonical,
+            padding.PSS(
+                mgf=padding.MGF1(hashes.SHA256()),
+                salt_length=padding.PSS.MAX_LENGTH,
+            ),
+            hashes.SHA256(),
+        )
+    elif isinstance(private_key, ec.EllipticCurvePrivateKey):
+        sig = private_key.sign(canonical, ec.ECDSA(hashes.SHA256()))
+    else:
+        raise EnrollmentFailed(
+            f"Unsupported enrollment key type: {type(private_key).__name__}"
+        )
+    return _b64.urlsafe_b64encode(sig).decode("ascii").rstrip("=")
+
+
 def _start(
     *,
     site_url: str,
@@ -177,6 +221,7 @@ def _start(
     verify_tls: bool | str,
     timeout_s: float,
     dpop_jwk: dict | None = None,
+    private_key=None,
 ) -> dict[str, Any]:
     body = {
         "pubkey_pem": pubkey_pem,
@@ -191,6 +236,8 @@ def _start(
     # compute + store its thumbprint on approve (wire added in #207).
     if dpop_jwk is not None:
         body["dpop_jwk"] = dpop_jwk
+    if private_key is not None:
+        body["pop_signature"] = _build_pop_signature(private_key, pubkey_pem)
 
     try:
         response = httpx.post(
