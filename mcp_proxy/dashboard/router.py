@@ -3136,7 +3136,18 @@ async def badge_version(request: Request):
     """HTMX fragment — single-pixel-thin banner that says "Update
     available: 0.3.0-rc3" and links to the modal with the copy-paste
     install command. Empty response when no update is pending so the
-    sidebar stays clean."""
+    sidebar stays clean.
+
+    M-dash-3 audit fix: every interpolated value is HTML-escaped
+    before reaching the response. ``release_url``, ``latest``, and
+    ``install_command`` come from the GitHub Releases API (or a tag
+    name that an attacker who compromises the GHCR repo could craft)
+    and used to be embedded raw in ``href=...`` / ``title=...`` /
+    text-content positions, giving a stored-XSS surface against any
+    operator viewing the dashboard.
+    """
+    import html as _html
+
     session = get_session(request)
     if not session.logged_in:
         return HTMLResponse("")
@@ -3146,11 +3157,14 @@ async def badge_version(request: Request):
     if not status.update_available or not status.install_command:
         return HTMLResponse("")
 
-    cmd = status.install_command
-    latest = status.latest or ""
-    current = status.current
+    # ``quote=True`` escapes ``"`` so attribute-context interpolations
+    # cannot break out into new attributes.
+    cmd = _html.escape(status.install_command, quote=True)
+    latest = _html.escape(status.latest or "", quote=True)
+    current = _html.escape(str(status.current), quote=True)
+    release_url = _html.escape(status.release_url or "", quote=True)
     return HTMLResponse(
-        f'<a href="{status.release_url}" target="_blank" rel="noopener" '
+        f'<a href="{release_url}" target="_blank" rel="noopener" '
         f'class="block px-3 py-2 rounded text-xs font-mono '
         f'bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 transition" '
         f'title="Run ``{cmd}`` on the Mastio host to upgrade. '
