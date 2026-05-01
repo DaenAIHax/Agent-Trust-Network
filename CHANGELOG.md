@@ -7,6 +7,41 @@ The connector follows its own release cadence, independent from the
 broker and proxy components of the Cullis monorepo. Connector releases
 are tagged `connector-vX.Y.Z`.
 
+## [v0.1.3] — 2026-05-01 (cullis-sdk)
+
+### Security
+- **ECDH key wrap upgraded from XOR to AES-KW (RFC 3394)** ([#377]):
+  the one-shot end-to-end encryption envelope now wraps the per-message
+  key with AES-KW instead of an HKDF-derived XOR mask. HKDF `info`
+  is bumped to `cullis-oneshot-v2-aeskw` and the wrapped key is now
+  40 bytes (was 32). Cross-language interop with `sdk-ts` is
+  preserved.
+- **`verify_oneshot` rejects bare-SPKI senders, binds cert↔sender,
+  optional chain trust** ([#379]): a new `cullis_sdk/crypto/_cert_trust.py`
+  module enforces three checks on the sender's identity certificate:
+  the cert must not be a bare SPKI, its CN/SPIFFE SAN must match the
+  declared `sender_agent_id`, and (when `trust_anchors_pem` is
+  provided) it must chain to a known anchor. `CullisClient.from_connector`
+  now passes the Org CA from `identity/ca-chain.pem` as the anchor by
+  default.
+- **`ca_chain_path` threaded through every constructor** ([#381]):
+  `from_enrollment`, `from_identity_dir`, `_do_enroll`,
+  `enroll_via_byoca`, `enroll_via_spiffe`, and `from_api_key_file` all
+  accept a new `ca_chain_path` kwarg, which is now routed through
+  `_build_proxy_http_client` for both the bootstrap GET/POST and the
+  runtime client. This closes a gap where some bootstrap paths were
+  silently using the system CA bundle instead of the TOFU-pinned chain.
+
+### Changed
+- This is the second SDK release published to PyPI via OIDC trusted
+  publishing instead of a long-lived `PYPI_TOKEN` (#394 enabled OIDC
+  for both SDK + Connector workflows; connector v0.3.6 was the first
+  to validate the path end-to-end).
+
+[#377]: https://github.com/cullis-security/cullis/pull/377
+[#379]: https://github.com/cullis-security/cullis/pull/379
+[#381]: https://github.com/cullis-security/cullis/pull/381
+
 ## [v0.3.6] — 2026-05-01
 
 ### Security
