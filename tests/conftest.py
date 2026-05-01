@@ -153,6 +153,36 @@ def reset_rate_limiter():
 
 
 @pytest.fixture(autouse=True)
+def reset_mcp_proxy_rate_state():
+    """Reset the mcp_proxy per-agent rate limiter + dashboard login
+    lockout singletons between tests.
+
+    H9 audit fix: ``mcp_proxy/dashboard/router.py:/proxy/login`` now
+    consults ``get_agent_rate_limiter()`` and ``get_login_lockout_store()``
+    on every POST. Both are process-global singletons; without this
+    fixture, accumulated state from one test (rate-limit window or
+    lockout counter) bleeds into the next and unrelated tests get a
+    spurious 429 from the login form.
+
+    Imports are inline so the fixture stays a no-op when the proxy
+    package isn't on the import path (broker-only test slices in
+    minimal CI shards). Both reset helpers are safe to call when the
+    singleton hasn't been initialised yet.
+    """
+    try:
+        from mcp_proxy.auth.rate_limit import reset_agent_rate_limiter
+        from mcp_proxy.dashboard.login_lockout import reset_login_lockout_for_tests
+    except ImportError:
+        yield
+        return
+    reset_agent_rate_limiter()
+    reset_login_lockout_for_tests()
+    yield
+    reset_agent_rate_limiter()
+    reset_login_lockout_for_tests()
+
+
+@pytest.fixture(autouse=True)
 def reset_admin_secret_cache():
     """Reset the module-level admin secret cache between tests.
 
