@@ -123,7 +123,11 @@ async def test_local_kms_warns_on_loose_perms_in_dev(
     with caplog.at_level(logging.WARNING, logger="agent_trust"):
         pem = await kms.get_broker_private_key_pem()
     assert "BEGIN RSA PRIVATE KEY" in pem
-    assert any("loose POSIX perms" in r.message for r in caplog.records)
+    # ``LogRecord.message`` is unset until ``getMessage()`` substitutes
+    # the %-args; use the substituted form so the assertion sees the
+    # post-format text.
+    rendered = [r.getMessage() for r in caplog.records]
+    assert any("loose POSIX perms" in m for m in rendered), rendered
     get_settings.cache_clear()
 
 
