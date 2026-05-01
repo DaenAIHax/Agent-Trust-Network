@@ -45,6 +45,13 @@ def _has_column(table_name: str, column_name: str) -> bool:
     return column_name in cols
 
 
+def _has_index(table_name: str, index_name: str) -> bool:
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    names = {ix["name"] for ix in inspector.get_indexes(table_name)}
+    return index_name in names
+
+
 def upgrade() -> None:
     with op.batch_alter_table("audit_log") as batch_op:
         if not _has_column("audit_log", "chain_seq"):
@@ -53,16 +60,24 @@ def upgrade() -> None:
             batch_op.add_column(sa.Column("prev_hash", sa.Text(), nullable=True))
         if not _has_column("audit_log", "row_hash"):
             batch_op.add_column(sa.Column("row_hash", sa.Text(), nullable=True))
-    op.create_index(
-        "idx_audit_log_chain_seq",
-        "audit_log",
-        ["chain_seq"],
-        unique=True,
-    )
+    # Idempotency: the legacy partial-seed path (see
+    # ``mcp_proxy/db.py:_run_migrations_sync``) calls
+    # ``metadata.create_all`` before stamping, and the post-0023
+    # ``AuditLogEntry`` declares the index in its ``__table_args__``.
+    # Without this guard the migration would CREATE INDEX on top of
+    # itself and fail with ``index ... already exists``.
+    if not _has_index("audit_log", "idx_audit_log_chain_seq"):
+        op.create_index(
+            "idx_audit_log_chain_seq",
+            "audit_log",
+            ["chain_seq"],
+            unique=True,
+        )
 
 
 def downgrade() -> None:
-    op.drop_index("idx_audit_log_chain_seq", table_name="audit_log")
+    if _has_index("audit_log", "idx_audit_log_chain_seq"):
+        op.drop_index("idx_audit_log_chain_seq", table_name="audit_log")
     with op.batch_alter_table("audit_log") as batch_op:
         if _has_column("audit_log", "row_hash"):
             batch_op.drop_column("row_hash")
