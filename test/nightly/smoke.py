@@ -33,18 +33,22 @@ def _probe(entry: dict) -> tuple[str, bool, str]:
     cert = agent_dir / "agent.pem"
     key = agent_dir / "agent-key.pem"
     dpop = agent_dir / "dpop.jwk"
+    ca_chain = STATE / org_id / "ca.pem"
 
-    for f in (cert, key, dpop):
+    for f in (cert, key, dpop, ca_chain):
         if not f.exists():
             return agent_id, False, f"missing {f.name}"
 
     mastio_url = MASTIO_URLS[org_id]
     try:
+        # ADR-014 strict mTLS: present client cert + verify server leaf
+        # against the per-org Org CA. Same path as production.
         client = CullisClient.from_identity_dir(
             mastio_url,
             cert_path=cert, key_path=key, dpop_key_path=dpop,
             agent_id=agent_id, org_id=org_id,
-            verify_tls=False,
+            verify_tls=True,
+            ca_chain_path=ca_chain,
             timeout=30.0,
         )
         peers = client.list_peers(limit=50)
