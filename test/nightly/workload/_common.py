@@ -43,15 +43,26 @@ def load_client(agent_id: str) -> CullisClient:
     reads state from the local test/nightly/state/ bind mount.
 
     ADR-014 — TLS client cert authenticates against the per-org nginx
-    sidecar; ``verify_tls=False`` for the self-signed Org CA.
+    sidecar. Server cert verification uses the per-org Org CA at
+    ``state/<org>/ca.pem`` (the same root that signs the agent's leaf
+    AND the per-org nginx server leaf), so nightly runs through the
+    exact same mTLS path as a production deploy. No
+    ``verify_tls=False`` shortcut: a regression in client-cert
+    presentation now fails nightly loudly instead of silently falling
+    back to a no-cert TLS handshake.
     """
     org_id, agent_name = agent_id.split("::", 1)
     identity_dir = STATE / org_id / "agents" / agent_name
+    ca_chain_path = STATE / org_id / "ca.pem"
     for f in ("agent.pem", "agent-key.pem", "dpop.jwk"):
         if not (identity_dir / f).exists():
             raise SystemExit(
                 f"{identity_dir / f} missing — agent not enrolled"
             )
+    if not ca_chain_path.exists():
+        raise SystemExit(
+            f"{ca_chain_path} missing — bootstrap-mastio did not write Org CA"
+        )
 
     mastio_url = MASTIO_URLS[org_id]
     key_path = identity_dir / "agent-key.pem"
@@ -62,7 +73,8 @@ def load_client(agent_id: str) -> CullisClient:
         dpop_key_path=identity_dir / "dpop.jwk",
         agent_id=agent_id,
         org_id=org_id,
-        verify_tls=False,
+        verify_tls=True,
+        ca_chain_path=ca_chain_path,
         timeout=30.0,
     )
     # login_via_proxy mints a broker JWT so session APIs work.
