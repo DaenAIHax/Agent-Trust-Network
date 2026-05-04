@@ -392,6 +392,10 @@ v1.include_router(oneshot_router)
 from app.inbox.router import router as inbox_router
 v1.include_router(inbox_router)
 
+# ADR-021 PR2 — user principal SSO mapping lookup.
+from app.registry.user_principals_router import router as user_principals_router
+v1.include_router(user_principals_router)
+
 # ADR-002 Phase 2a — A2A protocol adapter (read-only AgentCard + directory).
 # Gated on settings.a2a_adapter (default False) so existing deployments
 # see no surface change.

@@ -50,6 +50,7 @@ from app.auth.transaction_db import TransactionTokenRecord as _TT  # noqa — re
 from app.broker.notifications import Notification as _Notification  # noqa — registra in Base.metadata
 from app.broker.federation import FederationEvent as _FederationEvent  # noqa — registra in Base.metadata
 from app.onboarding.invite_store import InviteToken as _InviteToken  # noqa — registra in Base.metadata
+from app.registry.user_principals import UserPrincipalRecord as _UPR  # noqa — registra in Base.metadata
 from app.rate_limit.limiter import rate_limiter
 
 # Admin headers for endpoints that now require admin auth
