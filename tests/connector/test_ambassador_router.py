@@ -19,8 +19,6 @@ FastAPI app built by ``cullis_connector.web.build_app``.
 """
 from __future__ import annotations
 
-import json
-import threading
 from pathlib import Path
 from typing import Any
 
@@ -426,7 +424,8 @@ def test_local_token_file_is_chmod_600(tmp_path: Path, client):
     token_path = tmp_path / "local.token"
     assert token_path.exists()
     # On Windows / some FS the perm bits are loose; only assert on POSIX.
-    import os, stat
+    import os
+    import stat
     if os.name == "posix":
         mode = stat.S_IMODE(token_path.stat().st_mode)
         assert mode == 0o600, f"local.token mode is {oct(mode)}, expected 0o600"
