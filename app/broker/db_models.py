@@ -174,3 +174,78 @@ class RfqResponseRecord(Base):
     responder_org_id    = Column(String(128), nullable=False)
     response_payload    = Column(Text, nullable=False)              # JSON
     received_at         = Column(DateTime(timezone=True), nullable=False)
+
+
+class UserInboxMessage(Base):
+    """ADR-020 Phase 4 — durable user inbox.
+
+    Holds messages addressed to a *user* (or, transitively, to any
+    principal that wants Slack-like inbox semantics). Distinct from
+    ``ProxyMessageQueueRecord`` which is bound to live A2A sessions:
+
+      - no ``session_id`` — inbox messages are stand-alone, not part
+        of a multi-turn session
+      - plaintext ``body`` for v0.1 (E2E encryption is a Phase 5
+        candidate; the cloud edge is the trust boundary today)
+      - ``delivery_state`` distinguishes online (WS push at the moment
+        of write) from offline (recipient absent, drained by a later
+        ``GET /v1/inbox``) — a property the legacy queue does not need
+
+    Reach policy (``app/policy/reach.py``) is consulted at enqueue time;
+    a row only lands here when ``evaluate_reach_quadrant`` returns
+    allow. The ``consent_id`` links to the grant that authorised the
+    delivery, so an audit trail can prove not just "the message was
+    accepted" but "the message was accepted under THIS consent".
+    """
+
+    __tablename__ = "user_inbox_messages"
+    __table_args__ = (
+        UniqueConstraint(
+            "recipient_org_id", "recipient_principal_type", "recipient_name",
+            "idempotency_key",
+            name="uq_user_inbox_idempotency",
+        ),
+        Index(
+            "idx_user_inbox_recipient_pending",
+            "recipient_org_id", "recipient_principal_type", "recipient_name",
+            "delivery_state",
+        ),
+        Index("idx_user_inbox_ttl", "ttl_expires_at"),
+    )
+
+    msg_id               = Column(String(64), primary_key=True)
+
+    # Sender identification (full principal triple).
+    sender_org_id            = Column(String(128), nullable=False, index=True)
+    sender_principal_type    = Column(String(16), nullable=False)
+    sender_name              = Column(String(128), nullable=False)
+
+    # Recipient identification (full principal triple).
+    recipient_org_id         = Column(String(128), nullable=False, index=True)
+    recipient_principal_type = Column(String(16), nullable=False)
+    recipient_name           = Column(String(128), nullable=False)
+
+    # Payload. v0.1 stores plaintext; E2E encryption candidate for v0.5.
+    subject              = Column(String(256), nullable=True)
+    body                 = Column(Text, nullable=False)
+
+    # Delivery lifecycle: queued | delivered_offline | delivered_online |
+    # archived | expired.
+    delivery_state       = Column(
+        String(24), nullable=False, default="queued", index=True,
+    )
+
+    # Reach grant that authorised this delivery. ``None`` for cells whose
+    # default is allow (intra-org A2A, intra-org U2U, ownership U2A).
+    consent_id           = Column(String(64), nullable=True)
+
+    # Lifecycle timestamps.
+    enqueued_at          = Column(DateTime(timezone=True), nullable=False,
+                                  default=lambda: datetime.now(timezone.utc))
+    delivered_at         = Column(DateTime(timezone=True), nullable=True)
+    archived_at          = Column(DateTime(timezone=True), nullable=True)
+    expired_at           = Column(DateTime(timezone=True), nullable=True)
+    ttl_expires_at       = Column(DateTime(timezone=True), nullable=False)
+
+    # Idempotency under retries from a flapping sender.
+    idempotency_key      = Column(String(256), nullable=True)
