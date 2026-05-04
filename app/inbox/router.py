@@ -194,7 +194,7 @@ async def _require_recipient(
 ) -> None:
     """Reject 404 if msg doesn't exist OR caller is not its recipient."""
     from app.broker.db_models import UserInboxMessage
-    from sqlalchemy import select, and_
+    from sqlalchemy import select
 
     row = (await db.execute(
         select(UserInboxMessage).where(UserInboxMessage.msg_id == msg_id)

@@ -207,7 +207,7 @@ async def test_fetch_for_recipient_cursor_pagination(inbox_db):
 async def test_fetch_for_recipient_excludes_archived_by_default(inbox_db):
     recipient = _user("mario")
     d1 = await enqueue(inbox_db, sender=_user("anna"), recipient=recipient, body="a")
-    d2 = await enqueue(inbox_db, sender=_user("anna"), recipient=recipient, body="b")
+    await enqueue(inbox_db, sender=_user("anna"), recipient=recipient, body="b")
     await mark_archived(inbox_db, msg_id=d1.msg_id)
 
     visible = await fetch_for_recipient(inbox_db, recipient=recipient)
@@ -491,7 +491,7 @@ async def test_router_archive(http_client, authed_user, inbox_db):
 
 async def test_router_archive_excluded_from_list_default(http_client, authed_user, inbox_db):
     mario = _user("mario")
-    d = await enqueue(inbox_db, sender=_user("anna"), recipient=mario, body="visible")
+    await enqueue(inbox_db, sender=_user("anna"), recipient=mario, body="visible")
     archived = await enqueue(
         inbox_db, sender=_user("anna"), recipient=mario, body="hidden",
     )

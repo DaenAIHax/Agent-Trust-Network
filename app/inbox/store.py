@@ -19,7 +19,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Awaitable, Callable, Optional
+from typing import Optional
 
 from sqlalchemy import and_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
