@@ -149,7 +149,24 @@ async def _dashboard_lifespan(app: FastAPI):
     # We mount it lazily here (vs in build_app) because the identity may
     # land mid-process (post enrollment), so a fresh dashboard start
     # picks it up. If ``ambassador.enabled`` is false this is a no-op.
-    _maybe_install_ambassador(app, config)
+    # ADR-021 PR4c — when AMBASSADOR_MODE=shared, mount the multi-tenant
+    # router instead of the single-user one. Default ``single`` keeps
+    # the laptop topology unchanged.
+    from cullis_connector.ambassador.shared.wire import (
+        shared_mode_settings_from_env,
+    )
+    try:
+        shared_settings = shared_mode_settings_from_env()
+    except ValueError as exc:
+        import logging as _logging
+        _logging.getLogger("cullis_connector.web").error(
+            "AMBASSADOR_MODE=shared configuration invalid: %s", exc,
+        )
+        raise
+    if shared_settings.enabled:
+        _maybe_install_shared_ambassador(app, config, shared_settings)
+    else:
+        _maybe_install_ambassador(app, config)
 
     _ensure_inbox_poller_running(app)
     try:
@@ -313,6 +330,117 @@ def _maybe_install_ambassador(app: FastAPI, config: ConnectorConfig) -> None:
     log.info(
         "Ambassador mounted: agent=%s site=%s bearer=*** (saved at %s)",
         agent_id, site_url, config.config_dir / "local.token",
+    )
+
+
+def _maybe_install_shared_ambassador(
+    app: FastAPI,
+    config: ConnectorConfig,
+    settings,  # SharedModeSettings; typed via runtime import to avoid cycle
+) -> None:
+    """Mount the shared-mode Ambassador (ADR-021 PR4c).
+
+    Activated when ``AMBASSADOR_MODE=shared``. Composes the cookie
+    secret bootstrap, the per-user credential cache, and the
+    ``HttpxMastioCsrTransport`` that ships CSRs to Mastio's
+    ``/v1/principals/csr`` endpoint (PR4a) on behalf of newly
+    SSO-authenticated users.
+
+    The Ambassador's own client identity for the Mastio CSR call is
+    the Connector's enrolled cert+key (loaded from
+    ``<config_dir>/identity/``). Mastio enforces RBAC same-org so
+    any agent enrolled in the deployment org can call the CSR
+    endpoint for principals in that same org.
+    """
+    import logging
+    log = logging.getLogger("cullis_connector.web")
+
+    if not has_identity(config.config_dir):
+        log.warning(
+            "shared Ambassador install deferred: no identity at %s yet "
+            "(complete enrollment first)", config.config_dir,
+        )
+        return
+
+    try:
+        import httpx
+        from cullis_connector.ambassador.shared.credentials import (
+            UserCredentialCache,
+        )
+        from cullis_connector.ambassador.shared.provisioning import (
+            HttpxMastioCsrTransport, UserProvisioner,
+        )
+        from cullis_connector.ambassador.shared.proxy_trust import (
+            TrustedProxiesAllowlist,
+        )
+        from cullis_connector.ambassador.shared.router import (
+            install_shared_ambassador,
+        )
+        from cullis_connector.ambassador.shared.wire import (
+            bootstrap_cookie_secret,
+        )
+        from cullis_connector.identity.store import (
+            CERT_FILENAME, KEY_FILENAME, _identity_dir,
+        )
+    except ImportError:
+        log.exception(
+            "shared Ambassador module import failed; skipping mount",
+        )
+        return
+
+    identity_dir = _identity_dir(config.config_dir)
+    cert_path = identity_dir / CERT_FILENAME
+    key_path = identity_dir / KEY_FILENAME
+    if not cert_path.exists() or not key_path.exists():
+        log.warning(
+            "shared Ambassador install skipped: identity files missing at %s",
+            identity_dir,
+        )
+        return
+
+    mastio_url = settings.mastio_url or config.site_url
+    if not mastio_url:
+        log.warning(
+            "shared Ambassador install skipped: neither "
+            "CULLIS_FRONTDESK_MASTIO_URL nor site_url is set",
+        )
+        return
+
+    cookie_secret = bootstrap_cookie_secret(config.config_dir)
+    trusted = TrustedProxiesAllowlist.from_cidrs(settings.trusted_proxies_cidrs)
+
+    # httpx client carrying the Ambassador's own mTLS cert. The Mastio
+    # endpoint also wants DPoP — for v0.1 we lean on Mastio's existing
+    # auth path: when the request arrives with an mTLS-bound client
+    # cert + the SDK access token, Mastio accepts it. The Ambassador
+    # caches its own access token via the SDK in v0.2; for now each
+    # CSR call rebuilds the SDK client (same trade-off as the per-user
+    # CullisClient in shared/router.py).
+    http = httpx.AsyncClient(
+        cert=(str(cert_path), str(key_path)),
+        verify=config.verify_arg,
+        timeout=httpx.Timeout(15.0),
+    )
+    app.state.shared_ambassador_http = http  # keep alive for app lifetime
+    transport = HttpxMastioCsrTransport(http=http, base_url=mastio_url)
+
+    cache = UserCredentialCache()
+    provisioner = UserProvisioner(mastio=transport, cache=cache)
+
+    install_shared_ambassador(
+        app,
+        cookie_secret=cookie_secret,
+        trusted_proxies=trusted,
+        org_id=settings.org_id,
+        trust_domain=settings.trust_domain,
+        provisioner=provisioner,
+        cookie_ttl_seconds=settings.cookie_ttl_seconds,
+        site_url=mastio_url,
+    )
+    log.info(
+        "shared Ambassador mounted: org=%s td=%s mastio=%s ttl=%ds",
+        settings.org_id, settings.trust_domain,
+        mastio_url, settings.cookie_ttl_seconds,
     )
 
 
