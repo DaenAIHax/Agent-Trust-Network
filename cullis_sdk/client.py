@@ -486,6 +486,8 @@ class CullisClient:
         instance.token = None
         instance._label = config["agent_id"]
         instance._signing_key_pem = None
+        # H7 audit — see from_identity_dir for the rationale.
+        instance._ca_chain_path = Path(ca_chain_path) if ca_chain_path else None
         instance._pubkey_cache = {}
         instance._client_seq = {}
         instance._dpop_privkey = None
@@ -665,6 +667,10 @@ class CullisClient:
         instance.token = None
         instance._label = agent_id or "(client-cert-auth)"
         instance._signing_key_pem = None
+        # H7 audit — share the operator-pinned Org CA with the sender-cert
+        # verifier. Without this attribute ``decrypt_oneshot`` crashes with
+        # AttributeError under the cls.__new__(cls) factory route.
+        instance._ca_chain_path = Path(ca_chain_path) if ca_chain_path else None
         instance._pubkey_cache = {}
         instance._client_seq = {}
         instance._dpop_privkey = None
@@ -939,6 +945,8 @@ class CullisClient:
         instance.token = None
         instance._label = agent_id
         instance._signing_key_pem = None
+        # H7 audit — see from_identity_dir for the rationale.
+        instance._ca_chain_path = None
         instance._pubkey_cache = {}
         instance._client_seq = {}
         instance._dpop_privkey = None
