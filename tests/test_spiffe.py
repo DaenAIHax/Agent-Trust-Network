@@ -8,10 +8,15 @@ from httpx import AsyncClient
 import jwt as jose_jwt
 
 from app.spiffe import (
+    PRINCIPAL_TYPES,
+    Principal,
     agent_id_to_spiffe,
-    spiffe_to_agent_id,
+    detect_principal_type,
     internal_id_to_spiffe,
+    principal_to_spiffe,
+    spiffe_to_agent_id,
     spiffe_to_internal_id,
+    spiffe_to_principal,
     validate_spiffe_id,
 )
 from tests.cert_factory import make_agent_cert, make_assertion, get_org_ca_pem
@@ -329,3 +334,118 @@ async def test_registry_espone_agent_uri(client: AsyncClient, dpop):
     assert "agent_uri" in agent
     assert agent["agent_uri"].startswith("spiffe://")
     assert agent["agent_uri"] == f"spiffe://cullis.local/{org_id}/agent-1"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ADR-020 — principal-typed SPIFFE URIs (3-component path)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_adr020_principal_dataclass_helpers():
+    """Principal exposes is_user/is_agent/is_workload + agent_id."""
+    p_user = Principal("acme", "user", "mario")
+    assert p_user.is_user and not p_user.is_agent and not p_user.is_workload
+    assert p_user.agent_id == "acme::mario"
+
+    p_agent = Principal("acme", "agent", "mario-laptop")
+    assert p_agent.is_agent
+    assert p_agent.agent_id == "acme::mario-laptop"
+
+    p_wl = Principal("acme", "workload", "byoca-haiku")
+    assert p_wl.is_workload
+    assert p_wl.agent_id == "acme::byoca-haiku"
+
+
+def test_adr020_principal_to_spiffe_user():
+    uri = principal_to_spiffe(Principal("acme", "user", "mario"), "acme.test")
+    assert uri == "spiffe://acme.test/acme/user/mario"
+
+
+def test_adr020_principal_to_spiffe_agent():
+    uri = principal_to_spiffe(Principal("acme", "agent", "mario-laptop"), "acme.test")
+    assert uri == "spiffe://acme.test/acme/agent/mario-laptop"
+
+
+def test_adr020_principal_to_spiffe_workload():
+    uri = principal_to_spiffe(Principal("acme", "workload", "byoca-haiku"), "acme.test")
+    assert uri == "spiffe://acme.test/acme/workload/byoca-haiku"
+
+
+def test_adr020_spiffe_to_principal_round_trip():
+    """principal_to_spiffe / spiffe_to_principal must round-trip cleanly."""
+    for ptype in PRINCIPAL_TYPES:
+        original = Principal("acme", ptype, f"name-{ptype}")
+        uri = principal_to_spiffe(original, "trust.example.com")
+        parsed = spiffe_to_principal(uri)
+        assert parsed == original, (ptype, parsed)
+
+
+def test_adr020_spiffe_to_principal_legacy_2component_default_agent():
+    """Legacy path without principal segment is treated as principal_type=agent."""
+    p = spiffe_to_principal("spiffe://acme.test/acme/legacy-bot")
+    assert p == Principal("acme", "agent", "legacy-bot")
+    assert p.is_agent
+
+
+def test_adr020_spiffe_to_principal_rejects_unknown_principal_type():
+    with pytest.raises(ValueError, match="Unknown principal_type"):
+        spiffe_to_principal("spiffe://acme.test/acme/dragon/sneaky")
+
+
+def test_adr020_spiffe_to_principal_rejects_too_many_components():
+    """4+ path segments are not a valid SPIFFE layout in either flavor."""
+    with pytest.raises(ValueError, match="2 .legacy. or 3 .ADR-020. components"):
+        spiffe_to_principal("spiffe://acme.test/acme/agent/foo/extra")
+
+
+def test_adr020_spiffe_to_principal_rejects_empty_path():
+    with pytest.raises(ValueError):
+        spiffe_to_principal("spiffe://acme.test/")
+
+
+def test_adr020_principal_to_spiffe_rejects_unknown_type():
+    """Constructing the URI with a bogus type bombs at emit time too."""
+    bogus = Principal("acme", "dragon", "x")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="Unknown principal_type"):
+        principal_to_spiffe(bogus, "acme.test")
+
+
+def test_adr020_detect_principal_type_new_style():
+    assert detect_principal_type("spiffe://acme.test/acme/user/mario") == "user"
+    assert detect_principal_type("spiffe://acme.test/acme/agent/bot") == "agent"
+    assert detect_principal_type("spiffe://acme.test/acme/workload/svc") == "workload"
+
+
+def test_adr020_detect_principal_type_legacy_defaults_to_agent():
+    assert detect_principal_type("spiffe://acme.test/acme/legacy-bot") == "agent"
+
+
+def test_adr020_legacy_helpers_unchanged_for_2component():
+    """Existing agent_id_to_spiffe / spiffe_to_agent_id must keep their
+    pre-ADR-020 contract: 2-component layout, no principal segment."""
+    uri = agent_id_to_spiffe("manufacturer", "sales-agent", "cullis.local")
+    assert uri == "spiffe://cullis.local/manufacturer/sales-agent"
+    org, name = spiffe_to_agent_id(uri)
+    assert (org, name) == ("manufacturer", "sales-agent")
+
+
+def test_adr020_legacy_spiffe_to_agent_id_still_rejects_3component():
+    """The legacy parser stays strict: principal-typed URIs must use the
+    new helper. We do NOT silently extend spiffe_to_agent_id, otherwise
+    a caller that expected 2 components could now get a wrong tuple."""
+    with pytest.raises(ValueError):
+        spiffe_to_agent_id("spiffe://cullis.local/acme/user/mario")
+
+
+def test_adr020_user_and_agent_can_coexist_for_same_human():
+    """A single human (Mario) may be both user/mario and agent/mario-laptop:
+    distinct principals, distinct SPIFFE IDs, same logical owner."""
+    user = Principal("acme", "user", "mario")
+    laptop = Principal("acme", "agent", "mario-laptop")
+    assert user != laptop
+    user_uri = principal_to_spiffe(user, "acme.test")
+    laptop_uri = principal_to_spiffe(laptop, "acme.test")
+    assert user_uri != laptop_uri
+    # Both round-trip independently.
+    assert spiffe_to_principal(user_uri) == user
+    assert spiffe_to_principal(laptop_uri) == laptop
