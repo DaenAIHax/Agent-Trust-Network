@@ -266,7 +266,7 @@ async def mark_revoked(
     must remain queryable for audit replay.
     """
     now = datetime.now(timezone.utc)
-    cur = await session.execute(
+    await session.execute(
         update(UserPrincipalRecord)
         .where(
             UserPrincipalRecord.principal_id == principal_id,
@@ -274,10 +274,10 @@ async def mark_revoked(
         )
         .values(revoked_at=now),
     )
-    # rowcount 0 either means the principal does not exist OR it was
-    # already revoked. Distinguish via a follow-up read.
-    view = await get_by_principal_id(session, principal_id)
-    return view
+    # The UPDATE is a no-op on missing or already-revoked principals.
+    # A follow-up read disambiguates: missing → None, revoked → view
+    # whose revoked_at preserves the original timestamp.
+    return await get_by_principal_id(session, principal_id)
 
 
 async def update_last_active(
