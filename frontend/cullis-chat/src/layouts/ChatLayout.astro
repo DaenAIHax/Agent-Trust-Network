@@ -26,20 +26,6 @@ const {
   title = 'Cullis Chat',
   description = 'Identity-aware chat for Cullis Frontdesk. Every message is signed, audited, and traceable.',
 } = Astro.props;
-
-// Stub CSP — replaced by middleware nonce in commit 3.
-const CSP_STUB = [
-  "default-src 'self'",
-  "script-src 'self'",
-  "style-src 'self' https://fonts.googleapis.com https://api.fontshare.com 'unsafe-inline'",
-  "font-src 'self' https://fonts.gstatic.com https://api.fontshare.com https://cdn.fontshare.com",
-  "img-src 'self' data:",
-  "connect-src 'self'",
-  "object-src 'none'",
-  "base-uri 'self'",
-  "frame-ancestors 'none'",
-  "form-action 'self'",
-].join('; ');
 ---
 
 <!doctype html>
@@ -50,7 +36,6 @@ const CSP_STUB = [
     <meta name="generator" content={Astro.generator} />
     <meta name="theme-color" content="#050508" />
     <meta name="description" content={description} />
-    <meta http-equiv="Content-Security-Policy" content={CSP_STUB} />
     <meta name="referrer" content="same-origin" />
     <title>{title}</title>
     <link rel="icon" type="image/svg+xml" href="/cullis-mark.svg" />
