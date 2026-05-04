@@ -1,11 +1,11 @@
 import { useEffect, useReducer, useState } from 'react';
 import { MessageList } from './MessageList';
 import { MessageInput } from './MessageInput';
-import { ApiError, chatCompletion, initSession } from '../lib/api';
+import { ApiError, chatCompletionStream, initSession } from '../lib/api';
 import type { ChatMessage } from '../lib/types';
 import '../styles/chat-window.css';
 
-/** State machine. v0.1 single thread, no streaming. */
+/** State machine. v0.1 single thread + SSE streaming. */
 interface ChatState {
   messages: ChatMessage[];
   status: 'idle' | 'sending';
@@ -102,22 +102,60 @@ export default function ChatWindow() {
     dispatch({ type: 'append', message: placeholder });
     dispatch({ type: 'sending' });
 
+    const accumulator = { content: '' };
+    let lastFlush = 0;
+    const FLUSH_MS = 60;
+
+    function flush(force = false) {
+      const now = Date.now();
+      if (!force && now - lastFlush < FLUSH_MS) return;
+      lastFlush = now;
+      dispatch({ type: 'patch', id: placeholder.id, patch: { content: accumulator.content } });
+    }
+
     try {
       const history = [...state.messages, userMsg].map((m) => ({ role: m.role, content: m.content }));
-      const res = await chatCompletion({
+      const events = chatCompletionStream({
         model: DEFAULT_MODEL,
         messages: history,
       });
-      const final = res.choices?.[0]?.message?.content ?? '';
+
+      let traceId: string | undefined;
+      for await (const ev of events) {
+        if (ev.kind === 'chunk') {
+          const delta = ev.chunk.choices?.[0]?.delta?.content ?? '';
+          if (delta) {
+            accumulator.content += delta;
+            flush();
+          }
+          if (!traceId) traceId = ev.chunk.id;
+          if (ev.chunk.cullis_audit) {
+            dispatch({
+              type: 'patch',
+              id: placeholder.id,
+              patch: {
+                trace_id: ev.chunk.cullis_audit.trace_id,
+                audit: ev.chunk.cullis_audit,
+              },
+            });
+          }
+        } else if (ev.kind === 'audit') {
+          dispatch({
+            type: 'patch',
+            id: placeholder.id,
+            patch: { trace_id: ev.audit.trace_id, audit: ev.audit },
+          });
+        } else if (ev.kind === 'done') {
+          break;
+        }
+        // tool_start / tool_end will be wired into the audit panel in commit 7.
+      }
+
+      flush(true);
       dispatch({
         type: 'patch',
         id: placeholder.id,
-        patch: {
-          content: final,
-          pending: false,
-          trace_id: res.cullis_audit?.trace_id ?? res.id,
-          audit: res.cullis_audit,
-        },
+        patch: { pending: false, trace_id: traceId },
       });
       dispatch({ type: 'idle' });
     } catch (err) {
@@ -155,7 +193,7 @@ export default function ChatWindow() {
       />
 
       <p className="chat-foot">
-        Bearer · cookie HttpOnly · CSP nonce-locked · markdown sanitized in commit 6
+        Bearer · cookie HttpOnly · CSP nonce-locked · markdown sanitised via DOMPurify
       </p>
     </div>
   );

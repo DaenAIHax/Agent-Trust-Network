@@ -4,6 +4,7 @@
  * :7777 directly; that boundary lives in the cookie + middleware.
  */
 
+import { parseSSE, type SSEEvent } from './sse';
 import type {
   ChatCompletionRequest,
   ChatCompletionResponse,
@@ -64,7 +65,7 @@ export async function listModels(): Promise<Model[]> {
   return res.data;
 }
 
-/** POST /v1/chat/completions (non-streaming). Streaming arrives in commit 6. */
+/** POST /v1/chat/completions (non-streaming). Used as a fallback. */
 export async function chatCompletion(
   request: ChatCompletionRequest,
 ): Promise<ChatCompletionResponse> {
@@ -74,4 +75,37 @@ export async function chatCompletion(
   });
 }
 
+/**
+ * POST /v1/chat/completions with `stream: true`. Yields SSE events
+ * (chunk, tool_start, tool_end, audit, done) until the stream closes
+ * or `signal` aborts.
+ */
+export async function* chatCompletionStream(
+  request: ChatCompletionRequest,
+  signal?: AbortSignal,
+): AsyncGenerator<SSEEvent> {
+  const res = await fetch(`${PROXY_ROOT}/v1/chat/completions`, {
+    method: 'POST',
+    credentials: 'same-origin',
+    signal,
+    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+    body: JSON.stringify({ ...request, stream: true }),
+  });
+  if (!res.ok || !res.body) {
+    let payload: unknown = null;
+    try {
+      payload = await res.json();
+    } catch {
+      try {
+        payload = await res.text();
+      } catch {
+        /* ignore */
+      }
+    }
+    throw new ApiError(res.status, payload);
+  }
+  yield* parseSSE(res.body, signal);
+}
+
 export { ApiError };
+export type { SSEEvent };

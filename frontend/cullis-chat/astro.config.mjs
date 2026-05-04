@@ -27,5 +27,11 @@ export default defineConfig({
         },
       },
     },
+    build: {
+      // Shiki ships one chunk per language grammar. Each is lazy-loaded
+      // at runtime, only when a code block of that language appears, so
+      // the warning is a build-output cosmetic, not a transfer-size hit.
+      chunkSizeWarningLimit: 1500,
+    },
   },
 });

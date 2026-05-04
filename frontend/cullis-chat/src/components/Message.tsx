@@ -1,3 +1,4 @@
+import { MarkdownView } from './MarkdownView';
 import type { ChatMessage } from '../lib/types';
 
 interface Props {
@@ -7,8 +8,8 @@ interface Props {
 /**
  * One chat turn — user or assistant.
  *
- * v0.1: plain text, `white-space: pre-wrap`. Markdown sanitised
- * rendering arrives in commit 6 (DOMPurify + marked + Shiki).
+ * Assistant content is rendered through `MarkdownView` (DOMPurify +
+ * marked + lazy Shiki). User content is plain text — escaped by React.
  */
 export function Message({ message }: Props) {
   const isUser = message.role === 'user';
@@ -26,7 +27,19 @@ export function Message({ message }: Props) {
           {message.trace_id ? <> · {message.trace_id}</> : null}
         </span>
       </header>
-      <div className={`msg-body ${message.pending ? 'msg-pending' : ''}`}>{message.content}</div>
+      {isUser ? (
+        <div className="msg-body msg-body-user">{message.content}</div>
+      ) : (
+        <div className={`msg-body msg-body-assistant${message.pending ? ' msg-pending' : ''}`}>
+          {message.content.length > 0 ? (
+            <MarkdownView text={message.content} pending={message.pending} />
+          ) : (
+            <span className="msg-empty-pending" aria-label="awaiting first chunk">
+              <em>thinking</em>
+            </span>
+          )}
+        </div>
+      )}
     </article>
   );
 }
