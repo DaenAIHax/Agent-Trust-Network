@@ -48,14 +48,41 @@ body {
 
 .app-body {
   display: grid;
-  grid-template-columns: var(--sidebar-w) minmax(0, 1fr) var(--audit-w);
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
   min-height: 0;
 }
 
-/* Each pane scrolls independently */
-.app-body > * {
+/* Each top-level pane scrolls independently. The chat-app is a
+ * sub-grid, its children scroll on their own. */
+.app-body > .sidebar-left {
   min-height: 0;
   overflow-y: auto;
+}
+
+/* Sub-grid managed by ChatApp: chat surface + audit pane. */
+.chat-app {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--audit-w);
+  min-height: 0;
+  height: 100%;
+  transition: grid-template-columns var(--t-slow) var(--ease-soft);
+}
+
+.chat-app > .chat-main,
+.chat-app > .audit-pane {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* Collapsed state — audit pane folds away, chat takes the full width.
+ * Animated via grid-template-columns transition. */
+.chat-app[data-audit-collapsed='true'] {
+  grid-template-columns: minmax(0, 1fr) 0;
+}
+
+.chat-app[data-audit-collapsed='true'] > .audit-pane {
+  visibility: hidden;
+  pointer-events: none;
 }
 
 /* Subtle grid background CONFINED to the main pane (sidebar + audit
@@ -142,13 +169,15 @@ body {
 /* Responsive — under 900px we'd collapse panes, but v0.1 only
  * supports desktop. We just narrow the audit pane, hide sidebar. */
 @media (max-width: 1100px) {
-  .app-body { grid-template-columns: 200px minmax(0, 1fr) 280px; }
+  .app-body { grid-template-columns: 200px minmax(0, 1fr); }
+  .chat-app { grid-template-columns: minmax(0, 1fr) 280px; }
 }
 
 @media (max-width: 900px) {
   .app-body { grid-template-columns: minmax(0, 1fr); }
-  .sidebar-left,
-  .audit-pane { display: none; }
+  .chat-app { grid-template-columns: minmax(0, 1fr); }
+  .sidebar-left { display: none; }
+  .chat-app > .audit-pane { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {

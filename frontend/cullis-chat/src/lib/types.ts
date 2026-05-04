@@ -16,6 +16,12 @@ export interface Principal {
 
 export type ChatRole = 'user' | 'assistant' | 'system' | 'tool';
 
+export interface ToolCallEvent {
+  name: string;
+  status: 'pending' | 'done';
+  latency_ms?: number;
+}
+
 export interface ChatMessage {
   id: string;
   role: ChatRole;
@@ -26,6 +32,8 @@ export interface ChatMessage {
   createdAt: number;
   /** Streaming: server still appending content. */
   pending?: boolean;
+  /** Tool calls observed during this turn, in arrival order. */
+  toolCalls?: ToolCallEvent[];
 }
 
 export interface ToolCall {

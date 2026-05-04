@@ -38,8 +38,27 @@
         <em>user</em><span class="identity-sep">·</span>local
       </span>
     </span>
+    <button
+      type="button"
+      class="audit-toggle"
+      aria-label="Toggle audit panel"
+      data-action="toggle-audit"
+    >
+      <span class="folio">audit</span>
+      <span class="audit-toggle-icon" aria-hidden="true">▦</span>
+    </button>
   </div>
 </header>
+
+<script nonce={Astro.locals.cspNonce}>
+  document.addEventListener('click', function (e) {
+    var t = e.target;
+    if (!t) return;
+    var btn = t.closest && t.closest('[data-action="toggle-audit"]');
+    if (!btn) return;
+    document.dispatchEvent(new CustomEvent('cullis:toggle-audit'));
+  });
+</script>
 
 <style>
   .topbar {
@@ -186,6 +205,31 @@
 
   .identity-sep {
     color: var(--text-tertiary);
+  }
+
+  /* Audit toggle — slim icon button matching `.comp-download` family */
+  .audit-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.35rem 0.65rem;
+    background: transparent;
+    border: 1px solid var(--border-medium);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all var(--t-base) ease;
+    font-family: var(--font-mono);
+  }
+
+  .audit-toggle:hover {
+    border-color: var(--accent-cyan);
+    color: var(--accent-cyan);
+  }
+
+  .audit-toggle-icon {
+    color: var(--accent-cyan);
+    font-size: 1rem;
+    line-height: 1;
   }
 
   @media (max-width: 1100px) {

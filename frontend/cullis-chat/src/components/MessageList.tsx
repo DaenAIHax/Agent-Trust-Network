@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { Message } from './Message';
+import { useChat } from '../lib/chat-context';
 import type { ChatMessage } from '../lib/types';
 
 interface Props {
@@ -16,9 +17,10 @@ const HINTS = [
 
 export function MessageList({ messages, onHintClick, isEmpty }: Props) {
   const scrollerRef = useRef<HTMLDivElement | null>(null);
+  const { selectedMessageId, selectMessage } = useChat();
 
   // Stick to bottom when new content arrives, unless the user has
-  // scrolled away (within 80px of the bottom counts as "at bottom").
+  // scrolled away (within 200px of the bottom counts as "at bottom").
   useEffect(() => {
     const el = scrollerRef.current;
     if (!el) return;
@@ -27,6 +29,15 @@ export function MessageList({ messages, onHintClick, isEmpty }: Props) {
       el.scrollTop = el.scrollHeight;
     }
   }, [messages]);
+
+  // Audit row click → scroll-to in chat.
+  useEffect(() => {
+    if (!selectedMessageId) return;
+    const el = scrollerRef.current?.querySelector(
+      `[data-message-id="${selectedMessageId}"]`,
+    );
+    el?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }, [selectedMessageId]);
 
   return (
     <div className="chat-stream" ref={scrollerRef} aria-live="polite">
@@ -56,7 +67,14 @@ export function MessageList({ messages, onHintClick, isEmpty }: Props) {
             </div>
           </section>
         ) : (
-          messages.map((m) => <Message key={m.id} message={m} />)
+          messages.map((m) => (
+            <Message
+              key={m.id}
+              message={m}
+              selected={m.id === selectedMessageId}
+              onClick={() => selectMessage(m.id === selectedMessageId ? null : m.id)}
+            />
+          ))
         )}
       </div>
     </div>
