@@ -31,7 +31,6 @@ from app.auth.jwt import get_current_agent
 from app.auth.models import TokenPayload
 from app.db.database import get_db
 from app.inbox.store import (
-    DeliveryState,
     ReachDeniedError,
     enqueue,
     fetch_for_recipient,
