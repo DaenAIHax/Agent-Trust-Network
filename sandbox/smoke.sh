@@ -156,6 +156,7 @@ browser_flow() {
     [[ -n "$fa" ]] || { rm -f "$cj"; return 1; }
     cu=$(curl -s -o /dev/null -w "%{redirect_url}" --resolve "$kc:$kc_port:127.0.0.1" -c "$cj" -b "$cj" \
         -d "username=$user&password=$pass&credentialId=" "$fa")
+    [[ -n "$cu" ]] || { rm -f "$cj"; return 1; }
     rc=$(curl -s -o /dev/null -w "%{http_code}" -c "$cj" -b "$cj" "$cu")
     rm -f "$cj"
     [[ "$rc" == "303" || "$rc" == "302" || "$rc" == "200" ]]
@@ -286,13 +287,13 @@ for c in agent-a byoca-a agent-b; do
     docker compose exec -dT "$c" python -c "
 import json, os, pathlib, sys
 sys.path.insert(0, '/app')
-from agent import _send_to_peers, _auth_api_key_file
+from agent import _send_to_peers, _auth_identity_dir
 broker = os.environ['BROKER_URL'].rstrip('/')
 org_id = os.environ['ORG_ID']
 name = os.environ['AGENT_NAME']
 self_id = f'{org_id}::{name}'
 identity_dir = os.environ.get('IDENTITY_DIR', f'/state/{org_id}/agents/{name}')
-client = _auth_api_key_file(broker, identity_dir, self_id)
+client = _auth_identity_dir(broker, identity_dir, self_id)
 peers = json.loads(pathlib.Path(os.environ.get('PEERS_FILE', '/state/peers.json')).read_text()).get(self_id, [])
 _send_to_peers(client, self_id, peers)
 " 2>/dev/null || true
@@ -437,9 +438,9 @@ if docker compose exec -T proxy-a python -c "$_TIGHTEN_REACH" >/dev/null 2>&1; t
     _B410_PROBE='
 import os, sys
 sys.path.insert(0, "/app")
-from agent import _auth_api_key_file
+from agent import _auth_identity_dir
 broker = os.environ["BROKER_URL"].rstrip("/")
-client = _auth_api_key_file(broker, "/state/orga/agents/agent-a", "orga::agent-a")
+client = _auth_identity_dir(broker, "/state/orga/agents/agent-a", "orga::agent-a")
 try:
     client.send_oneshot("orgb::agent-b", {"nonce": "reach-smoke-probe"})
     print("UNEXPECTED_OK")
