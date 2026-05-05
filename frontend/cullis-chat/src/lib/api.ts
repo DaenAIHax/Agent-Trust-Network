@@ -59,15 +59,13 @@ export async function initSession(): Promise<{ ok: boolean; ttl: number }> {
   return jsonFetch('/api/session/init', { method: 'POST', body: '{}' });
 }
 
-/** GET /api/session/whoami — fetches the resolved principal. */
-export async function whoami(): Promise<{ ok: true; principal: Principal } | Principal> {
-  // The server returns either {ok, principal} (fallback) or the principal
-  // shape directly (forwarded from Ambassador /v1/whoami). Normalise.
-  const raw = await jsonFetch<unknown>('/api/session/whoami');
-  if (raw && typeof raw === 'object' && 'principal' in (raw as Record<string, unknown>)) {
-    return raw as { ok: true; principal: Principal };
-  }
-  return raw as Principal;
+/** GET /api/session/whoami — fetches the resolved principal.
+ *
+ * After Phase 8b-2a both single and shared mode return the same
+ * ADR-020 wrapped shape, so this is now a pure passthrough.
+ */
+export async function whoami(): Promise<{ ok: boolean; principal: Principal }> {
+  return jsonFetch<{ ok: boolean; principal: Principal }>('/api/session/whoami');
 }
 
 /** GET /v1/models — direct to Ambassador via session cookie auth. */

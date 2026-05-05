@@ -135,6 +135,11 @@ def test_two_users_get_distinct_cookies(frontdesk_app):
 
 
 def test_whoami_returns_per_user_principal(frontdesk_app):
+    """Whoami response carries both the legacy top-level fields (for
+    back-compat) and the ADR-020 wrapped ``principal`` subobject so
+    that single mode and shared mode now share one wire shape (Phase
+    8b-2a). The SPA's IdentityBadge can read the same fields whether
+    it's running on a laptop installer or behind SSO in Frontdesk."""
     app, _ = frontdesk_app
     with TestClient(app, base_url="https://testserver") as cli:
         cli.post(
@@ -144,9 +149,20 @@ def test_whoami_returns_per_user_principal(frontdesk_app):
         r = cli.get("/api/session/whoami")
         assert r.status_code == 200
         body = r.json()
+        # Top-level (back-compat).
         assert body["principal_id"] == "acme.test/acme/user/mario"
         assert body["sub"] == "mario@acme.it"
         assert body["org"] == "acme"
+        # ADR-020 wrapped shape (additive).
+        assert body["ok"] is True
+        p = body["principal"]
+        assert p["spiffe_id"] == "spiffe://acme.test/acme/user/mario"
+        assert p["principal_type"] == "user"
+        assert p["name"] == "mario"
+        assert p["org"] == "acme"
+        assert p["trust_domain"] == "acme.test"
+        assert p["sub"] == "mario@acme.it"
+        assert p["source"] == "shared"
 
 
 def test_logout_clears_then_unauthorised(frontdesk_app):
