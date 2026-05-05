@@ -214,8 +214,39 @@ async def session_logout(
 async def session_whoami(
     payload: SessionPayload = Depends(_require_session),
 ) -> dict:
-    """Tiny helper used by the SPA's IdentityBadge."""
+    """Resolve the authenticated principal in ADR-020 wrapped shape.
+
+    Matches single mode (cullis_connector/ambassador/session_routes.py)
+    after Phase 8b-2a — both modes now return ``{ok, principal: <ADR-020
+    shape>, principal_id, sub, org, exp}`` so the SPA's IdentityBadge
+    consumes one wire shape regardless of where the Ambassador runs.
+
+    Top-level ``principal_id``, ``sub``, ``org``, ``exp`` are preserved
+    for back-compat with callers (incl. Frontdesk smoke tests) that read
+    them directly. The ``principal`` subobject is the additive piece.
+    """
+    parts = payload.principal_id.split("/")
+    if len(parts) == 4:
+        trust_domain, org, principal_type, name = parts
+    else:
+        # Malformed principal_id: surface what we have. Should not
+        # happen in practice (init validates the shape) but is a
+        # defensive fallback so the badge still renders.
+        trust_domain = ""
+        org = payload.org
+        principal_type = "user"
+        name = payload.sub
     return {
+        "ok": True,
+        "principal": {
+            "spiffe_id": f"spiffe://{payload.principal_id}",
+            "principal_type": principal_type,
+            "name": name,
+            "org": org,
+            "trust_domain": trust_domain,
+            "sub": payload.sub,
+            "source": "shared",
+        },
         "principal_id": payload.principal_id,
         "sub": payload.sub,
         "org": payload.org,
