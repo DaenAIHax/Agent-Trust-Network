@@ -34,7 +34,6 @@ from app.spiffe import (
     PrincipalType,
     internal_id_to_spiffe,
     parse_spiffe_san,
-    principal_to_spiffe,
     spiffe_to_principal,
 )
 from app.telemetry import tracer
