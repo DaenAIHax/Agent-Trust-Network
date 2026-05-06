@@ -29,9 +29,10 @@ in
 {
   tier1-roma = callTest ./tier1-roma.nix;
 
-  # Tier 2 (4 VMs cross-org Roma + San Francisco + Tokyo + Court) lands
-  # in a follow-up commit — the scaffold here intentionally ships the
-  # minimal viable demo first so the CI cost stays bounded while we
-  # validate the system around it.
-  # tier2-cross-org = callTest ./tier2-cross-org.nix;
+  # Four VMs (roma + sanfrancisco + tokyo + court). Validates the
+  # ``infrastructure cross-org`` invariants: per-VM Org CA isolation,
+  # virtual L2 reachability, and default-deny on cross-org client
+  # certs. The federation publisher + actual A2A oneshot plumbing
+  # is the next slice on top of this scaffold.
+  tier2-cross-org = callTest ./tier2-cross-org.nix;
 }
