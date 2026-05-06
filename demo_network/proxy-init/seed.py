@@ -170,13 +170,13 @@ async def _seed_mcp_echo_resource(db_url: str, org_id: str) -> None:
                 text(
                     """
                     INSERT INTO local_agent_resource_bindings (
-                        binding_id, agent_id, resource_id, org_id,
-                        granted_by, granted_at, revoked_at
+                        binding_id, agent_id, principal_type, resource_id,
+                        org_id, granted_by, granted_at, revoked_at
                     ) VALUES (
-                        :bid, :aid, :rid, :org,
-                        'proxy-init-seed', :now, NULL
+                        :bid, :aid, 'agent', :rid,
+                        :org, 'proxy-init-seed', :now, NULL
                     )
-                    ON CONFLICT (agent_id, resource_id) DO UPDATE SET
+                    ON CONFLICT (agent_id, principal_type, resource_id) DO UPDATE SET
                         revoked_at = NULL
                     """
                 ),
