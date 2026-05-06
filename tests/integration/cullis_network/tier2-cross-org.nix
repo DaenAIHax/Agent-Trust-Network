@@ -72,21 +72,29 @@ let
 
     cullis.mastio = {
       enable = true;
+      # Court is the federation hub — only it needs the broker
+      # bound on the world-facing interface so peers can reach
+      # ``/v1/federation/publish-agent``. Cities run a local
+      # broker just for their own agent auth, but the
+      # ``federation publisher`` task on each city points its
+      # publish loop at Court via ``brokerUrl``.
       enableBroker = true;
+      nginxAllowExternal = name == "court";
+      brokerUrl =
+        if name == "court"
+        then ""  # local loopback default — Court IS the broker
+        else "http://court:8000";  # peers publish to Court
       cullisSrc = cullisSrc;
       inherit (cfg) orgId trustDomain displayName;
     };
 
     # Each city resolves its own ``mastio.<td>`` to loopback so the
     # local SDK / test driver can curl over the TLS port without
-    # going through DNS. Cross-VM connectivity uses the test
-    # framework's vlan + IP; we don't need to teach the cities
-    # about each other's FQDNs at the DNS layer for this slice.
+    # going through DNS. ``court`` resolves on every city so
+    # ``brokerUrl=http://court:8000`` works without static IPs.
     networking.extraHosts = ''
       127.0.0.1 mastio.${cfg.trustDomain}
     '';
-
-    networking.firewall.allowedTCPPorts = [ 9443 ];
   };
 
 in
@@ -166,6 +174,22 @@ pkgs.testers.nixosTest {
             f"Roma → Tokyo TCP handshake failed (curl http_code={http_code!r})"
         )
         print(f"  Roma → Tokyo cross-VM HTTPS: {http_code}")
+
+    with subtest("Federation publisher: cities reach Court's broker"):
+        # Each city's proxy points its ``MCP_PROXY_BROKER_URL`` at
+        # ``http://court:8000``; the federation publisher tail
+        # POSTs ``/v1/federation/publish-agent`` on each tick.
+        # Probing from inside roma confirms the route is up — the
+        # actual publish payload graduates with the agent enroll
+        # path (next slice on this branch family).
+        for c in [roma, sanfrancisco, tokyo]:
+            health = c.succeed(
+                "curl -fs http://court:8000/health || echo OFFLINE"
+            ).strip()
+            assert "OFFLINE" not in health, (
+                f"{c.name} can't reach Court's broker (got: {health!r})"
+            )
+            print(f"  {c.name} → court:8000/health = {health}")
 
     # Cross-org cert chain refusal (default-deny) — the third
     # invariant the demo sells — needs a Roma-minted cert

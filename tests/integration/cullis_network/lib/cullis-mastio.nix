@@ -85,6 +85,32 @@
         real deployment threads this through a secret manager.
       '';
     };
+
+    brokerUrl = mkOption {
+      type = types.str;
+      default = "";
+      description = ''
+        Override the proxy's ``MCP_PROXY_BROKER_URL``. When empty
+        (default), the proxy points at the loopback broker
+        (``http://127.0.0.1:<brokerPort>``) — fine for the Tier 1
+        single-VM demo. For cross-org topologies (Tier 2) the
+        cities point at the Court VM via this knob so the
+        federation publisher pushes agents to the central
+        registry. The proxy uses the same URL for both local agent
+        auth and federation publish (current shape — a future
+        refactor may split them).
+      '';
+    };
+
+    nginxAllowExternal = mkOption {
+      type = types.bool;
+      default = false;
+      description = ''
+        Open the broker port on 0.0.0.0 instead of 127.0.0.1 and
+        add it to ``firewall.allowedTCPPorts``. The Tier 2 Court
+        VM flips this on so peers can publish to it.
+      '';
+    };
   };
 
   config = lib.mkIf config.cullis.mastio.enable (
@@ -191,7 +217,9 @@
       # testScript hits ``NameError``. The nginx vhost listens on
       # ``mastio.${trustDomain}`` regardless — that's the FQDN
       # callers actually hit.
-      networking.firewall.allowedTCPPorts = [ cfg.nginxPort ];
+      networking.firewall.allowedTCPPorts =
+        [ cfg.nginxPort ]
+        ++ lib.optional cfg.nginxAllowExternal cfg.brokerPort;
 
       # Make the Cullis-flavoured Python interpreter (with fastapi /
       # uvicorn / cryptography / cullis_sdk deps) available as
@@ -305,7 +333,8 @@
           WorkingDirectory = "${cullisSrcStore}";
           ExecStart =
             "${pyEnvBin} -m uvicorn app.main:app "
-            + "--host 127.0.0.1 --port ${toString cfg.brokerPort}";
+            + "--host ${if cfg.nginxAllowExternal then "0.0.0.0" else "127.0.0.1"} "
+            + "--port ${toString cfg.brokerPort}";
           Restart = "on-failure";
           RestartSec = "2s";
         };
@@ -328,7 +357,15 @@
           PROXY_TRUST_DOMAIN = cfg.trustDomain;
           MCP_PROXY_ADMIN_SECRET = cfg.adminSecret;
           MCP_PROXY_DATABASE_URL = "sqlite+aiosqlite:///${stateDir}/proxy.sqlite";
-          MCP_PROXY_BROKER_URL = "http://127.0.0.1:${toString cfg.brokerPort}";
+          MCP_PROXY_BROKER_URL =
+            if cfg.brokerUrl != ""
+            then cfg.brokerUrl
+            else "http://127.0.0.1:${toString cfg.brokerPort}";
+          # Federation publisher tail to the broker we just pointed
+          # at. ``PROXY_FEDERATION_SYNC=true`` flips the long-lived
+          # publisher task that pushes ``internal_agents`` rows to
+          # ``/v1/federation/publish-agent`` every tick.
+          PROXY_FEDERATION_SYNC = "true";
         };
         serviceConfig = {
           Type = "simple";
