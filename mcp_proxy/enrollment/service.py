@@ -383,15 +383,29 @@ async def approve(
         text("SELECT 1 FROM internal_agents WHERE agent_id = :aid"),
         {"aid": canonical_id},
     )
+    # SPIFFE URI ``sign_external_pubkey`` just embedded into the cert SAN
+    # — store it on the row so the Court's CSR auth dep
+    # (``app.registry.user_principals_router.sign_csr`` /
+    # ``app.auth.x509_verifier``) can match the assertion's cert SAN to
+    # ``agents.spiffe_id`` after federation propagation. Without this,
+    # device-code-enrolled Connectors hit ``SPIFFE ID in SAN does not
+    # match the registered agent`` on every cross-org call.
+    name_part = canonical_id.split("::", 1)[1]
+    spiffe_id = (
+        f"spiffe://{agent_manager.trust_domain}/"
+        f"{agent_manager.org_id}/{name_part}"
+    )
+
     if existing.first() is None:
         await conn.execute(
             text(
                 """INSERT INTO internal_agents
                    (agent_id, display_name, capabilities,
                     cert_pem, created_at, is_active, device_info, dpop_jkt,
-                    enrollment_method, enrolled_at)
+                    enrollment_method, enrolled_at, spiffe_id)
                    VALUES (:aid, :dn, :caps, :cert, :created, 1,
-                           :device, :dpop_jkt, 'connector', :created)"""
+                           :device, :dpop_jkt, 'connector', :created,
+                           :spiffe_id)"""
             ),
             {
                 "aid": canonical_id,
@@ -408,6 +422,7 @@ async def approve(
                 # egress dep's grace path accepts them until operators
                 # flip to required mode (Phase 6).
                 "dpop_jkt": record.get("dpop_jkt"),
+                "spiffe_id": spiffe_id,
             },
         )
         await conn.execute(

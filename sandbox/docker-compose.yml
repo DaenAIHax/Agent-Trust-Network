@@ -281,6 +281,13 @@ services:
       MCP_PROXY_ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
       MCP_PROXY_AI_GATEWAY_BACKEND: "litellm_embedded"
       MCP_PROXY_AI_GATEWAY_PROVIDER: "anthropic"
+      # Trust domain pinned to match bootstrap-mastio's BYOCA enrollments
+      # (``orga.test``) so device-code agents land on the same SPIFFE
+      # namespace ``spiffe://orga.test/orga/<name>`` the Court expects.
+      # Without this the proxy default (``cullis.local``) shows up in
+      # SAN URIs and the Court rejects the Connector with
+      # ``SPIFFE ID in SAN does not match the registered agent``.
+      PROXY_TRUST_DOMAIN: "orga.test"
       MCP_PROXY_DATABASE_URL:      "sqlite+aiosqlite:////data/mcp_proxy.db"
       MCP_PROXY_ORG_ID:            "orga"
       MCP_PROXY_ALLOWED_ORIGINS:   "http://localhost:9100"
