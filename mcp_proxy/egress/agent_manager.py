@@ -289,6 +289,10 @@ class AgentManager:
     def org_id(self) -> str:
         return self._org_id
 
+    @property
+    def trust_domain(self) -> str:
+        return self._trust_domain
+
     def derive_org_id_from_ca(self) -> str | None:
         """SHA-256(pubkey DER)[:16] of the currently loaded Org CA.
 
