@@ -8,8 +8,6 @@ needs a live Redis to test; that lands in Phase A.4 dogfood.
 """
 from __future__ import annotations
 
-import time
-
 import pytest
 
 from mcp_proxy.auth.rate_limit import InMemoryTokenSumLimiter
