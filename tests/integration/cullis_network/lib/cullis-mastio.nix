@@ -19,6 +19,20 @@
   options.cullis.mastio = with lib; {
     enable = mkEnableOption "Cullis Mastio (broker + proxy + nginx)";
 
+    enableBroker = mkOption {
+      type = types.bool;
+      default = false;
+      description = ''
+        Whether to start the FastAPI broker (``app/main.py``) in
+        addition to the proxy. Default off because the broker pulls
+        in ``a2a-sdk`` which is not packaged in nixpkgs yet — the
+        proxy alone is enough for ``/v1/principals/csr`` and the
+        federation-publisher path. Flip on once we ship the
+        derivation for ``a2a-sdk`` (tracked as a follow-up to the
+        Tier 1 scaffold).
+      '';
+    };
+
     cullisSrc = mkOption {
       type = types.path;
       description = "Path to the cullis monorepo source tree.";
@@ -77,6 +91,33 @@
   config = lib.mkIf config.cullis.mastio.enable (
     let
       cfg = config.cullis.mastio;
+      # ``cfg.cullisSrc`` is the host path the caller passed in
+      # (something like ``/home/dev/projects/agent-trust``). The
+      # systemd units run inside the test VM where that path does
+      # not exist. We copy the tree into the Nix store so the path
+      # resolves on both sides; the filter strips directories that
+      # are dev-only (``.venv``, ``__pycache__``), git/CI noise
+      # (``.git``, ``.github``), and runtime state from sibling
+      # tooling that may have rooted-down permissions on the dev
+      # box (``connector_data``, ``state``) — all of which would
+      # bloat the store closure or break the import outright.
+      cullisSrcStore = lib.cleanSourceWith {
+        name = "cullis-src";
+        src = cfg.cullisSrc;
+        filter = path: type:
+          let baseName = baseNameOf (toString path); in
+          !(builtins.elem baseName [
+            ".git"
+            ".github"
+            ".venv"
+            "__pycache__"
+            "node_modules"
+            "connector_data"
+            "state"
+            "dist"
+            "result"
+          ]);
+      };
       # Build the Python environment offline so the VM boots without
       # outbound network: every wheel comes from the Nix store. The
       # actual ``cullis_sdk`` + ``cullis_connector`` source lives in
@@ -86,6 +127,7 @@
         fastapi
         uvicorn
         starlette
+        sse-starlette
         sqlalchemy
         aiosqlite
         asyncpg
@@ -100,13 +142,32 @@
         redis
         alembic
         websockets
+        # Proxy ``mcp_proxy/requirements-proxy.txt`` extras the broker
+        # also pulls in. ``a2a-sdk`` is the only requirement missing
+        # from nixpkgs and lives only in ``app/a2a/agent_card.py`` —
+        # it's why ``cullis-broker`` is gated behind ``enableBroker``
+        # at module-eval time.
+        pyyaml
+        authlib
+        python-dotenv
+        litellm
+        anthropic
+        openai
+        joserfc
       ]);
       stateDir = "/var/lib/cullis";
       certsDir = "${stateDir}/certs";
       pyEnvBin = "${pythonEnv}/bin/python";
     in
     {
-      networking.hostName = "mastio-${cfg.orgId}";
+      # Don't override ``networking.hostName`` here — the test
+      # framework derives the Python symbol exposed in the testScript
+      # from the node attribute name (``roma``), and forcing
+      # ``hostName`` to anything else (``mastio-roma`` etc.) leaks
+      # into the exposed symbol and ``roma.succeed(...)`` in the
+      # testScript hits ``NameError``. The nginx vhost listens on
+      # ``mastio.${trustDomain}`` regardless — that's the FQDN
+      # callers actually hit.
       networking.firewall.allowedTCPPorts = [ cfg.nginxPort ];
 
       # Make the Cullis-flavoured Python interpreter (with fastapi /
@@ -121,6 +182,13 @@
         pkgs.sqlite
       ];
 
+      # Expose the Cullis source tree on ``PYTHONPATH`` for any
+      # interactive ``python3`` the testScript launches (the
+      # systemd units already get this via their ``environment``
+      # block, but ``machine.succeed("python3 -c ...")`` runs in a
+      # fresh login shell that doesn't inherit those).
+      environment.sessionVariables.PYTHONPATH = toString cullisSrcStore;
+
       users.users.cullis = {
         isSystemUser = true;
         group = "cullis";
@@ -131,8 +199,18 @@
 
       systemd.tmpfiles.rules = [
         "d ${stateDir} 0750 cullis cullis -"
+        # nginx runs as its own user but needs to read ``server.pem``
+        # + ``server.key``, so the cert dir is group-readable. Add
+        # the nginx system user to the ``cullis`` group below to
+        # complete the wiring.
         "d ${certsDir} 0750 cullis cullis -"
       ];
+
+      # Let nginx read the on-disk PKI under ``${certsDir}``. Mode
+      # ``0640`` on the keys + this group membership keeps the
+      # surface tight (no world-readable private key) while the
+      # ``nginx -t`` syntax check still succeeds.
+      users.users.nginx.extraGroups = [ "cullis" ];
 
       # Generate per-host PKI on first boot. Each Mastio gets its own
       # Org CA — Roma's CA bytes never appear on San Francisco's
@@ -169,17 +247,21 @@
             -CA ${certsDir}/org-ca.pem -CAkey ${certsDir}/org-ca.key \
             -CAcreateserial -out ${certsDir}/server.pem -days 825 \
             -extfile <(printf "subjectAltName=DNS:mastio.${cfg.trustDomain},DNS:localhost,IP:127.0.0.1")
-          chmod 600 ${certsDir}/*.key
+          # Keys group-readable (cullis group includes nginx — see
+          # ``users.users.nginx.extraGroups`` below). Certs stay
+          # world-readable, they're public material.
+          chmod 640 ${certsDir}/*.key
+          chmod 644 ${certsDir}/*.pem
         '';
       };
 
-      systemd.services.cullis-broker = {
+      systemd.services.cullis-broker = lib.mkIf cfg.enableBroker {
         description = "Cullis Mastio broker (FastAPI)";
         wantedBy = [ "multi-user.target" ];
         after = [ "cullis-pki-bootstrap.service" "network.target" ];
         requires = [ "cullis-pki-bootstrap.service" ];
         environment = {
-          PYTHONPATH = toString cfg.cullisSrc;
+          PYTHONPATH = toString cullisSrcStore;
           CULLIS_ORG_ID = cfg.orgId;
           CULLIS_TRUST_DOMAIN = cfg.trustDomain;
           CULLIS_ADMIN_SECRET = cfg.adminSecret;
@@ -191,7 +273,7 @@
           Type = "simple";
           User = "cullis";
           Group = "cullis";
-          WorkingDirectory = cfg.cullisSrc;
+          WorkingDirectory = "${cullisSrcStore}";
           ExecStart =
             "${pyEnvBin} -m uvicorn app.main:app "
             + "--host 127.0.0.1 --port ${toString cfg.brokerPort}";
@@ -203,10 +285,16 @@
       systemd.services.cullis-proxy = {
         description = "Cullis Mastio MCP proxy";
         wantedBy = [ "multi-user.target" ];
-        after = [ "cullis-broker.service" ];
-        requires = [ "cullis-broker.service" ];
+        # Order behind the broker only when it's actually enabled —
+        # ``cullis-broker.service`` is conditional on ``enableBroker``
+        # (``a2a-sdk`` not in nixpkgs yet). The PKI oneshot is the only
+        # hard prerequisite the proxy actually needs.
+        after = [ "cullis-pki-bootstrap.service" ]
+                ++ lib.optional cfg.enableBroker "cullis-broker.service";
+        requires = [ "cullis-pki-bootstrap.service" ]
+                   ++ lib.optional cfg.enableBroker "cullis-broker.service";
         environment = {
-          PYTHONPATH = toString cfg.cullisSrc;
+          PYTHONPATH = toString cullisSrcStore;
           MCP_PROXY_ORG_ID = cfg.orgId;
           PROXY_TRUST_DOMAIN = cfg.trustDomain;
           MCP_PROXY_ADMIN_SECRET = cfg.adminSecret;
@@ -217,13 +305,24 @@
           Type = "simple";
           User = "cullis";
           Group = "cullis";
-          WorkingDirectory = cfg.cullisSrc;
+          WorkingDirectory = "${cullisSrcStore}";
           ExecStart =
             "${pyEnvBin} -m uvicorn mcp_proxy.main:app "
             + "--host 127.0.0.1 --port ${toString cfg.proxyPort}";
           Restart = "on-failure";
           RestartSec = "2s";
         };
+      };
+
+      # nginx pre-start runs ``nginx -t`` which reads the on-disk
+      # SSL cert; without explicit ordering it can land before
+      # ``cullis-pki-bootstrap`` writes ``server.pem`` and fail with
+      # ``no "ssl_certificate" is defined``. The ``before =`` hint on
+      # the bootstrap unit is only ordering, not a hard dep — make
+      # nginx actually require it.
+      systemd.services.nginx = {
+        after = [ "cullis-pki-bootstrap.service" ];
+        requires = [ "cullis-pki-bootstrap.service" ];
       };
 
       services.nginx = {
@@ -234,14 +333,18 @@
           listen = [
             { addr = "0.0.0.0"; port = cfg.nginxPort; ssl = true; }
           ];
-          sslCertificate = "${certsDir}/server.pem";
-          sslCertificateKey = "${certsDir}/server.key";
-          # mTLS gate — same regex as ``nginx/mastio/mastio.conf`` in
-          # the production config (PR #445 extended this to llm/chat
-          # for the typed-principal flow).
+          # NixOS only emits ``ssl_certificate`` directives when the
+          # vhost has ``addSSL = true`` / ``forceSSL = true``, which
+          # both presume an HTTP-side listener on port 80. We're
+          # SSL-only on a custom port (9443) — declare the cert
+          # paths via ``extraConfig`` directly to keep the listener
+          # shape clean. Same applies to the mTLS gate (PR #445
+          # production config extends the regex to ``llm|chat``).
           extraConfig = ''
-            ssl_client_certificate ${certsDir}/org-ca.pem;
-            ssl_verify_client      optional;
+            ssl_certificate         ${certsDir}/server.pem;
+            ssl_certificate_key     ${certsDir}/server.key;
+            ssl_client_certificate  ${certsDir}/org-ca.pem;
+            ssl_verify_client       optional;
           '';
           locations."~ ^/v1/(egress|agents|audit|llm|chat)(/.*)?$" = {
             proxyPass = "http://127.0.0.1:${toString cfg.proxyPort}";
