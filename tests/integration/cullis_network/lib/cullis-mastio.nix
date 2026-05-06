@@ -106,6 +106,32 @@
         real deployment threads this through a secret manager.
       '';
     };
+
+    brokerUrl = mkOption {
+      type = types.str;
+      default = "";
+      description = ''
+        Override the proxy's ``MCP_PROXY_BROKER_URL``. When empty
+        (default), the proxy points at the loopback broker
+        (``http://127.0.0.1:<brokerPort>``), which is the Tier 1
+        single-VM shape. Tier 2 cities point at the Court VM via
+        this knob so the federation publisher pushes their agents
+        to the central registry. The proxy uses the same URL for
+        local agent auth and federation publish (current shape;
+        a future refactor may split them).
+      '';
+    };
+
+    nginxAllowExternal = mkOption {
+      type = types.bool;
+      default = false;
+      description = ''
+        Open the broker port on 0.0.0.0 instead of 127.0.0.1 and
+        add it to ``firewall.allowedTCPPorts``. The Tier 2 Court
+        VM flips this on so peers can reach
+        ``/v1/federation/publish-agent``.
+      '';
+    };
   };
 
   config = lib.mkIf config.cullis.mastio.enable (
@@ -212,7 +238,9 @@
       # testScript hits ``NameError``. The nginx vhost listens on
       # ``mastio.${trustDomain}`` regardless — that's the FQDN
       # callers actually hit.
-      networking.firewall.allowedTCPPorts = [ cfg.nginxPort ];
+      networking.firewall.allowedTCPPorts =
+        [ cfg.nginxPort ]
+        ++ lib.optional cfg.nginxAllowExternal cfg.brokerPort;
 
       # Forward the mock-services toggle. ``cullis.mockServices``
       # is defined in ``mock-services.nix`` (imported above);
@@ -336,7 +364,8 @@
           WorkingDirectory = "${cullisSrcStore}";
           ExecStart =
             "${pyEnvBin} -m uvicorn app.main:app "
-            + "--host 127.0.0.1 --port ${toString cfg.brokerPort}";
+            + "--host ${if cfg.nginxAllowExternal then "0.0.0.0" else "127.0.0.1"} "
+            + "--port ${toString cfg.brokerPort}";
           Restart = "on-failure";
           RestartSec = "2s";
         };
@@ -359,7 +388,26 @@
           PROXY_TRUST_DOMAIN = cfg.trustDomain;
           MCP_PROXY_ADMIN_SECRET = cfg.adminSecret;
           MCP_PROXY_DATABASE_URL = "sqlite+aiosqlite:///${stateDir}/proxy.sqlite";
-          MCP_PROXY_BROKER_URL = "http://127.0.0.1:${toString cfg.brokerPort}";
+          MCP_PROXY_BROKER_URL =
+            if cfg.brokerUrl != ""
+            then cfg.brokerUrl
+            else "http://127.0.0.1:${toString cfg.brokerPort}";
+          # Federation publisher: pushes ``internal_agents`` rows
+          # marked ``federated=1`` to the broker we just pointed at
+          # (``/v1/federation/publish-agent``) every tick.
+          PROXY_FEDERATION_SYNC = "true";
+          # Default poll is 30s — leaves the nixosTest sleeping past
+          # every CI budget. 2s keeps the test responsive without
+          # observing a tick mid-startup.
+          MCP_PROXY_FEDERATION_POLL_INTERVAL_S = "2";
+          # ``standalone=True`` (default) forcibly clears
+          # ``broker_url`` at app startup so the publisher gate
+          # ``if broker_url and mastio_loaded`` never fires. Cities
+          # that point at an external Court need standalone=false.
+          # Court itself stays standalone (it IS the federation
+          # hub), inferred from ``cfg.brokerUrl == ""``.
+          MCP_PROXY_STANDALONE =
+            if cfg.brokerUrl != "" then "false" else "true";
         } // lib.optionalAttrs cfg.enableMockServices {
           # Point the AI gateway at the mock LLM. We use the
           # ``portkey`` backend wrapper because it honours
