@@ -356,6 +356,11 @@
           DATABASE_URL = "sqlite+aiosqlite:///${stateDir}/broker.sqlite";
           KMS_BACKEND = "local";
           OTEL_ENABLED = "false";
+          # ``app/kms/admin_secret.py`` defaults to ``certs/`` relative
+          # to the broker's CWD, which here is the read-only Nix store.
+          # Redirect to the writable state dir so first-boot mkdir of
+          # ``.admin_bootstrap_token`` succeeds.
+          CULLIS_LOCAL_KMS_DIR = certsDir;
         };
         serviceConfig = {
           Type = "simple";
