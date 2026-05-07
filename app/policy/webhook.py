@@ -174,12 +174,38 @@ async def call_pdp_webhook(
     If webhook_url is None or the call fails, returns DENY (default-deny).
     """
     if not webhook_url:
+        from app.config import get_settings as _get_settings
+        default_decision = _get_settings().policy_default_decision
+        if default_decision == "allow":
+            # Sandbox/demo escape hatch (issue #461). Distinct from
+            # ``policy_enforcement=false``: the dispatcher still ran,
+            # this audit row marks the decision as a default-allow so
+            # operators can grep their chain for unconfigured orgs and
+            # wire webhooks before going to production.
+            _log.warning(
+                "PDP webhook not configured for org '%s' — POLICY_DEFAULT_DECISION='allow' fall-through",
+                org_id,
+            )
+            return WebhookDecision(
+                allowed=True,
+                reason=(
+                    f"policy_default_allow: org '{org_id}' has no PDP webhook "
+                    f"configured (POLICY_DEFAULT_DECISION=allow)"
+                ),
+                org_id=org_id,
+            )
         _log.warning(
             "PDP webhook not configured for org '%s' — default-deny", org_id
         )
         return WebhookDecision(
             allowed=False,
-            reason=f"Organization '{org_id}' has no PDP webhook configured — denied by default",
+            reason=(
+                f"policy_default_deny: organization '{org_id}' has no PDP webhook "
+                f"configured. Set 'webhook_url' on the org via "
+                f"PATCH /v1/registry/orgs/{org_id}, OR set "
+                f"POLICY_DEFAULT_DECISION=allow on the broker for sandbox/demo "
+                f"deploys (issue #461)."
+            ),
             org_id=org_id,
         )
 

@@ -103,6 +103,17 @@ class Settings(BaseSettings):
     policy_backend: str = "webhook"
     opa_url: str = ""  # e.g. "http://opa:8181"
     policy_enforcement: bool = True  # False = bypass all policy checks (demo mode)
+    # Fall-through decision when ``policy_enforcement=true`` AND the org
+    # involved has no PDP webhook configured. Default ``deny`` keeps the
+    # production fail-closed posture (an org without a webhook can't
+    # accidentally allow cross-org traffic). Operators running a sandbox
+    # or first-onboarding flow can flip to ``allow`` so cross-org A2A
+    # works before the PDP is wired. Distinct from
+    # ``policy_enforcement=false`` (which bypasses the dispatcher
+    # entirely): the dispatcher still runs and emits an audit row marking
+    # the decision as a default-fallback, so reviewers can grep for
+    # ``policy_default_allow`` after the fact. See issue #461.
+    policy_default_decision: str = "deny"  # "allow" | "deny"
     # SSRF escape hatch for the PDP webhook validator. When False (the
     # production default) the broker rejects any webhook URL that resolves
     # to a private/loopback/link-local/reserved IP. Set to True ONLY for
@@ -204,8 +215,31 @@ def validate_config(settings: "Settings") -> None:
     """
     is_production = settings.environment == "production"
 
+    # POLICY_DEFAULT_DECISION must be one of the two known values
+    # regardless of environment — typo guard. Production additionally
+    # refuses 'allow' (further down in the production-only block).
+    if settings.policy_default_decision not in ("allow", "deny"):
+        _startup_logger.critical(
+            "POLICY_DEFAULT_DECISION is %r — expected 'allow' or 'deny'.",
+            settings.policy_default_decision,
+        )
+        raise SystemExit(1)
+
     # ── Fatal checks (production only) ─────────────────────────────────────
     if is_production:
+        # Refuse 'allow' fall-through in production before checking the
+        # rest of the infra config — it's a security regression and we
+        # want the operator to see this signal even if database_url is
+        # also misconfigured. Issue #461.
+        if settings.policy_default_decision == "allow":
+            _startup_logger.critical(
+                "POLICY_DEFAULT_DECISION='allow' is not permitted in "
+                "production — orgs without a PDP webhook would bypass "
+                "all cross-org access checks. Configure webhook_url "
+                "per org instead. See issue #461.",
+            )
+            raise SystemExit(1)
+
         if not settings.database_url or settings.database_url.startswith("sqlite"):
             _startup_logger.critical(
                 "DATABASE_URL is not set or points to SQLite ('%s'). "
@@ -277,6 +311,16 @@ def validate_config(settings: "Settings") -> None:
             "Verify clients reach the broker via this exact URL — any "
             "mismatch will cause `Invalid DPoP proof: htu mismatch` 401s.",
             settings.broker_public_url,
+        )
+
+    # POLICY_DEFAULT_DECISION='allow' visibility — production already
+    # refused it above, dev/staging emits a loud warning so the deploy
+    # log shows the sandbox/demo flag clearly.
+    if not is_production and settings.policy_default_decision == "allow":
+        _startup_logger.warning(
+            "POLICY_DEFAULT_DECISION='allow' — orgs without a PDP webhook "
+            "will be granted cross-org access by default (sandbox/demo "
+            "mode). Audit rows tagged 'policy_default_allow'.",
         )
 
     if settings.vault_token == _INSECURE_VAULT_TOKEN:
