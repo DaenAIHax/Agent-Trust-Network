@@ -165,7 +165,15 @@ async def get_federated_agent_public_key(
         serialization.Encoding.PEM,
         serialization.PublicFormat.SubjectPublicKeyInfo,
     ).decode()
-    return AgentPublicKeyResponse(agent_id=agent_id, public_key_pem=public_key_pem)
+    # Issue #470 — return the full X.509 cert too. SDK consumers post-H7
+    # need the cert (not just the SPKI) to bind the public key to the
+    # agent identity. Legacy callers reading ``public_key_pem`` are
+    # untouched.
+    return AgentPublicKeyResponse(
+        agent_id=agent_id,
+        public_key_pem=public_key_pem,
+        cert_pem=agent.cert_pem,
+    )
 
 
 @router.get("/agents/{agent_id}", response_model=AgentResponse)

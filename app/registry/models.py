@@ -46,3 +46,13 @@ class AgentListResponse(BaseModel):
 class AgentPublicKeyResponse(BaseModel):
     agent_id: str
     public_key_pem: str
+    # Issue #470 — the H7 audit fix on the SDK rejects bare SPKI for
+    # signature verification. Carrying the full X.509 cert alongside
+    # ``public_key_pem`` lets ``CullisClient.decrypt_oneshot`` chain
+    # the cert to the agent identity (cert_binds_agent_id) without
+    # losing the public key the legacy callers still consume from
+    # ``public_key_pem``. Optional for backward compat: a federated
+    # agent created before this field existed has ``cert_pem=None``,
+    # in which case the SDK falls back to the bare key (loses cert
+    # identity binding but preserves the legacy contract).
+    cert_pem: str | None = None

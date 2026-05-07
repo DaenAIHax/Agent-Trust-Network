@@ -1816,9 +1816,17 @@ class CullisClient:
         return [AgentInfo.from_dict(p) for p in resp.json().get("peers", [])]
 
     def get_agent_public_key(self, agent_id: str, force_refresh: bool = False) -> str:
-        """Retrieve agent PEM public key from the broker (TTL-cached).
+        """Retrieve the agent's full X.509 cert PEM from the broker (TTL-cached).
 
         ADR-010 Phase 6a: reads from the ``/v1/federation/`` namespace.
+
+        Issue #470 — the response carries both ``cert_pem`` (full X.509)
+        and ``public_key_pem`` (bare SPKI). Prefer ``cert_pem`` since
+        the H7 audit fix on the verify helpers rejects bare SPKI; fall
+        back to ``public_key_pem`` only if the broker is older and
+        doesn't populate the cert field, in which case the consumer
+        loses the cert-to-identity binding step but the legacy contract
+        keeps working.
         """
         if not force_refresh and agent_id in self._pubkey_cache:
             pubkey_pem, fetched_at = self._pubkey_cache[agent_id]
@@ -1827,7 +1835,8 @@ class CullisClient:
         path = f"/v1/federation/agents/{agent_id}/public-key"
         resp = self._authed_request("GET", path)
         resp.raise_for_status()
-        pubkey_pem = resp.json()["public_key_pem"]
+        body = resp.json()
+        pubkey_pem = body.get("cert_pem") or body["public_key_pem"]
         self._pubkey_cache[agent_id] = (pubkey_pem, time.time())
         return pubkey_pem
 
