@@ -554,15 +554,20 @@ def _build_litellm_stream(
                 (time.perf_counter() - dispatch_obj.started_at) * 1000
             )
             if dispatch_obj.prompt_tokens or dispatch_obj.completion_tokens:
+                # ``completion_cost`` wants a full response object; in the
+                # streaming path we've already drained it, so go through
+                # ``cost_per_token`` (returns the (input, output) USD
+                # tuple already multiplied by the token counts).
                 try:
-                    dispatch_obj.cost_usd = litellm.completion_cost(
+                    in_cost, out_cost = litellm.cost_per_token(
                         model=model,
                         prompt_tokens=dispatch_obj.prompt_tokens,
                         completion_tokens=dispatch_obj.completion_tokens,
                     )
+                    dispatch_obj.cost_usd = float(in_cost) + float(out_cost)
                 except Exception as exc:  # pragma: no cover — informational
                     _log.debug(
-                        "litellm.completion_cost (stream) failed model=%s: %s",
+                        "litellm.cost_per_token (stream) failed model=%s: %s",
                         model, exc,
                     )
             _log.info(
