@@ -44,9 +44,19 @@ _log = logging.getLogger("agent_trust.admin_secret")
 _cached_hash: str | None = None
 _cached_user_set: bool | None = None
 _VAULT_TIMEOUT = 10
-_LOCAL_HASH_PATH = pathlib.Path("certs/.admin_secret_hash")
-_LOCAL_USER_SET_PATH = pathlib.Path("certs/.admin_password_user_set")
-_LOCAL_BOOTSTRAP_TOKEN_PATH = pathlib.Path("certs/.admin_bootstrap_token")
+# Local KMS state directory. Defaults to ``certs/`` relative to the
+# process CWD (preserves the historical layout for repo-root and
+# Docker container deploys with WORKDIR=/app where ``certs/`` is a
+# writable mount). Override with ``CULLIS_LOCAL_KMS_DIR`` when the
+# CWD is read-only — most notably the NixOS test fixture where the
+# broker systemd unit runs with ``WorkingDirectory=<nix-store path>``,
+# so writes against a relative ``certs/`` blow up on first boot.
+_LOCAL_KMS_DIR = pathlib.Path(
+    os.environ.get("CULLIS_LOCAL_KMS_DIR") or "certs"
+)
+_LOCAL_HASH_PATH = _LOCAL_KMS_DIR / ".admin_secret_hash"
+_LOCAL_USER_SET_PATH = _LOCAL_KMS_DIR / ".admin_password_user_set"
+_LOCAL_BOOTSTRAP_TOKEN_PATH = _LOCAL_KMS_DIR / ".admin_bootstrap_token"
 _VAULT_BOOTSTRAP_TOKEN_FIELD = "admin_bootstrap_token"
 
 # Dummy hash for constant-time verification when no hash is available.
