@@ -311,6 +311,16 @@ class ProxySettings(BaseSettings):
     # the org wants explicit per-agent binding decisions.
     auto_baseline_binding: bool = True
 
+    # ADR-016 Guardian (Phase 1 foundation). The ticket key is the
+    # HMAC secret Mastio uses to sign every guardian decision; agent
+    # runtimes verify the signature before delivering a message.
+    # Empty key disables the endpoint (returns 503) — Phase 1 plugin
+    # authors can still develop against the contract by setting any
+    # 32-byte hex value here. Distribution to agent runtimes piggybacks
+    # on the org CA bundle refresh (rollout plan Q2).
+    guardian_ticket_key: str = ""
+    guardian_ticket_ttl_s: int = 30
+
     @model_validator(mode="after")
     def _apply_proxy_db_url_override(self):
         override = os.environ.get("PROXY_DB_URL")
