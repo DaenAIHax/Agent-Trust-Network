@@ -17,7 +17,8 @@ import json
 import logging
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import AsyncIterator
 
 import httpx
 
@@ -46,6 +47,35 @@ class GatewayResult:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     cost_usd: float | None = None
+
+
+@dataclass
+class StreamingDispatch:
+    """Streaming counterpart of ``GatewayResult``.
+
+    The router drives ``aiter()`` to fan-out chunks as SSE frames; once
+    the stream drains, ``prompt_tokens`` / ``completion_tokens`` /
+    ``cost_usd`` / ``upstream_request_id`` carry the final values used
+    for the audit row and the per-principal token-budget consume. The
+    backend implementation populates them while iterating.
+    """
+
+    backend: str
+    provider: str
+    model: str
+    trace_id: str
+    _aiter_factory: object = None  # async generator factory, set by impl
+    started_at: float = field(default_factory=time.perf_counter)
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cost_usd: float | None = None
+    upstream_request_id: str | None = None
+    latency_ms: int = 0
+
+    def aiter(self) -> AsyncIterator[dict]:
+        if self._aiter_factory is None:
+            raise RuntimeError("StreamingDispatch.aiter called before backend wired it")
+        return self._aiter_factory()
 
 
 class GatewayError(Exception):
@@ -93,6 +123,41 @@ async def dispatch(
         501,
         f"backend_not_implemented:{backend}",
         detail=f"AI gateway backend '{backend}' is not wired.",
+    )
+
+
+async def dispatch_stream(
+    *,
+    req: ChatCompletionRequest,
+    agent_id: str,
+    org_id: str,
+    trace_id: str,
+    settings: Settings,
+) -> StreamingDispatch:
+    """Open a streaming dispatch.
+
+    Returns a ``StreamingDispatch`` whose ``aiter()`` yields OpenAI-shape
+    chunk dicts (``object=chat.completion.chunk``). The router converts
+    them to SSE frames. Token usage + cost land on the dispatch object
+    once the iterator drains, so the post-stream audit/rate-limit logic
+    can read them without inspecting the chunks itself.
+    """
+    backend = settings.ai_gateway_backend.lower()
+    if backend == "litellm_embedded":
+        return _build_litellm_stream(
+            req=req,
+            agent_id=agent_id,
+            org_id=org_id,
+            trace_id=trace_id,
+            settings=settings,
+        )
+    raise GatewayError(
+        501,
+        f"streaming_not_implemented_for_backend:{backend}",
+        detail=(
+            f"Streaming on backend '{backend}' is not wired. "
+            "Set ai_gateway_backend=litellm_embedded for stream=true."
+        ),
     )
 
 
@@ -374,3 +439,141 @@ async def _call_litellm_embedded(
         completion_tokens=int(completion_tokens),
         cost_usd=cost_usd,
     )
+
+
+def _build_litellm_stream(
+    *,
+    req: ChatCompletionRequest,
+    agent_id: str,
+    org_id: str,
+    trace_id: str,
+    settings: Settings,
+) -> StreamingDispatch:
+    """Build a ``StreamingDispatch`` backed by ``litellm.acompletion(stream=True)``.
+
+    The acompletion call itself happens lazily on first iteration; raise
+    here for the configuration-time errors (missing key, wrong provider,
+    litellm not installed) so the router can audit them as a non-stream
+    error before opening the SSE response.
+    """
+    provider = settings.ai_gateway_provider.lower()
+    if provider != "anthropic":
+        raise GatewayError(
+            501,
+            f"provider_not_implemented:{provider}",
+            detail="Streaming only validates provider='anthropic' via LiteLLM.",
+        )
+    if not settings.anthropic_api_key:
+        raise GatewayError(503, "provider_key_missing")
+
+    try:
+        import litellm
+        from litellm import acompletion
+    except ImportError as exc:
+        raise GatewayError(
+            503,
+            "litellm_not_installed",
+            detail=(
+                "ai_gateway_backend='litellm_embedded' requires the litellm "
+                "package. Install it via requirements.txt."
+            ),
+        ) from exc
+
+    litellm.drop_params = True
+
+    body = req.model_dump(exclude_none=True)
+    model = body.pop("model")
+    body.pop("stream", None)
+    # Ask the upstream for a final usage chunk so we can audit accurate
+    # token + cost numbers after the stream drains. Anthropic + OpenAI +
+    # most LiteLLM-routed providers honour this OpenAI-spec field.
+    stream_options = body.pop("stream_options", None) or {}
+    stream_options.setdefault("include_usage", True)
+
+    metadata = {
+        "cullis_agent_id": agent_id,
+        "cullis_org_id": org_id,
+        "cullis_trace_id": trace_id,
+    }
+
+    dispatch_obj = StreamingDispatch(
+        backend="litellm_embedded",
+        provider=provider,
+        model=model,
+        trace_id=trace_id,
+    )
+
+    async def _aiter() -> AsyncIterator[dict]:
+        try:
+            stream = await acompletion(
+                model=model,
+                api_key=settings.anthropic_api_key,
+                metadata=metadata,
+                stream=True,
+                stream_options=stream_options,
+                **body,
+            )
+        except Exception as exc:
+            raise _map_litellm_exception(exc) from exc
+
+        try:
+            async for chunk in stream:
+                payload = (
+                    chunk.model_dump() if hasattr(chunk, "model_dump")
+                    else dict(chunk)
+                )
+                payload.setdefault("object", "chat.completion.chunk")
+                payload.setdefault("model", model)
+                if dispatch_obj.upstream_request_id is None:
+                    upstream_id = payload.get("id")
+                    if upstream_id:
+                        dispatch_obj.upstream_request_id = upstream_id
+                # The final usage chunk has empty choices and a populated
+                # ``usage`` dict; harvest it for the audit row, normalise
+                # the shape so the SSE consumer always sees the canonical
+                # OpenAI usage fields.
+                usage = payload.get("usage")
+                if isinstance(usage, dict):
+                    pt = int(usage.get("prompt_tokens") or 0)
+                    ct = int(usage.get("completion_tokens") or 0)
+                    if pt or ct:
+                        dispatch_obj.prompt_tokens = pt
+                        dispatch_obj.completion_tokens = ct
+                        payload["usage"] = {
+                            "prompt_tokens": pt,
+                            "completion_tokens": ct,
+                            "total_tokens": pt + ct,
+                        }
+                yield payload
+        except GatewayError:
+            raise
+        except Exception as exc:
+            raise _map_litellm_exception(exc) from exc
+        finally:
+            dispatch_obj.latency_ms = int(
+                (time.perf_counter() - dispatch_obj.started_at) * 1000
+            )
+            if dispatch_obj.prompt_tokens or dispatch_obj.completion_tokens:
+                try:
+                    dispatch_obj.cost_usd = litellm.completion_cost(
+                        model=model,
+                        prompt_tokens=dispatch_obj.prompt_tokens,
+                        completion_tokens=dispatch_obj.completion_tokens,
+                    )
+                except Exception as exc:  # pragma: no cover — informational
+                    _log.debug(
+                        "litellm.completion_cost (stream) failed model=%s: %s",
+                        model, exc,
+                    )
+            _log.info(
+                "egress.llm streamed backend=litellm_embedded provider=%s "
+                "agent=%s org=%s model=%s latency_ms=%d tokens_in=%d "
+                "tokens_out=%d cost_usd=%s",
+                provider, agent_id, org_id, model, dispatch_obj.latency_ms,
+                dispatch_obj.prompt_tokens, dispatch_obj.completion_tokens,
+                f"{dispatch_obj.cost_usd:.6f}"
+                if dispatch_obj.cost_usd is not None else "n/a",
+            )
+
+    dispatch_obj._aiter_factory = _aiter
+    return dispatch_obj

@@ -25,7 +25,7 @@ from sqlalchemy import text
 from mcp_proxy.auth.dpop_client_cert import get_agent_from_dpop_client_cert
 from mcp_proxy.db import dispose_db, get_db, init_db
 from mcp_proxy.egress import llm_chat_router as router_module
-from mcp_proxy.egress.ai_gateway import GatewayError, GatewayResult
+from mcp_proxy.egress.ai_gateway import GatewayError, GatewayResult, StreamingDispatch
 from mcp_proxy.egress.llm_chat_router import router as llm_chat_router
 from mcp_proxy.egress.schemas import (
     ChatCompletionChoice,
@@ -384,11 +384,94 @@ async def test_chat_completions_rate_limit_disabled_when_zero(
     reset_agent_rate_limiter()
 
 
+def _parse_sse_frames(body: str) -> list[dict | str]:
+    """Split a raw SSE body into frame payloads.
+
+    Each ``data: ...\\n\\n`` becomes one entry: a parsed dict for JSON
+    payloads, the literal sentinel string ``[DONE]`` for the terminator.
+    Non-data lines (comments, ``event:``) are ignored — the gateway
+    never emits them, so any appearance is a regression.
+    """
+    frames: list[dict | str] = []
+    for raw in body.split("\n\n"):
+        line = raw.strip()
+        if not line:
+            continue
+        assert line.startswith("data: "), f"non-data SSE line: {line!r}"
+        payload = line[len("data: "):]
+        if payload == "[DONE]":
+            frames.append("[DONE]")
+        else:
+            frames.append(json.loads(payload))
+    return frames
+
+
+def _build_fake_streamer(
+    *,
+    chunks: list[dict],
+    prompt_tokens: int = 12,
+    completion_tokens: int = 3,
+    cost_usd: float | None = 0.000123,
+    upstream_request_id: str = "req_stream_1",
+    raise_mid: GatewayError | None = None,
+) -> "callable":
+    """Return an ``async`` ``dispatch_stream`` stub.
+
+    The returned callable matches the ``dispatch_stream`` signature and
+    yields the supplied chunks. The ``StreamingDispatch`` post-stream
+    fields are populated in the generator's ``finally`` so the router's
+    audit row sees the same numbers a real backend would write.
+    """
+
+    async def fake_dispatch_stream(**kwargs):
+        sd = StreamingDispatch(
+            backend="litellm_embedded",
+            provider="anthropic",
+            model=kwargs["req"].model,
+            trace_id=kwargs["trace_id"],
+        )
+
+        async def _aiter():
+            try:
+                for chunk in chunks:
+                    yield chunk
+                if raise_mid is not None:
+                    raise raise_mid
+            finally:
+                sd.prompt_tokens = prompt_tokens
+                sd.completion_tokens = completion_tokens
+                sd.cost_usd = cost_usd
+                sd.upstream_request_id = upstream_request_id
+                sd.latency_ms = 25
+
+        sd._aiter_factory = _aiter
+        return sd
+
+    return fake_dispatch_stream
+
+
 @pytest.mark.asyncio
-async def test_chat_completions_rejects_streaming(app_with_router, monkeypatch):
+async def test_chat_completions_streaming_happy_path(
+    app_with_router, monkeypatch,
+):
+    """stream=true returns text/event-stream, fans chunk dicts as SSE
+    frames, terminates with ``data: [DONE]``, and writes a single
+    success audit row with the stream's final token + cost numbers."""
+    chunks = [
+        {"id": "chatcmpl-stream-1", "choices": [
+            {"index": 0, "delta": {"role": "assistant"}, "finish_reason": None},
+        ]},
+        {"id": "chatcmpl-stream-1", "choices": [
+            {"index": 0, "delta": {"content": "pong"}, "finish_reason": None},
+        ]},
+        {"id": "chatcmpl-stream-1", "choices": [
+            {"index": 0, "delta": {}, "finish_reason": "stop"},
+        ]},
+        {"id": "chatcmpl-stream-1", "choices": [],
+         "usage": {"prompt_tokens": 12, "completion_tokens": 3}},
+    ]
     monkeypatch.setattr(
-        router_module, "dispatch",
-        AsyncMock(return_value=_gateway_result()),
+        router_module, "dispatch_stream", _build_fake_streamer(chunks=chunks),
     )
 
     async with AsyncClient(
@@ -399,5 +482,206 @@ async def test_chat_completions_rejects_streaming(app_with_router, monkeypatch):
             json={**_request_body(), "stream": True},
         )
 
-    assert r.status_code == 400
-    assert "stream" in r.json()["detail"].lower()
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"].startswith("text/event-stream")
+    assert r.headers.get("x-cullis-trace", "").startswith("trace_")
+
+    frames = _parse_sse_frames(r.text)
+    assert frames[-1] == "[DONE]"
+    json_frames = [f for f in frames if isinstance(f, dict)]
+    assert len(json_frames) == 4
+    # cullis_trace_id is injected on every chunk so a downstream audit
+    # consumer can correlate even mid-stream.
+    for f in json_frames:
+        assert f["cullis_trace_id"].startswith("trace_")
+    # Content delta survived the round-trip.
+    deltas = [c["choices"][0]["delta"] for c in json_frames if c["choices"]]
+    assert {"content": "pong"} in deltas
+
+    rows = await _audit_rows("egress_llm_chat", status="success")
+    assert len(rows) == 1
+    detail = json.loads(rows[0]["detail"])
+    assert detail["stream"] is True
+    assert detail["prompt_tokens"] == 12
+    assert detail["completion_tokens"] == 3
+    assert detail["cost_usd"] == 0.000123
+    assert detail["upstream_request_id"] == "req_stream_1"
+    assert detail["backend"] == "litellm_embedded"
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_streaming_consumes_tokens_post_drain(
+    app_with_router, monkeypatch,
+):
+    """The per-principal token budget is consumed only after the stream
+    drains (the upstream usage chunk is the source of truth). A peek
+    before the request shows zero, after shows prompt + completion."""
+    from mcp_proxy.auth.rate_limit import (
+        get_token_sum_limiter, reset_agent_rate_limiter,
+    )
+
+    reset_agent_rate_limiter()
+    limiter = get_token_sum_limiter()
+    bucket = "principal:orga::alice:llm_tokens"
+    assert await limiter.peek(bucket) == 0
+
+    monkeypatch.setattr(
+        router_module, "dispatch_stream",
+        _build_fake_streamer(chunks=[
+            {"id": "x", "choices": [
+                {"index": 0, "delta": {"content": "hi"}, "finish_reason": None},
+            ]},
+            {"id": "x", "choices": [],
+             "usage": {"prompt_tokens": 7, "completion_tokens": 2}},
+        ], prompt_tokens=7, completion_tokens=2),
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app_with_router), base_url="http://test",
+    ) as c:
+        r = await c.post(
+            "/v1/chat/completions",
+            json={**_request_body(), "stream": True},
+        )
+
+    assert r.status_code == 200, r.text
+    # Drain happened — bucket reflects 7 + 2.
+    assert await limiter.peek(bucket) == 9
+
+    reset_agent_rate_limiter()
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_streaming_pre_flight_rate_limit(
+    app_with_router, monkeypatch,
+):
+    """The token-budget gate runs BEFORE the stream is opened, so an
+    over-budget principal gets a synchronous 429 (no SSE response). This
+    keeps the rejection cheap and surfacable to OpenAI-shape clients
+    that special-case the JSON body before flipping into SSE mode."""
+    from mcp_proxy.auth.rate_limit import (
+        get_token_sum_limiter, reset_agent_rate_limiter,
+    )
+    from mcp_proxy.config import get_settings
+
+    reset_agent_rate_limiter()
+    monkeypatch.setenv("MCP_PROXY_LLM_TOKENS_PER_MINUTE", "100")
+    get_settings.cache_clear()
+
+    await get_token_sum_limiter().consume(
+        "principal:orga::alice:llm_tokens", 100,
+    )
+
+    monkeypatch.setattr(
+        router_module, "dispatch_stream",
+        _build_fake_streamer(chunks=[]),  # never reached
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app_with_router), base_url="http://test",
+    ) as c:
+        r = await c.post(
+            "/v1/chat/completions",
+            json={**_request_body(), "stream": True},
+        )
+
+    assert r.status_code == 429, r.text
+    assert r.headers["content-type"].startswith("application/json")
+
+    rows = await _audit_rows("egress_llm_chat", status="error")
+    assert len(rows) == 1
+    detail = json.loads(rows[0]["detail"])
+    assert detail["reason"] == "local_rate_limited_tokens"
+    assert detail["stream"] is True
+
+    reset_agent_rate_limiter()
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_streaming_upstream_error_mid_stream(
+    app_with_router, monkeypatch,
+):
+    """Once the SSE response is open, a mid-stream upstream failure can't
+    be turned back into HTTP 5xx. The handler emits one terminal SSE
+    frame ``data: {"error":...}`` so OpenAI-shape clients see a
+    terminator, then writes an error audit row with whatever tokens were
+    counted so ops can scope the cost of the partial call."""
+    chunks = [
+        {"id": "chatcmpl-err", "choices": [
+            {"index": 0, "delta": {"content": "partial"}, "finish_reason": None},
+        ]},
+    ]
+    monkeypatch.setattr(
+        router_module, "dispatch_stream",
+        _build_fake_streamer(
+            chunks=chunks,
+            prompt_tokens=5,
+            completion_tokens=1,
+            raise_mid=GatewayError(
+                502, "provider_internal_error", detail="upstream 500 mid-stream",
+            ),
+        ),
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app_with_router), base_url="http://test",
+    ) as c:
+        r = await c.post(
+            "/v1/chat/completions",
+            json={**_request_body(), "stream": True},
+        )
+
+    # The HTTP status is already 200 by the time the body errors —
+    # this is the SSE contract.
+    assert r.status_code == 200
+    frames = _parse_sse_frames(r.text)
+    assert "[DONE]" not in frames
+    err_frame = frames[-1]
+    assert isinstance(err_frame, dict) and "error" in err_frame
+    assert err_frame["error"]["type"] == "provider_internal_error"
+    assert err_frame["error"]["trace_id"].startswith("trace_")
+
+    rows = await _audit_rows("egress_llm_chat", status="error")
+    assert len(rows) == 1
+    detail = json.loads(rows[0]["detail"])
+    assert detail["reason"] == "provider_internal_error"
+    assert detail["stream"] is True
+    # Token counters from the partial stream survive into the audit row
+    # so cost-attribution dashboards don't lose the burn.
+    assert detail["prompt_tokens"] == 5
+    assert detail["completion_tokens"] == 1
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_streaming_setup_error_returns_json(
+    app_with_router, monkeypatch,
+):
+    """A configuration-time GatewayError raised by ``dispatch_stream``
+    BEFORE any chunk is yielded becomes a synchronous JSON HTTP error,
+    not an SSE frame — the SSE response was never opened."""
+
+    async def boom(**_kwargs):
+        raise GatewayError(
+            503, "provider_key_missing", detail="anthropic_api_key not set",
+        )
+
+    monkeypatch.setattr(router_module, "dispatch_stream", boom)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app_with_router), base_url="http://test",
+    ) as c:
+        r = await c.post(
+            "/v1/chat/completions",
+            json={**_request_body(), "stream": True},
+        )
+
+    assert r.status_code == 503, r.text
+    assert r.headers["content-type"].startswith("application/json")
+    body = r.json()
+    assert body["detail"]["reason"] == "provider_key_missing"
+
+    rows = await _audit_rows("egress_llm_chat", status="error")
+    assert len(rows) == 1
+    detail = json.loads(rows[0]["detail"])
+    assert detail["reason"] == "provider_key_missing"
+    assert detail["stream"] is True
