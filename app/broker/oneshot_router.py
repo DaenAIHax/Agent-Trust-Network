@@ -325,6 +325,48 @@ async def forward_oneshot(
             detail=f"Policy: {pdp_decision.reason}",
         )
 
+    # ── Local policy engine (org-level rules created via /v1/policy/rules) —
+    # Issue #460: the session-open path (``app/broker/router.py``) evaluates
+    # policy_rules via PolicyEngine after the PDP webhook decision; the
+    # oneshot path used to skip this step entirely, leaving the
+    # ``/v1/policy/rules`` endpoint silently dead for sessionless traffic.
+    # Mirror the session-open structure: only evaluate when the initiator
+    # org has explicit session rules, so orgs that haven't created any
+    # rules yet keep relying on the PDP webhook decision above (no
+    # default-deny shadowing).
+    from app.policy.store import list_policies as _list_policies
+    from app.policy.engine import PolicyEngine
+
+    _initiator_rules = await _list_policies(
+        db, current_agent.org, policy_type="session",
+    )
+    if _initiator_rules:
+        engine_decision = await PolicyEngine().evaluate_session(
+            db,
+            initiator_org_id=current_agent.org,
+            target_org_id=recipient.org_id,
+            capabilities=effective_caps,
+            # Sessionless one-shot — there is no active session to count.
+            active_session_count=0,
+            agent_id=current_agent.agent_id,
+        )
+        if not engine_decision.allowed:
+            await log_event(
+                db, "broker.oneshot_denied", "denied",
+                agent_id=current_agent.agent_id, org_id=current_agent.org,
+                details={
+                    "recipient": recipient.agent_id,
+                    "correlation_id": body.correlation_id,
+                    "reason": engine_decision.reason,
+                    "policy_id": engine_decision.policy_id,
+                    "engine": "local",
+                },
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Policy: {engine_decision.reason}",
+            )
+
     # ── Freshness ─────────────────────────────────────────────────────
     now_dt = datetime.now(timezone.utc)
     now_ts = int(now_dt.timestamp())
