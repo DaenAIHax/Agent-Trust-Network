@@ -107,7 +107,16 @@ def encrypt_for_agent(
 
     Returns: {ciphertext: base64, encrypted_key: base64, iv: base64, [ephemeral_pubkey: base64]}
     """
-    pubkey = serialization.load_pem_public_key(recipient_pubkey_pem.encode())
+    # Issue #470 — federation registry now returns the full X.509 cert
+    # rather than a bare SPKI. Accept both forms: if the PEM is a cert,
+    # extract the public key from it; otherwise parse as SPKI directly.
+    if "BEGIN CERTIFICATE" in recipient_pubkey_pem:
+        from cryptography import x509 as _x509
+        pubkey = _x509.load_pem_x509_certificate(
+            recipient_pubkey_pem.encode(),
+        ).public_key()
+    else:
+        pubkey = serialization.load_pem_public_key(recipient_pubkey_pem.encode())
 
     plaintext = json.dumps(
         {"payload": plaintext_dict, "inner_signature": inner_signature},
