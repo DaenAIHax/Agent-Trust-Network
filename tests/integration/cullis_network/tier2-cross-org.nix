@@ -75,6 +75,144 @@ let
     print("PRELOADED org_ca into proxy_config")
   '';
 
+  # Drives the four-step Court bootstrap for a single city, all from
+  # within the city's own VM (it can reach ``court:8000`` over the test
+  # vlan, and it owns its proxy admin secret so it can fetch its own
+  # mastio_pubkey + Org CA without copy_from_vm gymnastics).
+  #
+  #   1. ``POST /v1/admin/invites`` on Court (admin secret)
+  #   2. ``POST /v1/onboarding/join`` on Court (org CA + invite_token)
+  #   3. ``POST /v1/admin/orgs/{org_id}/approve`` on Court (admin secret)
+  #   4. ``GET /v1/admin/mastio-pubkey`` on local proxy → ``PATCH
+  #      /v1/admin/orgs/{org_id}/mastio-pubkey`` on Court
+  #
+  # All four endpoints are the same ones ``reference/bootstrap/`` drives
+  # via the docker-compose sandbox; this script is the parallel for
+  # NixOS tests where every city is an isolated VM. Idempotent on each
+  # step (409 = already there → continue), so the subtest can re-run
+  # against a partially-bootstrapped state without resetting.
+  courtBootstrapScript = pkgs.writeText "court-bootstrap.py" ''
+    """Bootstrap a city on Court so federation publishes get accepted.
+
+    Args (positional):
+      org_id          short org id (``roma``, ``tokyo``)
+      display_name    human label
+      trust_domain    SPIFFE trust domain
+      court_url       e.g. ``http://court:8000``
+      proxy_url       local proxy admin (e.g. ``http://127.0.0.1:9100``)
+      org_ca_path     filesystem path to ``org-ca.pem``
+      admin_secret    same on Court + local proxy in the test fixture
+      org_secret      passed in the join body (Court will hash + store)
+    """
+    import json
+    import sys
+    import urllib.error
+    import urllib.request
+
+    if len(sys.argv) != 9:
+        print(f"USAGE: {sys.argv[0]} org_id display_name trust_domain "
+              f"court_url proxy_url org_ca_path admin_secret org_secret",
+              file=sys.stderr)
+        sys.exit(2)
+
+    (_, org_id, display_name, trust_domain, court_url, proxy_url,
+     org_ca_path, admin_secret, org_secret) = sys.argv
+
+    org_ca_pem = open(org_ca_path).read()
+
+
+    def _req(method, url, body=None, headers=None, allow_status=()):
+        data = json.dumps(body).encode() if body is not None else None
+        h = {"Content-Type": "application/json"} if body is not None else {}
+        h.update(headers or {})
+        req = urllib.request.Request(url, data=data, headers=h, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                payload = resp.read().decode()
+                code = resp.getcode()
+        except urllib.error.HTTPError as exc:
+            payload = exc.read().decode()
+            code = exc.code
+            if code in allow_status:
+                return code, payload
+            print(f"FAILED {method} {url} → HTTP {code}: {payload[:300]}",
+                  file=sys.stderr)
+            sys.exit(1)
+        return code, payload
+
+
+    # 1. Admin generates a one-time invite token on Court.
+    print(f"[1/4] POST {court_url}/v1/admin/invites …", flush=True)
+    code, payload = _req(
+        "POST", f"{court_url}/v1/admin/invites",
+        body={"label": f"{org_id}-invite", "ttl_hours": 1},
+        headers={"X-Admin-Secret": admin_secret},
+    )
+    invite_token = json.loads(payload)["token"]
+    print(f"      invite issued (id={json.loads(payload).get('id')})")
+
+    # 2. Org submits join with its CA + invite_token. 409 = already
+    # registered (re-run); continue so step 3 still runs.
+    print(f"[2/4] POST {court_url}/v1/onboarding/join (org_id={org_id}) …",
+          flush=True)
+    code, payload = _req(
+        "POST", f"{court_url}/v1/onboarding/join",
+        body={
+            "org_id": org_id,
+            "display_name": display_name,
+            "secret": org_secret,
+            "ca_certificate": org_ca_pem,
+            "contact_email": f"admin@{org_id}.test",
+            "invite_token": invite_token,
+            "trust_domain": trust_domain,
+        },
+        allow_status=(409,),
+    )
+    print(f"      join → HTTP {code}")
+
+    # 3. Admin approves. 409 = already active.
+    print(f"[3/4] POST {court_url}/v1/admin/orgs/{org_id}/approve …",
+          flush=True)
+    code, payload = _req(
+        "POST", f"{court_url}/v1/admin/orgs/{org_id}/approve",
+        headers={"X-Admin-Secret": admin_secret},
+        allow_status=(409,),
+    )
+    print(f"      approve → HTTP {code}")
+
+    # 4. Pull the local proxy's mastio_pubkey and pin it on Court so
+    # counter-signature verification on /v1/federation/publish-agent
+    # can succeed. The proxy's lifespan generates the mastio identity
+    # asynchronously; poll until the pubkey is non-null (cap 60s).
+    import time
+    print(f"[4/4] GET  {proxy_url}/v1/admin/mastio-pubkey …", flush=True)
+    deadline = time.monotonic() + 60.0
+    pubkey = None
+    while time.monotonic() < deadline:
+        code, payload = _req(
+            "GET", f"{proxy_url}/v1/admin/mastio-pubkey",
+            headers={"X-Admin-Secret": admin_secret},
+        )
+        pubkey = json.loads(payload).get("mastio_pubkey")
+        if pubkey:
+            break
+        time.sleep(1.0)
+    if not pubkey:
+        print("FAILED mastio_pubkey still null after 60s", file=sys.stderr)
+        sys.exit(1)
+    print(f"      proxy mastio_pubkey ready ({len(pubkey)} chars)")
+
+    print(f"      PATCH {court_url}/v1/admin/orgs/{org_id}/mastio-pubkey …",
+          flush=True)
+    code, payload = _req(
+        "PATCH", f"{court_url}/v1/admin/orgs/{org_id}/mastio-pubkey",
+        body={"mastio_pubkey": pubkey},
+        headers={"X-Admin-Secret": admin_secret},
+    )
+    print(f"      pin → HTTP {code}")
+    print(f"BOOTSTRAPPED org_id={org_id} on Court")
+  '';
+
   # Per-city Mastio config. Each entry produces a NixOS node that
   # drops the ``cullis.mastio`` module on top of a base
   # ``virtualisation`` block; the module handles broker + proxy +
@@ -228,39 +366,75 @@ pkgs.testers.nixosTest {
             )
             print(f"  {c.name} → court:8000/health = {health}")
 
-    with subtest("Federation publish: Roma pushes to Court (payload wire)"):
-        # Phase 1: preload the on-disk Org CA into proxy_config and
-        # restart the proxy. With ``standalone=false`` the proxy
-        # doesn't auto-generate a CA on first boot, so the
-        # ``mastio_loaded`` gate that protects the federation
-        # publisher startup stays False forever. Loading the CA
-        # nginx already presents fixes the gate without needing a
-        # full broker attach-ca admin flow.
-        roma.succeed("python3 ${preloadOrgCaScript}")
-        roma.succeed("systemctl restart cullis-proxy.service")
-        roma.wait_for_unit("cullis-proxy.service")
-        roma.wait_until_succeeds(
-            "curl -fs http://127.0.0.1:9100/health", timeout=30,
-        )
+    with subtest("Mastio identity readiness: preload Org CA + restart proxy"):
+        # The proxy starts with ``standalone=false`` (because
+        # ``brokerUrl`` points at Court) which keeps it from auto-
+        # generating a CA on first boot. Without an Org CA in
+        # ``proxy_config``, the ``mastio_loaded`` gate that drives
+        # the lifespan's mastio-identity generation never fires, so
+        # ``GET /v1/admin/mastio-pubkey`` returns null forever.
+        # Preloading the on-disk Org CA + restarting unblocks the
+        # gate; after the second boot the proxy mints its mastio
+        # ES256 identity and the federation publisher loop arms.
+        # Both Roma and Tokyo need this before the Court bootstrap
+        # subtest pulls their mastio_pubkeys to pin on Court.
+        for city in (roma, tokyo):
+            city.succeed("python3 ${preloadOrgCaScript}")
+            city.succeed("systemctl restart cullis-proxy.service")
+            city.wait_for_unit("cullis-proxy.service")
+            city.wait_until_succeeds(
+                "curl -fs http://127.0.0.1:9100/health", timeout=30,
+            )
 
-        # Phase 2: insert a row in Roma's ``internal_agents`` with
+    with subtest("Court bootstrap: register Roma + Tokyo, pin pubkeys"):
+        # Drives the same admin-side flow ``reference/bootstrap/`` runs
+        # against the docker-compose sandbox: ``/v1/admin/invites`` →
+        # ``/v1/onboarding/join`` (per city) → ``/v1/admin/orgs/{id}/
+        # approve`` → ``PATCH /v1/admin/orgs/{id}/mastio-pubkey``. After
+        # this, Court can verify the ES256 counter-signature each city's
+        # federation publisher attaches to ``publish-agent`` requests.
+        #
+        # Roma is the only publisher exercised in the next subtest, but
+        # we bootstrap Tokyo too so a follow-up A2A oneshot subtest can
+        # rely on the symmetric topology without re-entering this code
+        # path.
+        for city, cfg in (
+            (roma,  {"orgId": "roma",  "displayName": "Roma Mastio (CET)",
+                     "trustDomain": "roma.cullis.test"}),
+            (tokyo, {"orgId": "tokyo", "displayName": "Tokyo Mastio (JST)",
+                     "trustDomain": "tokyo.cullis.test"}),
+        ):
+            out = city.succeed(
+                "python3 ${courtBootstrapScript} "
+                f"{cfg['orgId']} '{cfg['displayName']}' "
+                f"{cfg['trustDomain']} "
+                "http://court:8000 http://127.0.0.1:9100 "
+                "/var/lib/cullis/certs/org-ca.pem "
+                f"test-admin-secret {cfg['orgId']}-secret-test"
+            )
+            assert "BOOTSTRAPPED" in out, (
+                f"bootstrap of {cfg['orgId']} did not finish:\n{out}"
+            )
+            print(f"  {cfg['orgId']} bootstrapped on Court")
+
+    with subtest("Federation publish: Roma pushes to Court (payload wire)"):
+        # The previous two subtests preloaded Roma's Org CA + restarted
+        # the proxy (so the mastio identity is ready) and bootstrapped
+        # Roma on Court (so counter-sig + cert-chain checks pass on the
+        # receiving end). What's left is the actual publish trigger:
+        # insert a federated=1 row, wait for the publisher tick, and
+        # confirm Court accepted the payload.
+        #
+        # Insert a row in Roma's ``internal_agents`` with
         # ``federated=1`` so the publisher picks it up on its next
         # tick (poll interval forced to 2s via
         # ``MCP_PROXY_FEDERATION_POLL_INTERVAL_S``). The publisher
-        # then counter-signs the body and POSTs to Court at
-        # ``/v1/federation/publish-agent``.
-        #
-        # We do NOT bootstrap the cross-org trust on Court here
-        # (which would need ``mastio_pubkey`` pinning + CA attach
-        # via admin endpoints; multiple steps per city, separate
-        # admin onboarding flow). Court will reject the publish
-        # with HTTP 4xx (unpinned mastio pubkey / unknown org) and
-        # that's still proof of the wire being alive: an HTTP
-        # response, not a connection error. The publisher logs
-        # ``federation publish OK`` on success or
-        # ``federation publish <id> -> HTTP <code>`` on rejection;
-        # ``broker unreachable`` would mean a dead wire, the
-        # failure mode this subtest is designed to catch.
+        # counter-signs the body and POSTs to Court at
+        # ``/v1/federation/publish-agent``. Expected success line:
+        # ``federation publish OK: roma::fedtest rev=1 status=...``.
+        # ``broker unreachable`` is the dead-wire failure mode; an
+        # ``HTTP 4xx`` log line means Court rejected despite bootstrap
+        # (surface it so the cross-org regression is greppable).
         roma.succeed(
             "openssl ecparam -name prime256v1 -genkey -noout "
             "-out /tmp/fedtest.key && "
@@ -303,15 +477,26 @@ pkgs.testers.nixosTest {
             f"Last 50 proxy lines:\n"
             f"{roma.succeed('journalctl -u cullis-proxy --no-pager -n 50')}"
         )
-        # Either HTTP succeeded (Court accepted, unlikely without
-        # org bootstrap) or HTTP 4xx (rejected, expected). Both
-        # prove the wire is alive. ``broker unreachable`` is the
-        # failure mode we want to catch.
+        # ``broker unreachable`` would mean a dead wire (TCP/HTTP
+        # transport failure). Catch it explicitly so the test fails
+        # with a clear message rather than waiting on a downstream
+        # assertion.
         assert "broker unreachable" not in publish_log, publish_log
-        print(
-            f"  publisher fired against court for roma::fedtest:\n"
-            f"    {publish_log}"
+        # With Court bootstrap done, the publisher counter-signature
+        # should verify and Court should persist the agent row →
+        # ``federation publish OK: roma::fedtest …``. If Court instead
+        # rejects (``HTTP 4xx``), surface the line so the cross-org
+        # trust regression is greppable from the test log without
+        # spelunking journalctl.
+        assert "federation publish OK" in publish_log, (
+            f"federation publish did NOT succeed end-to-end. Log line:\n"
+            f"  {publish_log}\n"
+            f"Last 100 proxy lines:\n"
+            f"{roma.succeed('journalctl -u cullis-proxy --no-pager -n 100')}\n"
+            f"Last 50 broker lines on Court:\n"
+            f"{court.succeed('journalctl -u cullis-broker --no-pager -n 50')}"
         )
+        print(f"  publish accepted by Court:\n    {publish_log}")
 
     # Cross-org cert chain refusal (default-deny) — the third
     # invariant the demo sells — needs a Roma-minted cert
