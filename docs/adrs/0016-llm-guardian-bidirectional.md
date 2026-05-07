@@ -1,7 +1,7 @@
 # ADR-016 — LLM Guardian: bidirectional content inspection via SDK cooperation
 
-- **Status:** Proposed
-- **Date:** 2026-05-01
+- **Status:** Accepted
+- **Date:** 2026-05-01 (proposed) / 2026-05-07 (accepted, foundation lands in this PR)
 - **Related:** ADR-006 (Trojan Horse standalone Mastio), ADR-011 (unified enrollment), ADR-013 (layered defence), ADR-014 (mTLS Connector ↔ Mastio)
 
 ## Context
