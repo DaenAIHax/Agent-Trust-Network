@@ -15,10 +15,7 @@ to read the directory from ``CULLIS_LOCAL_KMS_DIR`` with the legacy
 from __future__ import annotations
 
 import importlib
-import os
 import pathlib
-
-import pytest
 
 
 def test_default_path_is_relative_certs(monkeypatch):
