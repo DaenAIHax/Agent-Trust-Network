@@ -2463,7 +2463,28 @@ class CullisClient:
             else self._fetch_pubkey_proxy_then_broker
         )
         sender_cert_pem = fetch(sender)
-        trust_anchors = self._resolve_trust_anchors()
+        # Issue #459 — trust anchor scope is intra-org only. The local
+        # ``_ca_chain_path`` only holds the receiver's own Org CA; a
+        # cross-org sender's cert chains to the *sender's* Org CA, not
+        # ours. Court already verified that chain at federation publish
+        # time (see ``app/federation/publish.py::_verify_cert_chain``)
+        # before persisting the cert in the federated registry, so for
+        # cross-org we delegate the chain check to Court and pass
+        # ``None`` here. ``cert_binds_agent_id`` (inside
+        # ``verify_cert_for_sender``) still runs and rejects forged
+        # SAN/CN. Threat-model rationale: spoofing a cross-org sender
+        # additionally requires the sender's *private* key (envelope
+        # signing fails otherwise), which lives on the agent endpoint
+        # and is never on Court or Mastio in BYOCA-Vault deploys —
+        # see ``imp/troubleshooting-cross-org.md``.
+        sender_org_id = sender.split("::", 1)[0] if "::" in sender else None
+        local_org_id = getattr(self, "_proxy_org_id", None)
+        is_intra_org = (
+            sender_org_id is not None
+            and local_org_id is not None
+            and sender_org_id == local_org_id
+        )
+        trust_anchors = self._resolve_trust_anchors() if is_intra_org else None
         ok = verify_oneshot_envelope_signature(
             sender_cert_pem,
             envelope["signature"],
