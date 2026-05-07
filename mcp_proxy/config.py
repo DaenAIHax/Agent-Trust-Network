@@ -392,21 +392,15 @@ class ProxySettings(BaseSettings):
         # PROXY_TRANSPORT_INTRA_ORG keep full control.
         if self.standalone and _env("PROXY_TRANSPORT_INTRA_ORG") is None:
             self.transport_intra_org = "mtls-only"
-        # ADR-012 — local-first auth: the Mastio is always the local token
-        # issuer for its own org's agents, regardless of whether a Court
-        # is attached for cross-org federation. The two concerns are
-        # orthogonal: intra-org auth stays on the Mastio, cross-org goes
-        # through the BrokerBridge's lazy login (separate code path).
-        # Issue #458: forwarding ``/v1/auth/token`` to Court was the
-        # historical default for federated deploys, but the SDK signs
-        # DPoP ``htu`` with the URL it called (the Mastio nginx public
-        # URL), which Court can never reconstruct from its own viewpoint
-        # → permanent ``Invalid DPoP proof: htu mismatch`` 401. Auto-flip
-        # is now unconditional; operators with a genuine reason to keep
-        # the forward path can still set ``MCP_PROXY_LOCAL_AUTH_ENABLED=false``
-        # explicitly.
+        # ADR-012 — local-first auth: in standalone mode the Mastio is the
+        # only token issuer (there's no Court to forward ``/v1/auth/token``
+        # to). Without ``local_auth_enabled`` the agent-side
+        # ``login_via_proxy_with_local_key`` flow 503s on ``broker_url
+        # missing``. Flip the default on whenever standalone is set and
+        # the operator hasn't explicitly overridden ``MCP_PROXY_LOCAL_AUTH_ENABLED``.
         if (
-            _env("MCP_PROXY_LOCAL_AUTH_ENABLED") is None
+            self.standalone
+            and _env("MCP_PROXY_LOCAL_AUTH_ENABLED") is None
             and _env("PROXY_LOCAL_AUTH") is None
         ):
             self.local_auth_enabled = True
