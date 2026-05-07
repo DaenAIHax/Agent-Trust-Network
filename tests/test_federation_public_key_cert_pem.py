@@ -16,8 +16,8 @@ from cryptography import x509 as crypto_x509
 from cryptography.hazmat.primitives import serialization
 from httpx import AsyncClient
 
-from tests.cert_factory import get_org_ca_pem, make_agent_cert
-from tests.conftest import ADMIN_HEADERS, seed_court_agent
+from tests.cert_factory import make_agent_cert
+from tests.conftest import seed_court_agent
 from tests.test_federation_read import _setup
 
 
@@ -56,9 +56,7 @@ async def test_public_key_response_carries_full_cert_pem(
     token = await _setup(
         client, "fr-cert-a", "fr-cert-a::caller", ["cap.read"], dpop,
     )
-    cert_pem = await _seed_agent_with_cert(
-        "fr-cert-a", "fr-cert-a::peer",
-    )
+    await _seed_agent_with_cert("fr-cert-a", "fr-cert-a::peer")
 
     resp = await client.get(
         "/v1/federation/agents/fr-cert-a::peer/public-key",
